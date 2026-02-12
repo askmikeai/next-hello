@@ -81,6 +81,66 @@ export interface AgentConfig {
   maxTurns?: number;
 }
 
+/**
+ * Redis configuration for queue and state management
+ */
+export interface RedisConfig {
+  /** Redis host (default: localhost) */
+  host?: string;
+  /** Redis port (default: 6379) */
+  port?: number;
+  /** Redis password */
+  password?: string;
+  /** Redis database number (default: 0) */
+  db?: number;
+  /** Enable TLS */
+  tls?: boolean;
+}
+
+/**
+ * Individual agent toggle configuration
+ */
+export interface AgentToggleConfig {
+  /** Whether this agent is enabled */
+  enabled?: boolean;
+}
+
+/**
+ * Swarm AI configuration
+ */
+export interface SwarmConfig {
+  /** Enable AI swarm (default: false, uses rule-based) */
+  enabled?: boolean;
+
+  /** Percentage of contacts to route through AI swarm (0-100) */
+  rolloutPercentage?: number;
+
+  /** Fallback to rule-based handling when AI fails */
+  fallbackToRules?: boolean;
+
+  /** Maximum conversation turns before handoff */
+  maxConversationTurns?: number;
+
+  /** Token budget for conversation context (default: 8000) */
+  contextTokenBudget?: number;
+
+  /** Default model for swarm agents */
+  defaultModel?: string;
+
+  /** Redis configuration for swarm state */
+  redis?: RedisConfig;
+
+  /** Individual agent configurations */
+  agents?: {
+    conversation?: AgentToggleConfig;
+    research?: AgentToggleConfig;
+    qualification?: AgentToggleConfig;
+    personalization?: AgentToggleConfig;
+    video?: AgentToggleConfig;
+    crm?: AgentToggleConfig;
+  };
+}
+
 export interface NetworkingEventConfig {
   /** Enable the plugin (default: false) */
   enabled?: boolean;
@@ -117,6 +177,9 @@ export interface NetworkingEventConfig {
 
   /** Enabled channels (default: ["whatsapp"]) */
   channels?: SupportedChannel[];
+
+  /** AI Swarm configuration */
+  swarm?: SwarmConfig;
 }
 
 /**
@@ -179,6 +242,20 @@ export interface NetworkingContact {
   // Timestamps
   created_at?: string;
   updated_at?: string;
+
+  // Swarm/AI fields
+  /** Lead qualification score (0-100) */
+  qualification_score?: number | null;
+  /** Lead qualification tier */
+  qualification_tier?: "hot" | "warm" | "cold" | "unqualified" | null;
+  /** Research status */
+  research_status?: "pending" | "in_progress" | "complete" | "failed" | null;
+  /** Enriched research data */
+  research_data?: Record<string, unknown> | null;
+  /** Total conversation turns */
+  total_turns?: number | null;
+  /** Additional swarm metadata */
+  swarm_metadata?: Record<string, unknown> | null;
 }
 
 /**

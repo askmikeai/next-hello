@@ -46,6 +46,36 @@ export const agentConfigSchema = z.object({
   maxTurns: z.number().int().positive().optional().default(10),
 });
 
+export const redisConfigSchema = z.object({
+  host: z.string().optional().default("localhost"),
+  port: z.number().int().positive().optional().default(6379),
+  password: z.string().optional(),
+  db: z.number().int().nonnegative().optional().default(0),
+  tls: z.boolean().optional().default(false),
+});
+
+export const agentToggleConfigSchema = z.object({
+  enabled: z.boolean().optional().default(true),
+});
+
+export const swarmConfigSchema = z.object({
+  enabled: z.boolean().optional().default(false),
+  rolloutPercentage: z.number().min(0).max(100).optional().default(0),
+  fallbackToRules: z.boolean().optional().default(true),
+  maxConversationTurns: z.number().int().positive().optional().default(20),
+  contextTokenBudget: z.number().int().positive().optional().default(8000),
+  defaultModel: z.string().optional().default("claude-sonnet-4-20250514"),
+  redis: redisConfigSchema.optional(),
+  agents: z.object({
+    conversation: agentToggleConfigSchema.optional(),
+    research: agentToggleConfigSchema.optional(),
+    qualification: agentToggleConfigSchema.optional(),
+    personalization: agentToggleConfigSchema.optional(),
+    video: agentToggleConfigSchema.optional(),
+    crm: agentToggleConfigSchema.optional(),
+  }).optional(),
+});
+
 export const networkingEventConfigSchema = z.object({
   enabled: z.boolean().optional().default(false),
   eventName: z.string().optional(),
@@ -65,6 +95,7 @@ export const networkingEventConfigSchema = z.object({
     .array(z.enum(["whatsapp", "telegram"]))
     .optional()
     .default(["whatsapp"]),
+  swarm: swarmConfigSchema.optional(),
 });
 
 export type NetworkingEventConfigInput = z.input<typeof networkingEventConfigSchema>;

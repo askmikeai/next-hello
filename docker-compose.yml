@@ -45,6 +45,13 @@ x-common-env: &common-env
   CALENDLY_API_KEY: ${CALENDLY_API_KEY:-}
   # WhatsApp
   WHATSAPP_AUTH_DIR: /app/data/auth/whatsapp
+  # Redis (for swarm state and job queues)
+  REDIS_HOST: ${REDIS_HOST:-redis}
+  REDIS_PORT: ${REDIS_PORT:-6379}
+  REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+  # Swarm
+  SWARM_ENABLED: ${SWARM_ENABLED:-false}
+  SWARM_ROLLOUT_PERCENTAGE: ${SWARM_ROLLOUT_PERCENTAGE:-0}
 
 services:
   # ──────────────────────────────────────────────────────────────────────────
@@ -114,6 +121,25 @@ services:
       - tools
 
   # ──────────────────────────────────────────────────────────────────────────
+  # REDIS - State management and job queues (for AI swarm)
+  # Automatically starts with nexthello if swarm is enabled
+  # ──────────────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: nexthello-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - nexthello-redis:/data
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ──────────────────────────────────────────────────────────────────────────
   # NEXTHELLO - Main server (webhooks + message handling)
   # Usage: docker compose up -d
   # ──────────────────────────────────────────────────────────────────────────
@@ -121,6 +147,9 @@ services:
     build: .
     image: nexthello:local
     container_name: nexthello
+    depends_on:
+      redis:
+        condition: service_healthy
     env_file:
       - .env
     environment:
@@ -182,6 +211,8 @@ volumes:
     name: nexthello-auth
   nexthello-media:
     name: nexthello-media
+  nexthello-redis:
+    name: nexthello-redis
 
 networks:
   default:

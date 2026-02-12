@@ -19,6 +19,7 @@ import {
 import { createHubSpotProvider } from "../integrations/crm/hubspot.js";
 import { getSchedulingLink } from "../integrations/calendly/client.js";
 import { enrichContactWithLinkedIn } from "../integrations/linkedin/client.js";
+import { shouldUseSwarm, getOrchestrator } from "../swarm/index.js";
 
 export interface FollowUpParams {
   phoneNumber: string;
@@ -41,9 +42,7 @@ function log(message: string): void {
 /**
  * Handle follow-up messages from known contacts
  *
- * This is a simpler handler that extracts fields from messages
- * and responds appropriately. For full AI conversation, this would
- * be routed to the AI agent with the tools registered.
+ * Routes to AI swarm when enabled, otherwise uses rule-based handling.
  */
 export async function handleFollowUp(
   params: FollowUpParams,
@@ -53,6 +52,81 @@ export async function handleFollowUp(
   const requiredFields = config.requiredFields ?? ["email", "company_name", "job_title"];
 
   log(`Follow-up from ${phoneNumber}: "${messageText.substring(0, 50)}..."`);
+
+  // Check if we should use AI swarm
+  if (shouldUseSwarm(config, phoneNumber)) {
+    return handleFollowUpWithSwarm(params);
+  }
+
+  // Otherwise use rule-based handling
+  return handleFollowUpRuleBased(params);
+}
+
+/**
+ * Handle follow-up using AI swarm orchestrator
+ */
+async function handleFollowUpWithSwarm(
+  params: FollowUpParams,
+): Promise<FollowUpResult> {
+  const { phoneNumber, messageText, config, sendMessage } = params;
+
+  log(`Using AI swarm for ${phoneNumber}`);
+
+  try {
+    const contact = await findContactByPhone(phoneNumber, config.supabase);
+    const orchestrator = getOrchestrator(config);
+
+    const result = await orchestrator.processMessage(
+      phoneNumber,
+      messageText,
+      "whatsapp",
+      contact ?? undefined
+    );
+
+    if (result.success && result.response) {
+      await sendMessage(result.response);
+
+      return {
+        handled: true,
+        reason: "swarm_handled",
+        allFieldsComplete: result.data?.fieldsComplete === true,
+      };
+    }
+
+    // Swarm failed, fall back to rules if configured
+    if (config.swarm?.fallbackToRules !== false) {
+      log(`Swarm failed, falling back to rules: ${result.error}`);
+      return handleFollowUpRuleBased(params);
+    }
+
+    return {
+      handled: false,
+      reason: `swarm_error: ${result.error}`,
+    };
+  } catch (error) {
+    log(`Swarm error: ${error}`);
+
+    // Fall back to rules if configured
+    if (config.swarm?.fallbackToRules !== false) {
+      return handleFollowUpRuleBased(params);
+    }
+
+    return {
+      handled: false,
+      reason: `swarm_exception: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
+/**
+ * Handle follow-up using rule-based pattern matching (original implementation)
+ */
+async function handleFollowUpRuleBased(
+  params: FollowUpParams,
+): Promise<FollowUpResult> {
+  const { phoneNumber, messageText, config, sendMessage } = params;
+  const supabaseConfig: SupabaseConfig = config.supabase ?? {};
+  const requiredFields = config.requiredFields ?? ["email", "company_name", "job_title"];
 
   try {
     // Get contact
