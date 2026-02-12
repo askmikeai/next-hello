@@ -1,0 +1,64 @@
+{
+  "name": "nexthello",
+  "version": "1.0.0",
+  "description": "Turn event connections into conversations. AI-powered follow-up automation with personalized videos, scheduling, and CRM sync.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "nexthello": "./dist/src/cli/index.js"
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/src/server.js",
+    "cli": "node dist/src/cli/index.js",
+    "setup": "node dist/src/cli/index.js setup",
+    "connect": "node dist/src/cli/index.js connect",
+    "test": "vitest",
+    "lint": "eslint src/",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "networking",
+    "automation",
+    "follow-up",
+    "crm",
+    "heygen",
+    "calendly",
+    "linkedin",
+    "whatsapp",
+    "ai",
+    "chatbot",
+    "sales",
+    "leads"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0",
+    "@whiskeysockets/baileys": "^7.0.0-rc.9",
+    "chalk": "^5.6.2",
+    "commander": "^14.0.3",
+    "inquirer": "^13.2.2",
+    "ora": "^9.3.0",
+    "qrcode-terminal": "^0.12.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/inquirer": "^9.0.9",
+    "@types/node": "^20.10.0",
+    "@types/qrcode-terminal": "^0.12.2",
+    "typescript": "^5.3.0",
+    "vitest": "^1.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

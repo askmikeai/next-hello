@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="400" height="400">
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0066FF"/>
+      <stop offset="100%" style="stop-color:#00D4AA"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded square background -->
+  <rect x="20" y="20" width="360" height="360" rx="80" fill="url(#grad)"/>
+
+  <!-- Speech bubble -->
+  <path d="M100 120
+           C100 95, 125 75, 160 75
+           L280 75
+           C315 75, 340 95, 340 120
+           L340 220
+           C340 245, 315 270, 280 270
+           L180 270
+           L130 325
+           L145 270
+           L160 270
+           C125 270, 100 245, 100 220
+           Z"
+        fill="white"/>
+
+  <!-- "N" made of connected dots -->
+  <!-- Left vertical -->
+  <circle cx="160" cy="140" r="16" fill="url(#grad)"/>
+  <circle cx="160" cy="200" r="16" fill="url(#grad)"/>
+  <line x1="160" y1="140" x2="160" y2="200" stroke="url(#grad)" stroke-width="8"/>
+
+  <!-- Diagonal -->
+  <line x1="160" y1="140" x2="260" y2="200" stroke="url(#grad)" stroke-width="8"/>
+
+  <!-- Right vertical -->
+  <circle cx="260" cy="140" r="16" fill="url(#grad)"/>
+  <circle cx="260" cy="200" r="16" fill="url(#grad)"/>
+  <line x1="260" y1="140" x2="260" y2="200" stroke="url(#grad)" stroke-width="8"/>
+</svg>

@@ -1,0 +1,188 @@
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  NextHello - AI-Powered Networking Assistant
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#
+#  QUICK START:
+#  ────────────
+#    1. Copy .env.example to .env and fill in your values
+#       cp .env.example .env
+#
+#    2. Or run interactive setup (creates .env for you):
+#       docker compose run --rm setup
+#
+#    3. Connect WhatsApp (scan QR code):
+#       docker compose run --rm connect
+#
+#    4. Start the server:
+#       docker compose up -d
+#
+#  OTHER COMMANDS:
+#  ───────────────
+#    View logs:       docker compose logs -f nexthello
+#    Check status:    docker compose run --rm cli status
+#    Stop server:     docker compose down
+#
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# Common environment variables (inherited by all services)
+x-common-env: &common-env
+  # Database
+  SUPABASE_URL: ${SUPABASE_URL:-}
+  SUPABASE_KEY: ${SUPABASE_KEY:-}
+  SUPABASE_TABLE: ${SUPABASE_TABLE:-tech_founders_contacts}
+  # AI
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  # App
+  NEXTHELLO_EVENT_NAME: ${NEXTHELLO_EVENT_NAME:-}
+  NEXTHELLO_OWNER_NAME: ${NEXTHELLO_OWNER_NAME:-}
+  NEXTHELLO_CALENDLY_LINK: ${NEXTHELLO_CALENDLY_LINK:-}
+  # Integrations
+  HEYGEN_API_KEY: ${HEYGEN_API_KEY:-}
+  HUBSPOT_API_KEY: ${HUBSPOT_API_KEY:-}
+  SENDGRID_API_KEY: ${SENDGRID_API_KEY:-}
+  PROXYCURL_API_KEY: ${PROXYCURL_API_KEY:-}
+  CALENDLY_API_KEY: ${CALENDLY_API_KEY:-}
+  # WhatsApp
+  WHATSAPP_AUTH_DIR: /app/data/auth/whatsapp
+
+services:
+  # ──────────────────────────────────────────────────────────────────────────
+  # SETUP - Interactive configuration wizard
+  # Usage: docker compose run --rm setup
+  # Only asks for values not already in .env
+  # ──────────────────────────────────────────────────────────────────────────
+  setup:
+    build: .
+    image: nexthello:local
+    container_name: nexthello-setup
+    stdin_open: true
+    tty: true
+    env_file:
+      - .env
+    environment:
+      <<: *common-env
+    volumes:
+      - .:/host
+      - nexthello-auth:/app/data/auth
+    working_dir: /host
+    entrypoint: ["node", "/app/dist/src/cli/index.js", "setup"]
+    profiles:
+      - tools
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # CONNECT - WhatsApp pairing (shows QR code)
+  # Usage: docker compose run --rm connect
+  # ──────────────────────────────────────────────────────────────────────────
+  connect:
+    build: .
+    image: nexthello:local
+    container_name: nexthello-connect
+    stdin_open: true
+    tty: true
+    env_file:
+      - .env
+    environment:
+      <<: *common-env
+    volumes:
+      - nexthello-auth:/app/data/auth
+      - ./nexthello.config.json:/app/nexthello.config.json:ro
+    entrypoint: ["node", "dist/src/channels/whatsapp/connect.js"]
+    profiles:
+      - tools
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # CLI - Run any nexthello command
+  # Usage: docker compose run --rm cli <command>
+  # ──────────────────────────────────────────────────────────────────────────
+  cli:
+    build: .
+    image: nexthello:local
+    container_name: nexthello-cli
+    stdin_open: true
+    tty: true
+    env_file:
+      - .env
+    environment:
+      <<: *common-env
+    volumes:
+      - .:/host
+      - nexthello-auth:/app/data/auth
+    working_dir: /host
+    entrypoint: ["node", "/app/dist/src/cli/index.js"]
+    profiles:
+      - tools
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # NEXTHELLO - Main server (webhooks + message handling)
+  # Usage: docker compose up -d
+  # ──────────────────────────────────────────────────────────────────────────
+  nexthello:
+    build: .
+    image: nexthello:local
+    container_name: nexthello
+    env_file:
+      - .env
+    environment:
+      <<: *common-env
+      NODE_ENV: production
+      PORT: 3000
+
+    volumes:
+      - nexthello-auth:/app/data/auth
+      - nexthello-media:/app/data/media
+      - ./nexthello.config.json:/app/nexthello.config.json:ro
+
+    ports:
+      - "${PORT:-3000}:3000"
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # WHATSAPP - Standalone WhatsApp listener (optional)
+  # Usage: docker compose up -d whatsapp
+  # ──────────────────────────────────────────────────────────────────────────
+  whatsapp:
+    build: .
+    image: nexthello:local
+    container_name: nexthello-whatsapp
+    env_file:
+      - .env
+    environment:
+      <<: *common-env
+
+    volumes:
+      - nexthello-auth:/app/data/auth
+      - ./nexthello.config.json:/app/nexthello.config.json:ro
+
+    entrypoint: ["node", "dist/src/channels/whatsapp/connect.js"]
+    restart: unless-stopped
+
+    profiles:
+      - whatsapp
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# VOLUMES
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+volumes:
+  nexthello-auth:
+    name: nexthello-auth
+  nexthello-media:
+    name: nexthello-media
+
+networks:
+  default:
+    name: nexthello-network

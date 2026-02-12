@@ -1,0 +1,28 @@
+{
+  "enabled": true,
+  "eventName": "Conference 2024",
+  "ownerName": "Michael Friedberg",
+  "requiredFields": ["email", "company_name", "job_title"],
+
+  "heygen": {
+    "avatarId": "a47b8b5054e644c4bdcbcea569f47432",
+    "voiceId": "7d0a0fae149c4128acafbebd994eb5ce",
+    "scriptTemplate": "Hey {name}! Great meeting you at the conference. I wanted to personally reach out and connect. Looking forward to chatting more about how we can work together!"
+  },
+
+  "calendly": {
+    "schedulingLink": "https://calendly.com/your-link"
+  },
+
+  "crm": {
+    "provider": "hubspot"
+  },
+
+  "messages": {
+    "welcome": "Hey! Great meeting you at {{eventName}}! Here's a quick video from me:",
+    "collectEmail": "What's your email? I'll send over some resources we discussed.",
+    "collectCompany": "And which company are you with?",
+    "collectTitle": "What's your role there?",
+    "complete": "Perfect! Looking forward to connecting more. Feel free to book a time to chat!"
+  }
+}

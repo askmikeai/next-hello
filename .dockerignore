@@ -1,0 +1,61 @@
+# Dependencies
+node_modules
+.pnpm-store
+
+# Build output (rebuilt in container)
+dist
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# Git
+.git
+.gitignore
+
+# Docker
+Dockerfile*
+docker-compose*
+docker-setup.sh
+.dockerignore
+
+# Documentation
+*.md
+docs
+LICENSE
+CONTRIBUTING.md
+
+# Test files
+*.test.ts
+*.spec.ts
+__tests__
+coverage
+.nyc_output
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs
+
+# Local data (use volumes instead)
+data
+auth
+sessions
+
+# OpenClaw reference files
+*_openclaw*
+ARCHITECTURE.md
+PLAN.md
+OPENCLAW_README.md

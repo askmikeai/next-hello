@@ -1,0 +1,215 @@
+/**
+ * Networking Event Plugin Configuration Types
+ */
+
+// Database status values (from your Supabase schema)
+export type ContactStatus =
+  | "active"
+  | "inactive"
+  | "archived"
+  // Workflow status values (used internally)
+  | "new"
+  | "welcomed"
+  | "collecting"
+  | "fields_complete"
+  | "synced"
+  | "meeting_scheduled"
+  | "complete";
+
+export type SupportedChannel = "whatsapp" | "telegram";
+
+export interface SupabaseConfig {
+  /** Table name for contacts (default: "networking_contacts") */
+  tableName?: string;
+}
+
+export interface HeyGenConfig {
+  /** HeyGen avatar ID for video generation */
+  avatarId?: string;
+  /** HeyGen voice ID for video generation */
+  voiceId?: string;
+  /** Script template for personalized videos */
+  scriptTemplate?: string;
+  /** Whether to use async webhook instead of polling */
+  useWebhook?: boolean;
+  /** Callback URL for webhook notifications */
+  webhookUrl?: string;
+}
+
+export interface CalendlyConfig {
+  /** Calendly organization URI */
+  organizationUri?: string;
+  /** Default scheduling link to include in messages */
+  schedulingLink?: string;
+  /** Webhook signing key for verification */
+  webhookSigningKey?: string;
+}
+
+export interface LinkedInConfig {
+  /** Provider for LinkedIn research (currently only "proxycurl") */
+  provider?: "proxycurl";
+  /** ProxyCurl API key (falls back to PROXYCURL_API_KEY env) */
+  apiKey?: string;
+}
+
+export interface EmailConfig {
+  /** Email provider ("sendgrid" or "resend") */
+  provider?: "sendgrid" | "resend";
+  /** From email address */
+  fromEmail?: string;
+  /** From display name */
+  fromName?: string;
+  /** API key (falls back to SENDGRID_API_KEY or RESEND_API_KEY env) */
+  apiKey?: string;
+}
+
+export interface CrmConfig {
+  /** CRM provider (currently only "hubspot") */
+  provider?: "hubspot";
+  /** API key (falls back to HUBSPOT_API_KEY env) */
+  apiKey?: string;
+  /** Custom property mappings for HubSpot */
+  propertyMappings?: Record<string, string>;
+}
+
+export interface AgentConfig {
+  /** Model to use for AI chatbot */
+  model?: string;
+  /** Custom system prompt additions */
+  systemPromptAdditions?: string;
+  /** Max conversation turns before escalation */
+  maxTurns?: number;
+}
+
+export interface NetworkingEventConfig {
+  /** Enable the plugin (default: false) */
+  enabled?: boolean;
+
+  /** Event name for context (e.g., "AI Summit 2024") */
+  eventName?: string;
+
+  /** Owner/host name for personalization */
+  ownerName?: string;
+
+  /** Required fields to collect (default: ["email", "company_name", "job_title"]) */
+  requiredFields?: string[];
+
+  /** Supabase configuration */
+  supabase?: SupabaseConfig;
+
+  /** HeyGen video generation configuration */
+  heygen?: HeyGenConfig;
+
+  /** Calendly scheduling configuration */
+  calendly?: CalendlyConfig;
+
+  /** LinkedIn research configuration */
+  linkedin?: LinkedInConfig;
+
+  /** Email sending configuration */
+  email?: EmailConfig;
+
+  /** CRM sync configuration */
+  crm?: CrmConfig;
+
+  /** AI agent configuration */
+  agent?: AgentConfig;
+
+  /** Enabled channels (default: ["whatsapp"]) */
+  channels?: SupportedChannel[];
+}
+
+/**
+ * Contact record stored in Supabase
+ * Matches tech_founders_contacts table schema
+ */
+export interface NetworkingContact {
+  id?: string; // UUID
+  phone_number: string;
+  first_name?: string | null;
+  middle_name?: string | null;
+  last_name?: string | null;
+  email?: string | null;
+  company_name?: string | null;
+  job_title?: string | null;
+  website?: string | null;
+  linkedin_url?: string | null;
+  twitter_handle?: string | null;
+
+  // Event context
+  event_met_at?: string | null;
+  event_name?: string | null; // alias for event_met_at (used by code)
+  date_met?: string | null; // date
+
+  // Relationship details
+  mutual_connection?: string | null;
+  how_i_can_help?: string | null;
+  what_theyre_working_on?: string | null;
+  their_ask_or_need?: string | null;
+
+  // Organization
+  tags?: string[] | null;
+  notes?: string | null;
+  industry?: string | null;
+
+  // Follow-up tracking
+  last_contact_date?: string | null; // date
+  next_followup_date?: string | null; // date
+  last_message_at?: string | null;
+
+  // Workflow
+  status?: ContactStatus;
+
+  // HeyGen
+  heygen_video_id?: string | null;
+  heygen_video_url?: string | null;
+
+  // Calendly
+  calendly_event_uri?: string | null;
+  calendly_scheduled_at?: string | null;
+
+  // CRM
+  crm_contact_id?: string | null;
+  crm_synced_at?: string | null;
+
+  // Messaging
+  channel?: string;
+  sent_personalized_message?: boolean;
+
+  // Timestamps
+  created_at?: string;
+  updated_at?: string;
+}
+
+/**
+ * LinkedIn profile data from ProxyCurl
+ */
+export interface LinkedInProfile {
+  firstName?: string;
+  lastName?: string;
+  headline?: string;
+  summary?: string;
+  company?: string;
+  title?: string;
+  industry?: string;
+  location?: string;
+  profileUrl?: string;
+  photoUrl?: string;
+  connectionCount?: number;
+}
+
+/**
+ * HubSpot contact for CRM sync
+ */
+export interface HubSpotContact {
+  id?: string;
+  email?: string;
+  firstname?: string;
+  lastname?: string;
+  company?: string;
+  jobtitle?: string;
+  phone?: string;
+  industry?: string;
+  linkedin?: string;
+  [key: string]: string | undefined;
+}
