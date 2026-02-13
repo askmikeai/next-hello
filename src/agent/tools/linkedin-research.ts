@@ -4,7 +4,7 @@ import {
   lookupProfileByUrl,
   lookupCompany,
 } from "../../integrations/linkedin/client.js";
-import { updateContactByPhone } from "../../contacts/supabase-repo.js";
+import { updateContactByPhone } from "../../contacts/index.js";
 
 export interface LinkedInResearchParams {
   phoneNumber?: string;

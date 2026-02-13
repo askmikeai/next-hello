@@ -3,7 +3,7 @@
  *
  * This module provides a multi-agent AI system using the Orchestrator Pattern.
  * It coordinates specialized agents for conversation, research, qualification,
- * personalization, video generation, and CRM synchronization.
+ * personalization, video generation, voice message generation, and CRM synchronization.
  */
 
 // Core types
@@ -28,6 +28,7 @@ import "./agents/qualification.agent.js";
 import "./agents/crm.agent.js";
 import "./agents/personalization.agent.js";
 import "./agents/video.agent.js";
+import "./agents/voice.agent.js";
 
 // Re-export agents for direct use if needed
 export { ConversationAgent } from "./agents/conversation.agent.js";
@@ -36,6 +37,7 @@ export { QualificationAgent } from "./agents/qualification.agent.js";
 export { CRMAgent } from "./agents/crm.agent.js";
 export { PersonalizationAgent } from "./agents/personalization.agent.js";
 export { VideoAgent } from "./agents/video.agent.js";
+export { VoiceAgent } from "./agents/voice.agent.js";
 
 /**
  * Initialize the swarm system with configuration
@@ -63,7 +65,6 @@ export function initializeSwarm(config: NetworkingEventConfig): {
 
   // Initialize message store
   const messageStore = getMessageStore({
-    supabase: config.supabase,
     tableName: "message_history",
   });
 

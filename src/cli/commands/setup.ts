@@ -7,7 +7,6 @@
 
 import inquirer from "inquirer";
 import fs from "fs";
-import path from "path";
 import crypto from "crypto";
 import {
   printBanner,
@@ -16,15 +15,21 @@ import {
   printError,
   printWarning,
   printInfo,
-  printStep,
   printCommand,
   colors,
 } from "../ui.js";
 
 interface SetupAnswers {
-  // Required
-  supabaseUrl: string;
-  supabaseKey: string;
+  // Database (PostgreSQL)
+  databaseUrl?: string;
+  postgresHost?: string;
+  postgresPort?: string;
+  postgresDb?: string;
+  postgresUser?: string;
+  postgresPassword?: string;
+
+  // Redis (Optional)
+  redisUrl?: string;
 
   // AI Provider
   aiProvider: "openai" | "anthropic" | "both";
@@ -72,27 +77,42 @@ export async function setupCommand(): Promise<void> {
 
   // Track which values we already have
   const existingValues = {
-    supabaseUrl: getEnv("SUPABASE_URL"),
-    supabaseKey: getEnv("SUPABASE_KEY"),
-    supabaseTable: getEnv("SUPABASE_TABLE") || "tech_founders_contacts",
+    // PostgreSQL
+    databaseUrl: getEnv("DATABASE_URL"),
+    postgresHost: getEnv("POSTGRES_HOST") || "localhost",
+    postgresPort: getEnv("POSTGRES_PORT") || "5432",
+    postgresDb: getEnv("POSTGRES_DB") || "nexthello",
+    postgresUser: getEnv("POSTGRES_USER") || "nexthello",
+    postgresPassword: getEnv("POSTGRES_PASSWORD"),
+    // Redis
+    redisUrl: getEnv("REDIS_URL"),
+    redisHost: getEnv("REDIS_HOST"),
+    // AI
     openaiKey: getEnv("OPENAI_API_KEY"),
     anthropicKey: getEnv("ANTHROPIC_API_KEY"),
+    // App
     ownerName: getEnv("NEXTHELLO_OWNER_NAME"),
     eventName: getEnv("NEXTHELLO_EVENT_NAME"),
     calendlyLink: getEnv("NEXTHELLO_CALENDLY_LINK"),
+    // Integrations
     heygenKey: getEnv("HEYGEN_API_KEY"),
     hubspotKey: getEnv("HUBSPOT_API_KEY"),
     sendgridKey: getEnv("SENDGRID_API_KEY"),
     proxycurlKey: getEnv("PROXYCURL_API_KEY"),
     calendlyKey: getEnv("CALENDLY_API_KEY"),
+    // Security
     webhookSecret: getEnv("WEBHOOK_SECRET"),
-    port: getEnv("PORT") || "3000",
+    webhookBaseUrl: getEnv("WEBHOOK_BASE_URL"),
+    // Server
+    port: getEnv("NEXTHELLO_PORT") || getEnv("PORT") || "3000",
   };
+
+  // Check if database is configured
+  const hasDatabase = existingValues.databaseUrl || existingValues.postgresPassword;
 
   // Count how many required values are missing
   const missingRequired = [
-    !existingValues.supabaseUrl,
-    !existingValues.supabaseKey,
+    !hasDatabase,
     !existingValues.openaiKey && !existingValues.anthropicKey,
   ].filter(Boolean).length;
 
@@ -119,49 +139,159 @@ export async function setupCommand(): Promise<void> {
     console.log("");
   }
 
-  // Database section - only ask for missing values
-  printSection("Step 1: Database");
+  // Database section
+  printSection("Step 1: Database (PostgreSQL)");
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const dbQuestions: any[] = [];
+  let databaseUrl = existingValues.databaseUrl;
+  let postgresHost = existingValues.postgresHost;
+  let postgresPort = existingValues.postgresPort;
+  let postgresDb = existingValues.postgresDb;
+  let postgresUser = existingValues.postgresUser;
+  let postgresPassword = existingValues.postgresPassword;
 
-  if (!existingValues.supabaseUrl) {
-    dbQuestions.push({
-      type: "input",
-      name: "supabaseUrl",
-      message: "Supabase URL:",
-      validate: (input: string) =>
-        input.includes("supabase") || "Please enter a valid Supabase URL",
-    });
-  } else {
-    printInfo(`Supabase URL: ${existingValues.supabaseUrl.substring(0, 30)}... (from env)`);
+  if (hasDatabase) {
+    if (databaseUrl) {
+      printInfo(`Database URL: ${databaseUrl.replace(/:[^:@]+@/, ':****@')} (from env)`);
+    } else {
+      printInfo(`PostgreSQL: ${postgresUser}@${postgresHost}:${postgresPort}/${postgresDb} (from env)`);
+    }
+
+    const { changeDb } = await inquirer.prompt([
+      {
+        type: "confirm",
+        name: "changeDb",
+        message: "Do you want to change the database configuration?",
+        default: false,
+      },
+    ]);
+
+    if (!changeDb) {
+      // Keep existing config
+    } else {
+      databaseUrl = "";
+      postgresPassword = "";
+    }
   }
 
-  if (!existingValues.supabaseKey) {
-    dbQuestions.push({
-      type: "password",
-      name: "supabaseKey",
-      message: "Supabase API Key:",
-      mask: "*",
-      validate: (input: string) => input.length > 10 || "Please enter a valid API key",
-    });
-  } else {
-    printInfo("Supabase API Key: ******* (from env)");
+  if (!databaseUrl && !postgresPassword) {
+    const { dbConfigType } = await inquirer.prompt([
+      {
+        type: "list",
+        name: "dbConfigType",
+        message: "How would you like to configure PostgreSQL?",
+        choices: [
+          { name: "Use Docker defaults (recommended for local dev)", value: "docker" },
+          { name: "Connection URL (DATABASE_URL)", value: "url" },
+          { name: "Individual settings (host, port, etc.)", value: "individual" },
+        ],
+      },
+    ]);
+
+    if (dbConfigType === "docker") {
+      // Use Docker defaults
+      postgresHost = "localhost";
+      postgresPort = "5432";
+      postgresDb = "nexthello";
+      postgresUser = "nexthello";
+      postgresPassword = "nexthello_dev";
+      databaseUrl = `postgresql://${postgresUser}:${postgresPassword}@${postgresHost}:${postgresPort}/${postgresDb}`;
+      printInfo("Using Docker defaults. Run: docker compose up postgres -d");
+    } else if (dbConfigType === "url") {
+      const { url } = await inquirer.prompt([
+        {
+          type: "input",
+          name: "url",
+          message: "Database URL (postgresql://user:pass@host:port/db):",
+          validate: (input: string) =>
+            input.startsWith("postgresql://") || input.startsWith("postgres://") ||
+            "Please enter a valid PostgreSQL URL",
+        },
+      ]);
+      databaseUrl = url;
+    } else {
+      const dbAnswers = await inquirer.prompt([
+        {
+          type: "input",
+          name: "host",
+          message: "PostgreSQL host:",
+          default: postgresHost,
+        },
+        {
+          type: "input",
+          name: "port",
+          message: "PostgreSQL port:",
+          default: postgresPort,
+        },
+        {
+          type: "input",
+          name: "database",
+          message: "Database name:",
+          default: postgresDb,
+        },
+        {
+          type: "input",
+          name: "user",
+          message: "Database user:",
+          default: postgresUser,
+        },
+        {
+          type: "password",
+          name: "password",
+          message: "Database password:",
+          mask: "*",
+        },
+      ]);
+
+      postgresHost = dbAnswers.host;
+      postgresPort = dbAnswers.port;
+      postgresDb = dbAnswers.database;
+      postgresUser = dbAnswers.user;
+      postgresPassword = dbAnswers.password;
+    }
   }
 
-  dbQuestions.push({
-    type: "input",
-    name: "supabaseTable",
-    message: "Contacts table name:",
-    default: existingValues.supabaseTable,
-  });
+  // Redis section (optional)
+  printSection("Step 2: Redis (Optional - for queues)");
 
-  const dbAnswers = dbQuestions.length > 0
-    ? await inquirer.prompt(dbQuestions)
-    : {} as Record<string, string>;
+  let redisUrl = existingValues.redisUrl;
+  let redisHost = existingValues.redisHost;
+
+  if (redisUrl || redisHost) {
+    printInfo(`Redis: ${redisUrl || redisHost} (from env)`);
+    printInfo("Redis is optional - the app works without it.");
+  } else {
+    const { configureRedis } = await inquirer.prompt([
+      {
+        type: "list",
+        name: "configureRedis",
+        message: "Configure Redis? (optional, for background job queues)",
+        choices: [
+          { name: "Use Docker defaults (recommended)", value: "docker" },
+          { name: "Custom Redis URL", value: "custom" },
+          { name: "Skip (Redis not needed)", value: "skip" },
+        ],
+      },
+    ]);
+
+    if (configureRedis === "docker") {
+      redisHost = "localhost";
+      redisUrl = "redis://localhost:6379";
+      printInfo("Using Docker defaults. Run: docker compose up redis -d");
+    } else if (configureRedis === "custom") {
+      const { url } = await inquirer.prompt([
+        {
+          type: "input",
+          name: "url",
+          message: "Redis URL (redis://host:port):",
+          default: "redis://localhost:6379",
+        },
+      ]);
+      redisUrl = url;
+    }
+  }
 
   // AI Provider section
-  printSection("Step 2: AI Provider");
+  printSection("Step 3: AI Provider");
 
   let openaiKey = existingValues.openaiKey;
   let anthropicKey = existingValues.anthropicKey;
@@ -201,8 +331,8 @@ export async function setupCommand(): Promise<void> {
         name: "aiProvider",
         message: "Which AI provider will you use?",
         choices: [
+          { name: "Anthropic (Claude) - Recommended", value: "anthropic" },
           { name: "OpenAI (GPT-4)", value: "openai" },
-          { name: "Anthropic (Claude)", value: "anthropic" },
           { name: "Both", value: "both" },
         ],
       },
@@ -242,7 +372,7 @@ export async function setupCommand(): Promise<void> {
   }
 
   // App config section
-  printSection("Step 3: Your Info");
+  printSection("Step 4: Your Info");
 
   const appQuestions = [
     {
@@ -272,7 +402,7 @@ export async function setupCommand(): Promise<void> {
   const appAnswers = await inquirer.prompt(appQuestions);
 
   // Integrations section
-  printSection("Step 4: Integrations");
+  printSection("Step 5: Integrations");
 
   // Pre-select integrations that already have keys
   const defaultIntegrations: string[] = [];
@@ -336,21 +466,35 @@ export async function setupCommand(): Promise<void> {
   // Generate webhook secret only if not already set
   const webhookSecret = existingValues.webhookSecret || crypto.randomBytes(32).toString("hex");
 
-  // Merge answers with existing values
+  // Build final values
   const finalValues = {
-    supabaseUrl: dbAnswers.supabaseUrl || existingValues.supabaseUrl,
-    supabaseKey: dbAnswers.supabaseKey || existingValues.supabaseKey,
-    supabaseTable: dbAnswers.supabaseTable || existingValues.supabaseTable,
+    // Database
+    databaseUrl: databaseUrl || "",
+    postgresHost: postgresHost || "",
+    postgresPort: postgresPort || "",
+    postgresDb: postgresDb || "",
+    postgresUser: postgresUser || "",
+    postgresPassword: postgresPassword || "",
+    // Redis
+    redisUrl: redisUrl || "",
+    redisHost: redisHost || "",
+    // AI
     openaiKey: openaiKey || "",
     anthropicKey: anthropicKey || "",
+    // App
     ownerName: appAnswers.ownerName || existingValues.ownerName,
     eventName: appAnswers.eventName || existingValues.eventName,
     calendlyLink: appAnswers.calendlyLink || existingValues.calendlyLink || "",
+    // Integrations
     heygenKey: integrationKeys.heygen || "",
     hubspotKey: integrationKeys.hubspot || "",
     sendgridKey: integrationKeys.sendgrid || "",
     proxycurlKey: integrationKeys.proxycurl || "",
     calendlyKey: existingValues.calendlyKey || "",
+    // Security
+    webhookSecret,
+    webhookBaseUrl: existingValues.webhookBaseUrl || "",
+    // Server
     port: existingValues.port,
   };
 
@@ -360,11 +504,23 @@ export async function setupCommand(): Promise<void> {
 # Date: ${new Date().toISOString()}
 
 # ===========================================
-# Database (Required)
+# Database (PostgreSQL)
 # ===========================================
-SUPABASE_URL=${finalValues.supabaseUrl}
-SUPABASE_KEY=${finalValues.supabaseKey}
-SUPABASE_TABLE=${finalValues.supabaseTable}
+# Option 1: Connection URL (takes precedence)
+DATABASE_URL=${finalValues.databaseUrl}
+
+# Option 2: Individual connection settings
+POSTGRES_HOST=${finalValues.postgresHost}
+POSTGRES_PORT=${finalValues.postgresPort}
+POSTGRES_DB=${finalValues.postgresDb}
+POSTGRES_USER=${finalValues.postgresUser}
+POSTGRES_PASSWORD=${finalValues.postgresPassword}
+
+# ===========================================
+# Redis (Optional - for background jobs)
+# ===========================================
+REDIS_URL=${finalValues.redisUrl}
+REDIS_HOST=${finalValues.redisHost}
 
 # ===========================================
 # AI Providers
@@ -389,14 +545,15 @@ PROXYCURL_API_KEY=${finalValues.proxycurlKey}
 CALENDLY_API_KEY=${finalValues.calendlyKey}
 
 # ===========================================
-# Security
+# Security & Webhooks
 # ===========================================
-WEBHOOK_SECRET=${webhookSecret}
+WEBHOOK_SECRET=${finalValues.webhookSecret}
+WEBHOOK_BASE_URL=${finalValues.webhookBaseUrl}
 
 # ===========================================
 # Server
 # ===========================================
-PORT=${finalValues.port}
+NEXTHELLO_PORT=${finalValues.port}
 HOST=0.0.0.0
 `;
 
@@ -415,7 +572,7 @@ HOST=0.0.0.0
         voiceId: "YOUR_VOICE_ID",
       },
       calendly: {
-        schedulingLink: appAnswers.calendlyLink || "https://calendly.com/your-link",
+        schedulingLink: finalValues.calendlyLink || "https://calendly.com/your-link",
       },
       crm: {
         provider: integrations.includes("hubspot") ? "hubspot" : null,
@@ -442,6 +599,15 @@ HOST=0.0.0.0
 
   console.log(colors.bold("Next steps:"));
   console.log("");
+
+  // Show Docker commands if using Docker defaults
+  if (finalValues.databaseUrl.includes("localhost") || finalValues.postgresHost === "localhost") {
+    printCommand("Start PostgreSQL", "docker compose up postgres -d");
+  }
+  if (finalValues.redisUrl?.includes("localhost") || finalValues.redisHost === "localhost") {
+    printCommand("Start Redis", "docker compose up redis -d");
+  }
+  printCommand("Run migrations", "npm run db:migrate");
   printCommand("Connect WhatsApp", "nexthello connect");
   printCommand("Start server", "nexthello start");
   printCommand("View status", "nexthello status");

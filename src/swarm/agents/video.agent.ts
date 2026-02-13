@@ -1,7 +1,7 @@
 import { BaseAgent, type AgentConfig, registerAgentFactory } from "../base-agent.js";
 import { defineTool } from "../llm/tool-executor.js";
 import type { AgentContext, ToolDefinition, AgentType } from "../types.js";
-import { updateHeyGenVideo } from "../../contacts/supabase-repo.js";
+import { updateHeyGenVideo } from "../../contacts/index.js";
 
 /**
  * Video Agent Configuration
@@ -142,32 +142,48 @@ ${context.contact?.heygen_video_url ? `Video URL: ${context.contact.heygen_video
         }
 
         try {
+          // Build request body with optional webhook callback
+          const requestBody: Record<string, unknown> = {
+            video_inputs: [
+              {
+                character: {
+                  type: "avatar",
+                  avatar_id: heygen.avatarId,
+                  avatar_style: "normal",
+                },
+                voice: {
+                  type: "text",
+                  voice_id: heygen.voiceId,
+                  input_text: input.script as string,
+                },
+              },
+            ],
+            dimension: {
+              width: 1280,
+              height: 720,
+            },
+            callback_id: input.phoneNumber as string,
+          };
+
+          // Add webhook URL if configured - this is essential for automatic video delivery
+          // Use explicit webhookUrl from config, or construct from WEBHOOK_BASE_URL env var
+          const webhookUrl = heygen.webhookUrl ||
+            (process.env.WEBHOOK_BASE_URL ? `${process.env.WEBHOOK_BASE_URL}/webhooks/networking-event/heygen` : null);
+
+          if (webhookUrl) {
+            requestBody.callback_url = webhookUrl;
+            context.logger.debug({ webhookUrl }, "Webhook URL configured for video callback");
+          } else {
+            context.logger.warn("No webhook URL configured (set heygen.webhookUrl or WEBHOOK_BASE_URL) - video will not be sent automatically");
+          }
+
           const response = await fetch("https://api.heygen.com/v2/video/generate", {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
               "X-Api-Key": apiKey,
             },
-            body: JSON.stringify({
-              video_inputs: [
-                {
-                  character: {
-                    type: "avatar",
-                    avatar_id: heygen.avatarId,
-                  },
-                  voice: {
-                    type: "text",
-                    voice_id: heygen.voiceId,
-                    input_text: input.script as string,
-                  },
-                },
-              ],
-              dimension: {
-                width: 1280,
-                height: 720,
-              },
-              callback_id: input.phoneNumber as string,
-            }),
+            body: JSON.stringify(requestBody),
           });
 
           const data = await response.json() as { data?: { video_id: string }; error?: string };
@@ -179,11 +195,27 @@ ${context.contact?.heygen_video_url ? `Video URL: ${context.contact.heygen_video
             };
           }
 
+          const videoId = data.data?.video_id;
+
+          // Save video_id to contact record so webhook can find them when video is ready
+          if (videoId) {
+            await updateHeyGenVideo(
+              input.phoneNumber as string,
+              videoId,
+              null, // URL will be set by webhook when video is complete
+              context.config.supabase
+            );
+            context.logger.info(
+              { phoneNumber: input.phoneNumber, videoId },
+              "Video ID saved to contact - video will be sent automatically when ready"
+            );
+          }
+
           return {
             success: true,
-            videoId: data.data?.video_id,
+            videoId,
             status: "processing",
-            message: "Video generation started",
+            message: "Video generation started - will be sent automatically when ready",
           };
         } catch (error) {
           return {

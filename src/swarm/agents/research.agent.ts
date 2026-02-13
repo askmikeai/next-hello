@@ -2,7 +2,7 @@ import { BaseAgent, type AgentConfig, registerAgentFactory } from "../base-agent
 import { defineTool } from "../llm/tool-executor.js";
 import type { AgentContext, ToolDefinition, AgentType } from "../types.js";
 import { linkedinResearch } from "../../agent/tools/linkedin-research.js";
-import { updateContactByPhone } from "../../contacts/supabase-repo.js";
+import { updateContactByPhone } from "../../contacts/index.js";
 
 /**
  * Research Agent Configuration
@@ -187,10 +187,8 @@ Use the tools available to research this contact and update their record.`;
           await updateContactByPhone(
             input.phoneNumber as string,
             {
-              research_status: input.status as string,
-              research_data: input.researchData
-                ? JSON.stringify(input.researchData)
-                : undefined,
+              research_status: input.status as "pending" | "in_progress" | "complete" | "failed",
+              research_data: input.researchData as Record<string, unknown> | undefined,
             },
             context.config.supabase
           );

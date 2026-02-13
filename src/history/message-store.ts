@@ -1,5 +1,6 @@
-import { createClient, SupabaseClient } from "@supabase/supabase-js";
+import type { Sql } from "postgres";
 import type { Logger } from "pino";
+import { getDatabase, isDatabaseConfigured } from "../database/client.js";
 import { createLogger, logEvent, logError } from "../observability/logger.js";
 import type {
   ConversationMessage,
@@ -7,13 +8,11 @@ import type {
   Channel,
   ToolCall,
 } from "../swarm/types.js";
-import type { SupabaseConfig } from "../config/types.js";
 
 /**
  * Message store configuration
  */
 export interface MessageStoreConfig {
-  supabase?: SupabaseConfig;
   tableName?: string;
 }
 
@@ -54,27 +53,25 @@ export interface CreateMessageInput {
 const DEFAULT_TABLE = "message_history";
 
 /**
- * MessageStore - Persists conversation messages to Supabase
+ * MessageStore - Persists conversation messages to PostgreSQL
  */
 export class MessageStore {
-  private client: SupabaseClient | null = null;
+  private sql: Sql | null = null;
   private tableName: string;
   private logger: Logger;
   private configured: boolean = false;
 
   constructor(config?: MessageStoreConfig) {
-    this.tableName = config?.tableName || config?.supabase?.tableName || DEFAULT_TABLE;
+    this.tableName = config?.tableName || DEFAULT_TABLE;
     this.logger = createLogger({ component: "message-store" });
 
-    const supabaseUrl = config?.supabase?.url || process.env.SUPABASE_URL;
-    const supabaseKey = config?.supabase?.serviceRoleKey || process.env.SUPABASE_KEY;
+    this.sql = getDatabase();
+    this.configured = isDatabaseConfigured();
 
-    if (supabaseUrl && supabaseKey) {
-      this.client = createClient(supabaseUrl, supabaseKey);
-      this.configured = true;
+    if (this.configured) {
       logEvent(this.logger, "message_store_initialized", { tableName: this.tableName });
     } else {
-      this.logger.warn("Supabase not configured, message store will use in-memory fallback");
+      this.logger.warn("PostgreSQL not configured, message store will use in-memory fallback");
     }
   }
 
@@ -89,33 +86,40 @@ export class MessageStore {
    * Store a new message
    */
   async storeMessage(input: CreateMessageInput): Promise<ConversationMessage | null> {
-    if (!this.client) {
+    if (!this.sql) {
       this.logger.debug("Message store not configured, skipping storage");
       return this.createInMemoryMessage(input);
     }
 
     try {
-      const { data, error } = await this.client
-        .from(this.tableName)
-        .insert({
-          contact_id: input.contactId,
-          phone_number: input.phoneNumber,
-          correlation_id: input.correlationId,
-          direction: input.direction,
-          channel: input.channel,
-          content: input.content,
-          agent_id: input.agentId,
-          model_used: input.modelUsed,
-          tokens_used: input.tokensUsed,
-          tool_calls: input.toolCalls ? JSON.stringify(input.toolCalls) : null,
-        })
-        .select()
-        .single();
+      const rows = await this.sql<MessageRow[]>`
+        INSERT INTO ${this.sql(this.tableName)} (
+          contact_id,
+          phone_number,
+          correlation_id,
+          direction,
+          channel,
+          content,
+          agent_id,
+          model_used,
+          tokens_used,
+          tool_calls
+        ) VALUES (
+          ${input.contactId || null},
+          ${input.phoneNumber},
+          ${input.correlationId},
+          ${input.direction},
+          ${input.channel},
+          ${input.content},
+          ${input.agentId || null},
+          ${input.modelUsed || null},
+          ${input.tokensUsed || null},
+          ${input.toolCalls ? JSON.stringify(input.toolCalls) : null}
+        )
+        RETURNING *
+      `;
 
-      if (error) {
-        logError(this.logger, new Error(error.message), "Failed to store message");
-        return null;
-      }
+      const data = rows[0];
 
       logEvent(this.logger, "message_stored", {
         messageId: data.id,
@@ -123,7 +127,7 @@ export class MessageStore {
         phoneNumber: input.phoneNumber,
       });
 
-      return this.rowToMessage(data as MessageRow);
+      return this.rowToMessage(data);
     } catch (error) {
       logError(this.logger, error as Error, "Error storing message");
       return null;
@@ -187,7 +191,7 @@ export class MessageStore {
       order?: "asc" | "desc";
     }
   ): Promise<ConversationMessage[]> {
-    if (!this.client) {
+    if (!this.sql) {
       return [];
     }
 
@@ -196,19 +200,26 @@ export class MessageStore {
     const order = options?.order || "desc";
 
     try {
-      const { data, error } = await this.client
-        .from(this.tableName)
-        .select("*")
-        .eq("phone_number", phoneNumber)
-        .order("created_at", { ascending: order === "asc" })
-        .range(offset, offset + limit - 1);
-
-      if (error) {
-        logError(this.logger, new Error(error.message), "Failed to get messages");
-        return [];
+      let rows: MessageRow[];
+      if (order === "asc") {
+        rows = await this.sql<MessageRow[]>`
+          SELECT * FROM ${this.sql(this.tableName)}
+          WHERE phone_number = ${phoneNumber}
+          ORDER BY created_at ASC
+          LIMIT ${limit}
+          OFFSET ${offset}
+        `;
+      } else {
+        rows = await this.sql<MessageRow[]>`
+          SELECT * FROM ${this.sql(this.tableName)}
+          WHERE phone_number = ${phoneNumber}
+          ORDER BY created_at DESC
+          LIMIT ${limit}
+          OFFSET ${offset}
+        `;
       }
 
-      return (data as MessageRow[]).map(this.rowToMessage);
+      return rows.map((row) => this.rowToMessage(row));
     } catch (error) {
       logError(this.logger, error as Error, "Error getting messages");
       return [];
@@ -226,7 +237,7 @@ export class MessageStore {
       order?: "asc" | "desc";
     }
   ): Promise<ConversationMessage[]> {
-    if (!this.client) {
+    if (!this.sql) {
       return [];
     }
 
@@ -235,19 +246,26 @@ export class MessageStore {
     const order = options?.order || "desc";
 
     try {
-      const { data, error } = await this.client
-        .from(this.tableName)
-        .select("*")
-        .eq("contact_id", contactId)
-        .order("created_at", { ascending: order === "asc" })
-        .range(offset, offset + limit - 1);
-
-      if (error) {
-        logError(this.logger, new Error(error.message), "Failed to get messages by contact");
-        return [];
+      let rows: MessageRow[];
+      if (order === "asc") {
+        rows = await this.sql<MessageRow[]>`
+          SELECT * FROM ${this.sql(this.tableName)}
+          WHERE contact_id = ${contactId}
+          ORDER BY created_at ASC
+          LIMIT ${limit}
+          OFFSET ${offset}
+        `;
+      } else {
+        rows = await this.sql<MessageRow[]>`
+          SELECT * FROM ${this.sql(this.tableName)}
+          WHERE contact_id = ${contactId}
+          ORDER BY created_at DESC
+          LIMIT ${limit}
+          OFFSET ${offset}
+        `;
       }
 
-      return (data as MessageRow[]).map(this.rowToMessage);
+      return rows.map((row) => this.rowToMessage(row));
     } catch (error) {
       logError(this.logger, error as Error, "Error getting messages by contact");
       return [];
@@ -274,23 +292,18 @@ export class MessageStore {
    * Get messages by correlation ID
    */
   async getMessagesByCorrelation(correlationId: string): Promise<ConversationMessage[]> {
-    if (!this.client) {
+    if (!this.sql) {
       return [];
     }
 
     try {
-      const { data, error } = await this.client
-        .from(this.tableName)
-        .select("*")
-        .eq("correlation_id", correlationId)
-        .order("created_at", { ascending: true });
+      const rows = await this.sql<MessageRow[]>`
+        SELECT * FROM ${this.sql(this.tableName)}
+        WHERE correlation_id = ${correlationId}
+        ORDER BY created_at ASC
+      `;
 
-      if (error) {
-        logError(this.logger, new Error(error.message), "Failed to get messages by correlation");
-        return [];
-      }
-
-      return (data as MessageRow[]).map(this.rowToMessage);
+      return rows.map((row) => this.rowToMessage(row));
     } catch (error) {
       logError(this.logger, error as Error, "Error getting messages by correlation");
       return [];
@@ -301,22 +314,18 @@ export class MessageStore {
    * Count messages for a phone number
    */
   async countMessages(phoneNumber: string): Promise<number> {
-    if (!this.client) {
+    if (!this.sql) {
       return 0;
     }
 
     try {
-      const { count, error } = await this.client
-        .from(this.tableName)
-        .select("*", { count: "exact", head: true })
-        .eq("phone_number", phoneNumber);
+      const result = await this.sql<[{ count: string }]>`
+        SELECT COUNT(*) as count
+        FROM ${this.sql(this.tableName)}
+        WHERE phone_number = ${phoneNumber}
+      `;
 
-      if (error) {
-        logError(this.logger, new Error(error.message), "Failed to count messages");
-        return 0;
-      }
-
-      return count || 0;
+      return parseInt(result[0].count, 10) || 0;
     } catch (error) {
       logError(this.logger, error as Error, "Error counting messages");
       return 0;
@@ -330,45 +339,26 @@ export class MessageStore {
     phoneNumber: string,
     keepCount: number = 100
   ): Promise<number> {
-    if (!this.client) {
+    if (!this.sql) {
       return 0;
     }
 
     try {
-      // Get messages to keep
-      const { data: keepMessages } = await this.client
-        .from(this.tableName)
-        .select("id")
-        .eq("phone_number", phoneNumber)
-        .order("created_at", { ascending: false })
-        .limit(keepCount);
+      // Use the helper function we defined in the migration
+      const result = await this.sql<[{ cleanup_old_messages: number }]>`
+        SELECT cleanup_old_messages(${phoneNumber}, ${keepCount})
+      `;
 
-      if (!keepMessages || keepMessages.length === 0) {
-        return 0;
-      }
+      const deletedCount = result[0]?.cleanup_old_messages || 0;
 
-      const keepIds = keepMessages.map((m) => m.id);
-
-      // Delete messages not in keep list
-      const { count, error } = await this.client
-        .from(this.tableName)
-        .delete({ count: "exact" })
-        .eq("phone_number", phoneNumber)
-        .not("id", "in", `(${keepIds.join(",")})`);
-
-      if (error) {
-        logError(this.logger, new Error(error.message), "Failed to delete old messages");
-        return 0;
-      }
-
-      if (count && count > 0) {
+      if (deletedCount > 0) {
         logEvent(this.logger, "old_messages_deleted", {
           phoneNumber,
-          deletedCount: count,
+          deletedCount,
         });
       }
 
-      return count || 0;
+      return deletedCount;
     } catch (error) {
       logError(this.logger, error as Error, "Error deleting old messages");
       return 0;
@@ -409,7 +399,7 @@ export class MessageStore {
   }
 
   /**
-   * Create in-memory message (when Supabase not configured)
+   * Create in-memory message (when PostgreSQL not configured)
    */
   private createInMemoryMessage(input: CreateMessageInput): ConversationMessage {
     return {

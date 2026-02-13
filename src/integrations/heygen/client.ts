@@ -1,4 +1,5 @@
 import type { HeyGenConfig } from "../../config/types.js";
+import { recordIntegrationCall, startTimer } from "../../observability/metrics.js";
 
 const HEYGEN_API_BASE = "https://api.heygen.com/v2";
 const POLL_INTERVAL_MS = 5_000;
@@ -85,10 +86,18 @@ export async function generatePersonalizedVideo(
     };
 
     // Add webhook callback if configured
-    if (config.useWebhook && config.webhookUrl) {
-      requestBody.callback_url = config.webhookUrl;
+    // Use explicit webhookUrl from config, or construct from WEBHOOK_BASE_URL env var
+    const webhookUrl = config.webhookUrl ||
+      (process.env.WEBHOOK_BASE_URL ? `${process.env.WEBHOOK_BASE_URL}/webhooks/networking-event/heygen` : null);
+
+    if (config.useWebhook && webhookUrl) {
+      requestBody.callback_url = webhookUrl;
+      log(`Using webhook URL: ${webhookUrl}`);
+    } else if (config.useWebhook) {
+      log("Warning: useWebhook is true but no webhookUrl or WEBHOOK_BASE_URL configured");
     }
 
+    const endTimer = startTimer();
     const createResponse = await fetch(`${HEYGEN_API_BASE}/video/generate`, {
       method: "POST",
       headers: {
@@ -101,8 +110,10 @@ export async function generatePersonalizedVideo(
     if (!createResponse.ok) {
       const errorText = await createResponse.text();
       log(`Video creation failed: ${createResponse.status} - ${errorText}`);
+      recordIntegrationCall("heygen", "video_generate", "failure", endTimer());
       return { videoId: "", videoUrl: null, status: "failed", error: errorText };
     }
+    recordIntegrationCall("heygen", "video_generate", "success", endTimer());
 
     const createData = (await createResponse.json()) as {
       data?: { video_id?: string };
@@ -170,8 +181,10 @@ export async function getVideoStatus(
   }
 
   try {
+    const endTimer = startTimer();
+    // Note: video_status.get is a v1 endpoint, not v2
     const statusResponse = await fetch(
-      `${HEYGEN_API_BASE}/video_status.get?video_id=${videoId}`,
+      `https://api.heygen.com/v1/video_status.get?video_id=${videoId}`,
       {
         method: "GET",
         headers: { "X-Api-Key": key },
@@ -179,8 +192,10 @@ export async function getVideoStatus(
     );
 
     if (!statusResponse.ok) {
+      recordIntegrationCall("heygen", "video_status", "failure", endTimer());
       return { videoId, videoUrl: null, status: "failed", error: `Status check failed: ${statusResponse.status}` };
     }
+    recordIntegrationCall("heygen", "video_status", "success", endTimer());
 
     const statusData = (await statusResponse.json()) as {
       data?: { status?: string; video_url?: string; error?: string };

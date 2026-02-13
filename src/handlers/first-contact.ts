@@ -8,10 +8,13 @@ import {
   findContactByPhone,
   markMessageSent,
   updateContactByPhone,
-} from "../contacts/supabase-repo.js";
+} from "../contacts/index.js";
 import { generatePersonalizedVideo } from "../integrations/heygen/client.js";
 import { getSchedulingLink } from "../integrations/calendly/client.js";
 import { enrichContactWithLinkedIn } from "../integrations/linkedin/client.js";
+import { addJob } from "../queue/client.js";
+import { createCorrelationId } from "../observability/logger.js";
+import type { OutboundMessageJob } from "../swarm/types.js";
 
 export interface FirstContactParams {
   phoneNumber: string;
@@ -120,6 +123,7 @@ export async function handleFirstContact(
           event_met_at: config.eventName,
           date_met: new Date().toISOString().split("T")[0], // YYYY-MM-DD
           status: "active",
+          channel: channel,
         },
         supabaseConfig,
       );
@@ -204,13 +208,21 @@ async function generateAndSendHeyGenVideo(
       );
       log(`Saved HeyGen video for ${phoneNumber}: ${result.videoId}`);
 
-      // Send video to user if URL is available
+      // Queue video for sending (downloads and attaches instead of just URL)
       if (result.videoUrl) {
-        const videoMessage = `Here's a quick personalized video I made for you: ${result.videoUrl}`;
-        await sendMessage(videoMessage);
-        log(`Sent HeyGen video to ${phoneNumber}`);
+        const outboundJob: OutboundMessageJob = {
+          correlationId: createCorrelationId(),
+          phoneNumber,
+          channel: "whatsapp",
+          messageType: "video",
+          content: result.videoUrl,
+          caption: `Hey ${recipientName}! Look at this workflow - this video was created just for you by AI automation, or what I like to call a swarm of agents working on your behalf in the background. Let's connect so we can explore how AI can transform your business or personal life!`,
+          metadata: { videoId: result.videoId },
+        };
+        await addJob("outbound-messages", outboundJob);
+        log(`Queued HeyGen video for ${phoneNumber}: ${result.videoId}`);
       } else if (result.status === "pending" || result.status === "processing") {
-        log(`HeyGen video ${result.videoId} still processing, will need webhook to send`);
+        log(`HeyGen video ${result.videoId} still processing, poller will send when ready`);
       }
     }
   } catch (error) {

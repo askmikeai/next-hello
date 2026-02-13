@@ -6,7 +6,7 @@ import type {
 import {
   findContactByPhone,
   updateContactByPhone,
-} from "../contacts/supabase-repo.js";
+} from "../contacts/index.js";
 import {
   getMissingRequiredFields,
   needsChatbotInteraction,

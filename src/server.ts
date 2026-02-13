@@ -11,6 +11,7 @@ import { getHeyGenWebhookPath } from "./webhooks/heygen.js";
 import { sendJsonResponse, sendError, matchRoute, getWebhookRoutes } from "./webhooks/registry.js";
 import { safeParseConfig } from "./config/schema.js";
 import type { NetworkingEventConfig } from "./config/types.js";
+import { getMetrics, getMetricsContentType, recordHttpRequest, startTimer } from "./observability/metrics.js";
 import fs from "fs";
 import path from "path";
 
@@ -77,10 +78,23 @@ async function handleRequest(
 ): Promise<void> {
   const url = req.url ?? "/";
   const method = req.method ?? "GET";
+  const endTimer = startTimer();
+
+  // Normalize path for metrics (remove query string, normalize ids)
+  const pathForMetrics = url.split("?")[0].replace(/\/[0-9a-f-]{36}/g, "/:id");
 
   log(`${method} ${url}`);
 
   try {
+    // Prometheus metrics endpoint
+    if (url === "/metrics") {
+      const metrics = await getMetrics();
+      res.writeHead(200, { "Content-Type": getMetricsContentType() });
+      res.end(metrics);
+      recordHttpRequest(method, pathForMetrics, 200, endTimer());
+      return;
+    }
+
     // Health check
     if (url === "/health" || url === "/healthz") {
       sendJsonResponse(res, 200, {
@@ -88,12 +102,14 @@ async function handleRequest(
         timestamp: new Date().toISOString(),
         version: "1.0.0",
       });
+      recordHttpRequest(method, pathForMetrics, 200, endTimer());
       return;
     }
 
     // Ready check
     if (url === "/ready") {
       sendJsonResponse(res, 200, { ready: true });
+      recordHttpRequest(method, pathForMetrics, 200, endTimer());
       return;
     }
 
@@ -104,12 +120,14 @@ async function handleRequest(
         description: "AI-powered networking assistant",
         endpoints: {
           health: "/health",
+          metrics: "/metrics",
           webhooks: {
             calendly: getCalendlyWebhookPath(),
             heygen: getHeyGenWebhookPath(),
           },
         },
       });
+      recordHttpRequest(method, pathForMetrics, 200, endTimer());
       return;
     }
 
@@ -117,16 +135,19 @@ async function handleRequest(
     const route = matchRoute(url);
     if (route) {
       await route.handler(req, res, config);
+      recordHttpRequest(method, pathForMetrics, res.statusCode || 200, endTimer());
       return;
     }
 
     // 404
     sendError(res, 404, "Not found");
+    recordHttpRequest(method, pathForMetrics, 404, endTimer());
   } catch (error) {
     log(`Error handling request: ${error}`);
     if (!res.headersSent) {
       sendError(res, 500, "Internal server error");
     }
+    recordHttpRequest(method, pathForMetrics, 500, endTimer());
   }
 }
 
@@ -155,6 +176,7 @@ function startServer(): void {
     log("");
     log("  Endpoints:");
     log(`    Health:   http://${HOST}:${PORT}/health`);
+    log(`    Metrics:  http://${HOST}:${PORT}/metrics`);
     log(`    Calendly: http://${HOST}:${PORT}${getCalendlyWebhookPath()}`);
     log(`    HeyGen:   http://${HOST}:${PORT}${getHeyGenWebhookPath()}`);
     log("");

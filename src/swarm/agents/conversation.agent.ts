@@ -1,11 +1,13 @@
 import { BaseAgent, type AgentConfig, registerAgentFactory } from "../base-agent.js";
 import { defineTool } from "../llm/tool-executor.js";
-import type { AgentContext, ToolDefinition, ToolCall, AgentType } from "../types.js";
+import type { AgentContext, ToolDefinition, ToolCall, AgentType, OutboundMessageJob } from "../types.js";
 import { buildSystemPrompt, buildContactContext } from "../../agent/prompts.js";
 import { contactLookup } from "../../agent/tools/contact-lookup.js";
 import { contactUpdate } from "../../agent/tools/contact-update.js";
-import { findContactByPhone } from "../../contacts/supabase-repo.js";
+import { findContactByPhone, deleteContactByPhone } from "../../contacts/index.js";
 import { getMissingRequiredFields } from "../../contacts/state-machine.js";
+import { addJob } from "../../queue/client.js";
+import { createCorrelationId } from "../../observability/logger.js";
 
 /**
  * Conversation Agent Configuration
@@ -59,7 +61,20 @@ ${contactContext}
 Phone: ${context.phoneNumber || "Unknown"}
 Channel: ${context.channel || "whatsapp"}
 
-Respond naturally and helpfully. Use tools when needed to look up or update contact information.`;
+Respond naturally and helpfully. Use tools when needed to look up or update contact information.
+
+## Personalized Video
+If the contact asks for their video, wants to see the video, or you want to share their personalized video:
+1. Use the send_video tool with their phone number
+2. The video will be retrieved from the database and sent to them
+3. Let them know the video is on its way
+
+## Data Deletion Requests
+If someone asks to have their data deleted, removed, or forgotten (GDPR request):
+1. Acknowledge their request
+2. Use the delete_contact tool with their phone number and confirmDeletion=true
+3. Confirm the deletion was successful
+4. Let them know their data has been removed from our system`;
   }
 
   /**
@@ -110,6 +125,32 @@ Respond naturally and helpfully. Use tools when needed to look up or update cont
         "Get the Calendly scheduling link to share with the contact.",
         {},
         []
+      ),
+      defineTool(
+        "delete_contact",
+        "Delete a contact's data from the database. Use this when someone explicitly requests their data be deleted (GDPR/privacy request). Confirm with the user before deleting.",
+        {
+          phoneNumber: {
+            type: "string",
+            description: "Phone number of the contact to delete",
+          },
+          confirmDeletion: {
+            type: "boolean",
+            description: "Must be true to confirm deletion",
+          },
+        },
+        ["phoneNumber", "confirmDeletion"]
+      ),
+      defineTool(
+        "send_video",
+        "Send the personalized HeyGen video to the contact. Retrieves the video from the database and queues it for delivery. Use this when the contact asks for their video, wants to see the video, or when you want to share their personalized video.",
+        {
+          phoneNumber: {
+            type: "string",
+            description: "Phone number of the contact to send video to",
+          },
+        },
+        ["phoneNumber"]
       ),
     ];
   }
@@ -174,6 +215,96 @@ Respond naturally and helpfully. Use tools when needed to look up or update cont
           return { link: null, error: "Calendly not configured" };
         }
         return { link: calendlyLink };
+      }
+    );
+
+    // Delete contact (GDPR compliance)
+    this.toolExecutor.registerTool(
+      defineTool(
+        "delete_contact",
+        "Delete contact data",
+        {
+          phoneNumber: { type: "string" },
+          confirmDeletion: { type: "boolean" },
+        },
+        ["phoneNumber", "confirmDeletion"]
+      ),
+      async (input, context) => {
+        const phoneNumber = input.phoneNumber as string;
+        const confirmDeletion = input.confirmDeletion as boolean;
+
+        if (!confirmDeletion) {
+          return {
+            success: false,
+            error: "Deletion not confirmed. Set confirmDeletion to true to proceed.",
+          };
+        }
+
+        const result = await deleteContactByPhone(phoneNumber, context.config.supabase);
+
+        if (result.success) {
+          context.logger.info({ phoneNumber }, "Contact data deleted per user request");
+        }
+
+        return result;
+      }
+    );
+
+    // Send video to contact
+    this.toolExecutor.registerTool(
+      defineTool(
+        "send_video",
+        "Send personalized video",
+        {
+          phoneNumber: { type: "string" },
+        },
+        ["phoneNumber"]
+      ),
+      async (input, context) => {
+        const phoneNumber = input.phoneNumber as string;
+
+        // Look up the contact to get video info
+        const contact = await findContactByPhone(phoneNumber, context.config.supabase);
+
+        if (!contact) {
+          return {
+            success: false,
+            error: "Contact not found",
+          };
+        }
+
+        if (!contact.heygen_video_url) {
+          return {
+            success: false,
+            error: "No video available for this contact. Video may still be generating.",
+            hasVideoId: !!contact.heygen_video_id,
+          };
+        }
+
+        // Queue the video for sending
+        const firstName = contact.first_name || "there";
+        const outboundJob: OutboundMessageJob = {
+          correlationId: createCorrelationId(),
+          phoneNumber,
+          channel: context.channel || "whatsapp",
+          messageType: "video",
+          content: contact.heygen_video_url,
+          caption: `Hey ${firstName}, Wanna grab a coffee sometime to discuss more about making your life easier with AI?`,
+          metadata: { videoId: contact.heygen_video_id },
+        };
+
+        await addJob("outbound-messages", outboundJob);
+
+        context.logger.info(
+          { phoneNumber, videoId: contact.heygen_video_id },
+          "Video queued for sending"
+        );
+
+        return {
+          success: true,
+          message: "Video queued for delivery",
+          videoId: contact.heygen_video_id,
+        };
       }
     );
   }

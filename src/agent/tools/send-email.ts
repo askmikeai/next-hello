@@ -4,7 +4,7 @@ import {
   sendWelcomeEmail,
   isValidEmail,
 } from "../../integrations/email/client.js";
-import { findContactByPhone } from "../../contacts/supabase-repo.js";
+import { findContactByPhone } from "../../contacts/index.js";
 
 export interface SendEmailParams {
   phoneNumber?: string;

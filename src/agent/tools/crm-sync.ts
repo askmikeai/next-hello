@@ -3,7 +3,7 @@ import { createHubSpotProvider } from "../../integrations/crm/hubspot.js";
 import {
   findContactByPhone,
   updateCrmSync,
-} from "../../contacts/supabase-repo.js";
+} from "../../contacts/index.js";
 
 export interface CrmSyncParams {
   phoneNumber: string;

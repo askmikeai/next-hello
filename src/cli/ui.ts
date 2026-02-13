@@ -4,34 +4,46 @@
 
 import chalk from "chalk";
 
+// Miami Vice color palette
+const miami = {
+  pink: chalk.hex("#FF6EC7"),      // Hot pink
+  cyan: chalk.hex("#00FFFF"),      // Cyan/turquoise
+  orange: chalk.hex("#FF6B35"),    // Sunset orange
+  purple: chalk.hex("#9B5DE5"),    // Purple
+  yellow: chalk.hex("#FFD93D"),    // Sun yellow
+};
+
 export const colors = {
-  primary: chalk.cyan,
-  success: chalk.green,
-  warning: chalk.yellow,
+  primary: miami.pink,
+  success: miami.cyan,
+  warning: miami.orange,
   error: chalk.red,
   dim: chalk.dim,
   bold: chalk.bold,
 };
 
 export const symbols = {
-  check: chalk.green("✓"),
+  check: miami.cyan("✓"),
   cross: chalk.red("✗"),
-  arrow: chalk.cyan("→"),
+  arrow: miami.pink("→"),
   dot: chalk.dim("·"),
-  info: chalk.blue("ℹ"),
-  warning: chalk.yellow("⚠"),
+  info: miami.purple("ℹ"),
+  warning: miami.orange("⚠"),
 };
 
 export function printBanner(): void {
   console.log("");
   console.log(colors.primary(`
-  _   _           _   _   _      _ _
- | \\ | | _____  _| |_| | | | ___| | | ___
- |  \\| |/ _ \\ \\/ / __| |_| |/ _ \\ | |/ _ \\
- | |\\  |  __/>  <| |_|  _  |  __/ | | (_) |
- |_| \\_|\\___/_/\\_\\\\__|_| |_|\\___|_|_|\\___/
-`));
-  console.log(colors.warning("  AI-Powered Networking Assistant"));
+  _   _           _   _   _      _ _        `) + miami.cyan(`⣿⣿⣿⣿⣿⣿⣿⣿⠿⠿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿`));
+  console.log(colors.primary(` | \\ | | _____  _| |_| | | | ___| | | ___   `) + miami.cyan(`⣿⣿⣿⣿⣿⣿⠏⠀⠀⠀⠀⠙⠿⠿⠿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿`));
+  console.log(colors.primary(` |  \\| |/ _ \\ \\/ / __| |_| |/ _ \\ | |/ _ \\  `) + miami.cyan(`⣿⣿⣿⣿⣿⣿⡀⠀⣠⣴⣶⣿⣿⣿⣿⣶⣮⣝⠻⢿⣿⣿⣿⣿⣿`));
+  console.log(colors.primary(` | |\\  |  __/>  <| |_|  _  |  __/ | | (_) | `) + miami.cyan(`⣿⣿⣿⣿⣿⡟⣡⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦⡀⠀⠀⠙⢿`));
+  console.log(colors.primary(` |_| \\_|\\___/_/\\_\\\\__|_| |_|\\___|_|_|\\___/  `) + miami.cyan(`⣿⠿⣿⣿⡿⢰⣿⡿⠋⠉⠉⢻⣿⣿⣿⣿⣿⣿⣿⣿⣿⡄⠀⠀⣸`));
+  console.log(`                                            ` + miami.cyan(`⠁⠀⠀⠙⠃⢿⣿⡅⠀⠀⢀⣼⣿⣿⣿⣿⠟⠛⠻⣿⣿⣷⢀⣴⣿`));
+  console.log(miami.orange(`  NextHello`) + `                                 ` + miami.cyan(`⡀⠀⠀⠀⠀⠸⣿⣛⣳⣾⣿⢿⡍⢉⣻⡇⠰⠀⠀⣿⣿⣿⢸⣿⣿`));
+  console.log(miami.cyan(`  AI Networking Swarm`) + `                       ` + miami.cyan(`⣷⡀⠀⠀⠀⠀⠈⠻⢿⣿⣿⣷⣶⣬⣽⣿⣦⣤⣤⣟⣿⢇⣾⣿⣿`));
+  console.log(miami.yellow(`    🌴`) + miami.pink(` Made in Miami`) + `                         ` + miami.cyan(`⣿⣿⣄⠀⠀⠀⠀⠀⠀⠈⠙⠻⠿⣿⣿⣿⣿⣮⣿⠟⣡⣾⣿⣿⣿`));
+  console.log(`                                            ` + miami.cyan(`⣿⣿⣿⡇⢰⣶⣤⣤⣤⣀⣀⠀⠀⠀⠀⠀⠀⠀⠀⢻⣿⣿⣿⣿⣿`));
   console.log("");
 }
 

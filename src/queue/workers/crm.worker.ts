@@ -2,7 +2,7 @@ import type { Job, Worker } from "bullmq";
 import { createWorker, type JobProcessor } from "../client.js";
 import { createWorkerLogger, logError } from "../../observability/logger.js";
 import { crmSync } from "../../agent/tools/crm-sync.js";
-import { findContactByPhone } from "../../contacts/supabase-repo.js";
+import { findContactByPhone } from "../../contacts/index.js";
 import type { CrmSyncJob } from "../../swarm/types.js";
 import type { NetworkingEventConfig } from "../../config/types.js";
 
@@ -160,13 +160,14 @@ function buildContactNote(contact: {
 
 /**
  * Create the CRM worker
+ * Returns null if Redis is unavailable
  */
 export function createCrmWorker(
   config: NetworkingEventConfig,
   options?: {
     concurrency?: number;
   }
-): Worker<CrmSyncJob, CrmWorkerResult> {
+): Worker<CrmSyncJob, CrmWorkerResult> | null {
   const processor: JobProcessor<CrmSyncJob, CrmWorkerResult> = async (job) => {
     return processCrmSyncJob(job, config);
   };

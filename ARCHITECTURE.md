@@ -1,160 +1,214 @@
 # NextHello Architecture
 
-> AI-powered networking automation platform that converts event connections into booked meetings.
+> AI-powered networking swarm that converts event connections into booked meetings.
 
 ## System Overview
 
-**Architecture Type:** Multi-process, event-driven
-**Agent Model:** Rule-based (pattern matching, not LLM agent)
-**Processes:** 2 Docker containers
+**Architecture Type:** Multi-agent swarm with orchestrator pattern
+**Agent Model:** LLM-powered agents (Anthropic Claude) with tool use
+**Infrastructure:** Redis (state/queues), Supabase (persistence), BullMQ (job processing)
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        NEXTHELLO SYSTEM                          │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  ┌─────────────────────┐      ┌─────────────────────────────┐   │
-│  │  nexthello-whatsapp │      │      nexthello (HTTP)       │   │
-│  │    (Process 1)      │      │       (Process 2)           │   │
-│  ├─────────────────────┤      ├─────────────────────────────┤   │
-│  │ • WhatsApp Client   │      │ • Webhook Server (:3000)    │   │
-│  │ • Message Handlers  │      │ • Health Checks             │   │
-│  │ • HeyGen Trigger    │      │ • HeyGen Callbacks          │   │
-│  │ • Response Sender   │      │ • Calendly Callbacks        │   │
-│  └──────────┬──────────┘      └──────────────┬──────────────┘   │
-│             │                                 │                  │
-│             └────────────┬───────────────────┘                  │
-│                          │                                       │
-│                          ▼                                       │
-│              ┌───────────────────────┐                          │
-│              │      Supabase         │                          │
-│              │   (Shared Database)   │                          │
-│              └───────────────────────┘                          │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           NEXTHELLO SWARM                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│                       ┌─────────────────────┐                               │
+│                       │  SwarmOrchestrator  │                               │
+│                       │ (Central Coordinator)│                               │
+│                       └──────────┬──────────┘                               │
+│                                  │                                           │
+│         ┌────────────┬───────────┼───────────┬────────────┬────────────┐    │
+│         │            │           │           │            │            │    │
+│    ┌────▼────┐ ┌─────▼────┐ ┌────▼────┐ ┌────▼─────┐ ┌────▼───┐ ┌─────▼──┐ │
+│    │Conversa-│ │ Research │ │Qualifi- │ │Personal- │ │ Video  │ │  CRM   │ │
+│    │  tion   │ │  Agent   │ │ cation  │ │ ization  │ │ Agent  │ │ Agent  │ │
+│    │  Agent  │ │          │ │  Agent  │ │  Agent   │ │        │ │        │ │
+│    └────┬────┘ └────┬─────┘ └────┬────┘ └────┬─────┘ └────┬───┘ └────┬───┘ │
+│         │           │            │           │            │          │      │
+│         └───────────┴────────────┴───────────┴────────────┴──────────┘      │
+│                                  │                                           │
+│                                  ▼                                           │
+│    ┌──────────────────────────────────────────────────────────────────┐     │
+│    │                        Tool Executor                              │     │
+│    │  ┌──────────────┬──────────────┬──────────────┬───────────────┐  │     │
+│    │  │contact_lookup│contact_update│calendly_link │linkedin_research│ │     │
+│    │  ├──────────────┼──────────────┼──────────────┼───────────────┤  │     │
+│    │  │set_qualific- │get_engagement│update_research│    ...       │  │     │
+│    │  │   ation      │    _data     │   _status    │               │  │     │
+│    │  └──────────────┴──────────────┴──────────────┴───────────────┘  │     │
+│    └──────────────────────────────────────────────────────────────────┘     │
+│                                  │                                           │
+│         ┌────────────────────────┼────────────────────────┐                 │
+│         ▼                        ▼                        ▼                 │
+│    ┌─────────┐            ┌─────────────┐          ┌──────────┐            │
+│    │  Redis  │            │  Supabase   │          │  BullMQ  │            │
+│    │ (State) │            │ (Database)  │          │ (Queues) │            │
+│    └─────────┘            └─────────────┘          └──────────┘            │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Why Not an LLM Agent?
+## Agent Architecture
 
-NextHello uses **rule-based message handling** instead of an LLM agent because:
+### SwarmOrchestrator
 
-1. **Speed** - Pattern matching is instant, no API latency
-2. **Cost** - No per-message LLM costs
-3. **Predictability** - Deterministic responses
-4. **Simplicity** - Easier to debug and maintain
+The central coordinator that:
+- Routes incoming messages to appropriate agents
+- Manages swarm state in Redis
+- Handles agent-to-agent handoffs
+- Provides fallback to rule-based handling when AI fails
+- Tracks conversation turns and context
 
-The "AI" in NextHello is:
-- **HeyGen** - AI-generated personalized videos
-- **Pattern Matching** - Regex extraction for emails, companies, etc.
+### Specialized Agents
 
-## Process Architecture
+| Agent | Purpose | Tools |
+|-------|---------|-------|
+| **ConversationAgent** | Natural language dialog, field collection | `contact_lookup`, `contact_update`, `calendly_link` |
+| **ResearchAgent** | LinkedIn/company research, profile enrichment | `linkedin_research`, `update_research_status` |
+| **QualificationAgent** | Lead scoring (hot/warm/cold/unqualified) | `set_qualification`, `get_engagement_data` |
+| **PersonalizationAgent** | Dynamic content generation | Template tools |
+| **VideoAgent** | HeyGen video coordination | `generate_video`, `check_video_status` |
+| **CRMAgent** | HubSpot synchronization | `sync_to_crm`, `update_crm_status` |
 
-### Process 1: WhatsApp Client (`nexthello-whatsapp`)
+### Tool System
 
-```
-┌─────────────────────────────────────────────────────┐
-│              WhatsApp Client Process                 │
-├─────────────────────────────────────────────────────┤
-│                                                      │
-│  Baileys WebSocket ──→ Message Event                │
-│                              │                       │
-│                              ▼                       │
-│                    ┌─────────────────┐              │
-│                    │  Route Message  │              │
-│                    └────────┬────────┘              │
-│                             │                        │
-│              ┌──────────────┴──────────────┐        │
-│              ▼                              ▼        │
-│     ┌────────────────┐           ┌──────────────┐   │
-│     │ First Contact  │           │  Follow-Up   │   │
-│     │    Handler     │           │   Handler    │   │
-│     └───────┬────────┘           └──────┬───────┘   │
-│             │                           │            │
-│             ▼                           ▼            │
-│     • Create Contact            • Extract Fields    │
-│     • Trigger HeyGen            • Update Contact    │
-│     • Send Welcome              • Check Complete    │
-│     • Send Video (async)        • Send Response     │
-│                                                      │
-└─────────────────────────────────────────────────────┘
+Tools are registered with the `ToolExecutor` and exposed to agents via Claude's tool use:
+
+```typescript
+// Example tool definition
+registerTool(
+  "contact_lookup",
+  "Look up a contact by phone number",
+  { phoneNumber: { type: "string", description: "Phone number to look up" } },
+  async (input, context) => {
+    const contact = await findContactByPhone(input.phoneNumber, context.config.supabase);
+    return contact || { error: "Contact not found" };
+  }
+);
 ```
 
-### Process 2: HTTP Server (`nexthello`)
+## Infrastructure
 
-```
-┌─────────────────────────────────────────────────────┐
-│                HTTP Server Process                   │
-├─────────────────────────────────────────────────────┤
-│                                                      │
-│  Port 3000                                          │
-│                                                      │
-│  Routes:                                            │
-│  ├── GET  /health          → 200 OK                 │
-│  ├── GET  /                 → System info           │
-│  ├── POST /webhooks/heygen  → Video completion      │
-│  └── POST /webhooks/calendly→ Meeting booked        │
-│                                                      │
-└─────────────────────────────────────────────────────┘
-```
+### Job Queues (BullMQ + Redis)
+
+| Queue | Purpose | Priority |
+|-------|---------|----------|
+| `incoming-messages` | WhatsApp/Telegram messages | High |
+| `agent-tasks` | Agent-to-agent handoffs | Normal |
+| `research-jobs` | Background LinkedIn research | Low |
+| `video-generation` | Long-running HeyGen jobs | Low |
+| `crm-sync` | Background CRM synchronization | Low |
+| `lead-qualification` | Batch lead scoring | Low |
+
+### Resilience
+
+**Circuit Breakers** protect against cascading failures:
+- Per-integration breakers (Claude, HeyGen, LinkedIn, HubSpot, Supabase, Redis)
+- Configurable failure thresholds and recovery times
+- Automatic state transitions: Closed → Open → Half-Open → Closed
+
+**Retry Logic:**
+- Exponential backoff with jitter
+- Max 3 attempts per operation
+- Configurable per-queue retry policies
+
+### Observability
+
+**Structured Logging (Pino):**
+- Correlation IDs for request tracing
+- Automatic sensitive data redaction
+- JSON format in production, pretty-print in development
+
+**Metrics (Prometheus):**
+- Agent execution counts and durations
+- LLM token usage and latency
+- Queue depths and processing times
+- Circuit breaker states
+
+**Health Checks:**
+- `/health` endpoint with dependency status
+- Redis, Supabase, Claude API connectivity
 
 ## Data Flow
 
-### New Contact Message Flow
+### Incoming Message Flow
 
 ```
-Phone sends WhatsApp message
+WhatsApp Message
+       │
+       ▼
+┌──────────────────┐
+│  Message Queue   │
+│ (incoming-messages)
+└────────┬─────────┘
          │
          ▼
-┌─────────────────────────────────────────────────────┐
-│              WhatsApp Client Process                 │
-├─────────────────────────────────────────────────────┤
-│                                                      │
-│  1. Baileys receives message                        │
-│  2. Extract: phone, name, text                      │
-│  3. Check: is first contact?                        │
-│  4. YES → First Contact Handler:                    │
-│     a. Create contact in Supabase                   │
-│     b. Call HeyGen API (async)                      │
-│     c. Send welcome message                         │
-│     d. Wait for HeyGen (poll or webhook)            │
-│     e. Send video when ready                        │
-│                                                      │
-└─────────────────────────────────────────────────────┘
+┌──────────────────┐
+│ SwarmOrchestrator│
+│                  │
+│ 1. Load state    │
+│ 2. Analyze intent│
+│ 3. Route to agent│
+└────────┬─────────┘
          │
          ▼
-┌─────────────────────────────────────────────────────┐
-│                   Supabase                           │
-├─────────────────────────────────────────────────────┤
-│  Contact created:                                    │
-│  • phone_number: "17544220907"                      │
-│  • first_name: "Michael"                            │
-│  • status: "active"                                 │
-│  • sent_personalized_message: true                  │
-└─────────────────────────────────────────────────────┘
+┌──────────────────┐
+│ConversationAgent │
+│                  │
+│ 1. Build context │
+│ 2. Call Claude   │
+│ 3. Execute tools │
+│ 4. Return response│
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│  Send Response   │
+│  Update State    │
+│  Log Activity    │
+└──────────────────┘
 ```
 
-### Follow-Up Message Flow
+### Background Processing Flow
 
 ```
-Contact replies with email
+Contact Created/Updated
          │
          ▼
-┌─────────────────────────────────────────────────────┐
-│              WhatsApp Client Process                 │
-├─────────────────────────────────────────────────────┤
-│                                                      │
-│  1. Baileys receives message                        │
-│  2. Lookup contact by phone                         │
-│  3. Follow-Up Handler:                              │
-│     a. Extract fields via regex:                    │
-│        • Email: /[a-z0-9@.]+@[a-z]+\.[a-z]+/       │
-│        • Company: "I work at X"                     │
-│        • Title: "I'm a Y"                           │
-│     b. Update contact in Supabase                   │
-│     c. Check if all required fields collected       │
-│     d. Send appropriate response                    │
-│                                                      │
-└─────────────────────────────────────────────────────┘
+┌──────────────────┐     ┌──────────────────┐
+│  Research Queue  │────▶│  ResearchAgent   │
+└──────────────────┘     │                  │
+                         │ • LinkedIn lookup│
+                         │ • Company data   │
+                         │ • Update contact │
+                         └────────┬─────────┘
+                                  │
+                                  ▼
+                         ┌──────────────────┐
+                         │Qualification Queue│
+                         └────────┬─────────┘
+                                  │
+                                  ▼
+                         ┌──────────────────┐
+                         │QualificationAgent│
+                         │                  │
+                         │ • Score lead     │
+                         │ • Assign tier    │
+                         │ • Update contact │
+                         └────────┬─────────┘
+                                  │
+                                  ▼
+                         ┌──────────────────┐
+                         │   CRM Queue      │
+                         └────────┬─────────┘
+                                  │
+                                  ▼
+                         ┌──────────────────┐
+                         │    CRMAgent      │
+                         │                  │
+                         │ • Sync to HubSpot│
+                         └──────────────────┘
 ```
 
 ## Directory Structure
@@ -162,160 +216,160 @@ Contact replies with email
 ```
 nexthello/
 ├── src/
-│   ├── channels/whatsapp/      # WhatsApp client (Baileys)
-│   │   ├── client.ts           # WebSocket connection, message handling
-│   │   └── connect.ts          # CLI connect command
+│   ├── swarm/                      # AI Swarm System
+│   │   ├── orchestrator.ts         # Central coordinator
+│   │   ├── base-agent.ts           # Abstract agent class
+│   │   ├── index.ts                # Swarm exports
+│   │   ├── types.ts                # Type definitions
+│   │   ├── agents/
+│   │   │   ├── conversation.agent.ts
+│   │   │   ├── research.agent.ts
+│   │   │   ├── qualification.agent.ts
+│   │   │   ├── personalization.agent.ts
+│   │   │   ├── video.agent.ts
+│   │   │   └── crm.agent.ts
+│   │   ├── llm/
+│   │   │   ├── client.ts           # Anthropic SDK wrapper
+│   │   │   └── tool-executor.ts    # Tool registration & execution
+│   │   └── state/
+│   │       └── swarm-state.ts      # Redis state management
 │   │
-│   ├── handlers/               # Message routing logic
-│   │   ├── first-contact.ts    # New contact workflow
-│   │   └── follow-up.ts        # Conversation continuation
+│   ├── queue/                      # Job Processing
+│   │   ├── client.ts               # BullMQ/Redis setup
+│   │   └── workers/
+│   │       ├── message.worker.ts
+│   │       ├── research.worker.ts
+│   │       ├── video.worker.ts
+│   │       └── crm.worker.ts
 │   │
-│   ├── contacts/               # Data layer
-│   │   ├── supabase-repo.ts    # Database CRUD
-│   │   ├── state-machine.ts    # Contact workflow states
-│   │   └── field-validator.ts  # Email/company validation
+│   ├── history/                    # Conversation Context
+│   │   ├── message-store.ts        # Message persistence
+│   │   └── context-builder.ts      # Context window management
 │   │
-│   ├── integrations/           # External APIs
-│   │   ├── heygen/             # Video generation
-│   │   ├── calendly/           # Scheduling
-│   │   ├── linkedin/           # Profile enrichment
-│   │   └── crm/                # HubSpot sync
+│   ├── observability/              # Monitoring
+│   │   ├── logger.ts               # Pino structured logging
+│   │   ├── metrics.ts              # Prometheus metrics
+│   │   └── health.ts               # Health checks
 │   │
-│   ├── webhooks/               # Callback handlers
-│   │   ├── heygen.ts           # Video ready notifications
-│   │   └── calendly.ts         # Meeting booked notifications
+│   ├── resilience/                 # Fault Tolerance
+│   │   ├── circuit-breaker.ts      # Circuit breaker pattern
+│   │   ├── retry.ts                # Exponential backoff
+│   │   └── rate-limiter.ts         # Rate limiting
 │   │
-│   ├── cli/                    # Command-line interface
-│   │   └── commands/           # setup, connect, start
-│   │
-│   ├── config/                 # Configuration & types
-│   │   ├── types.ts            # TypeScript interfaces
-│   │   └── schema.ts           # Zod validation
-│   │
-│   └── server.ts               # HTTP server entry point
+│   ├── channels/whatsapp/          # WhatsApp Client
+│   ├── handlers/                   # Message Routing
+│   ├── contacts/                   # Contact Management
+│   ├── integrations/               # External APIs
+│   ├── webhooks/                   # Callback Handlers
+│   ├── cli/                        # CLI Interface
+│   ├── config/                     # Configuration
+│   └── server.ts                   # HTTP Server
 │
-├── nexthello.config.json       # Runtime config
-├── docker-compose.yml          # Container orchestration
-├── Dockerfile                  # Build instructions
-└── .env                        # Environment variables
+├── migrations/
+│   ├── 000_base_contacts.sql       # Contact table
+│   └── 001_swarm_tables.sql        # Swarm tables
+│
+├── docker-compose.yml              # Container orchestration
+└── .env                            # Environment variables
+```
+
+## Database Schema
+
+### Core Tables
+
+```sql
+-- Contact information
+CREATE TABLE networking_contacts (
+    id UUID PRIMARY KEY,
+    phone_number TEXT UNIQUE NOT NULL,
+    first_name TEXT,
+    last_name TEXT,
+    email TEXT,
+    company_name TEXT,
+    job_title TEXT,
+    linkedin_url TEXT,
+    status TEXT,
+    -- Swarm fields
+    qualification_score NUMERIC(5,2),
+    qualification_tier TEXT,  -- hot/warm/cold/unqualified
+    research_status TEXT,     -- pending/in_progress/complete/failed
+    research_data JSONB,
+    total_turns INTEGER,
+    swarm_metadata JSONB,
+    created_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ
+);
+
+-- Conversation history
+CREATE TABLE message_history (
+    id UUID PRIMARY KEY,
+    contact_id UUID REFERENCES networking_contacts(id),
+    phone_number TEXT NOT NULL,
+    correlation_id TEXT NOT NULL,
+    direction TEXT NOT NULL,  -- inbound/outbound
+    channel TEXT NOT NULL,    -- whatsapp/telegram/email
+    content TEXT NOT NULL,
+    agent_id TEXT,
+    model_used TEXT,
+    tokens_used INTEGER,
+    tool_calls JSONB,
+    created_at TIMESTAMPTZ
+);
+
+-- Agent activity tracking
+CREATE TABLE agent_activity_log (
+    id UUID PRIMARY KEY,
+    correlation_id TEXT NOT NULL,
+    contact_id UUID,
+    agent_type TEXT NOT NULL,
+    action TEXT NOT NULL,
+    started_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    duration_ms INTEGER,
+    status TEXT,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    error_message TEXT
+);
 ```
 
 ## Configuration
 
-### Environment Variables (`.env`)
+### Environment Variables
 
 ```bash
 # Database
 SUPABASE_URL=https://xxx.supabase.co
 SUPABASE_KEY=eyJ...
 
+# AI
+ANTHROPIC_API_KEY=sk-ant-...
+
+# Redis
+REDIS_HOST=localhost
+REDIS_PORT=6379
+
+# Swarm
+SWARM_ENABLED=true
+SWARM_ROLLOUT_PERCENTAGE=100
+
 # Integrations
 HEYGEN_API_KEY=sk_...
-OPENAI_API_KEY=sk-...
-
-# App
-NEXTHELLO_OWNER_NAME=Michael Friedberg
-NEXTHELLO_EVENT_NAME=Conference 2024
+HUBSPOT_API_KEY=pat-...
+# LINKEDIN_API_KEY=... (ProxyCurl shut down - needs alternative provider)
 ```
 
-### Runtime Config (`nexthello.config.json`)
+### Swarm Configuration
 
-```json
-{
-  "enabled": true,
-  "eventName": "Conference 2024",
-  "ownerName": "Michael Friedberg",
-  "requiredFields": ["email", "company_name", "job_title"],
-  
-  "heygen": {
-    "avatarId": "a47b8b54...",
-    "voiceId": "7d0a0fae...",
-    "scriptTemplate": "Hey {name}! Great meeting you..."
-  },
-  
-  "calendly": {
-    "schedulingLink": "https://calendly.com/..."
-  }
+```typescript
+interface SwarmConfig {
+  enabled: boolean;              // Enable AI swarm
+  rolloutPercentage: number;     // 0-100 gradual rollout
+  fallbackToRules: boolean;      // Fallback when AI fails
+  maxConversationTurns: number;  // Max turns before handoff
+  contextTokenBudget: number;    // Token limit for context
+  defaultModel: string;          // claude-sonnet-4-20250514
 }
-```
-
-## Contact State Machine
-
-```
-┌─────────┐
-│   new   │  Contact created, no message sent
-└────┬────┘
-     │ [welcome_sent]
-     ▼
-┌─────────┐
-│welcomed │  Welcome message sent, waiting for reply
-└────┬────┘
-     │ [needs_fields]
-     ▼
-┌──────────┐
-│collecting│  Gathering email, company, title
-└────┬─────┘
-     │ [all_fields]
-     ▼
-┌───────────────┐
-│fields_complete│  All required info collected
-└───────┬───────┘
-        │ [crm_sync]
-        ▼
-   ┌────────┐
-   │ synced │  Pushed to HubSpot
-   └────┬───┘
-        │ [meeting_booked]
-        ▼
-┌─────────────────┐
-│meeting_scheduled│  Calendly booking confirmed
-└────────┬────────┘
-         │
-         ▼
-    ┌──────────┐
-    │ complete │  Workflow finished
-    └──────────┘
-```
-
-## External Integrations
-
-| Service | Purpose | Trigger |
-|---------|---------|---------|
-| **Supabase** | Contact database | Every message |
-| **HeyGen** | AI video generation | First contact |
-| **Calendly** | Meeting scheduling | Link in welcome |
-| **HubSpot** | CRM sync | Fields complete |
-| **ProxyCurl** | LinkedIn data | After email collected |
-
-## Deployment
-
-### Docker Compose
-
-```yaml
-services:
-  nexthello:
-    image: nexthello:local
-    ports: ["3000:3000"]
-    command: ["node", "dist/src/server.js"]
-
-  whatsapp:
-    image: nexthello:local
-    command: ["nexthello", "connect", "whatsapp"]
-    volumes:
-      - nexthello-auth:/app/data/auth
-```
-
-### Commands
-
-```bash
-# Start everything
-docker compose --profile whatsapp up -d
-
-# View WhatsApp logs
-docker compose logs -f whatsapp
-
-# Rebuild after code changes
-docker compose --profile whatsapp up -d --build
 ```
 
 ## Technology Stack
@@ -324,17 +378,62 @@ docker compose --profile whatsapp up -d --build
 |-----------|-----------|
 | Runtime | Node.js 22 |
 | Language | TypeScript |
-| WhatsApp | @whiskeysockets/baileys |
+| LLM | Anthropic Claude (claude-sonnet-4-20250514) |
+| LLM SDK | @anthropic-ai/sdk |
+| Queue | BullMQ |
+| Cache/State | Redis (ioredis) |
 | Database | Supabase (PostgreSQL) |
-| Validation | Zod |
-| CLI | Commander.js |
+| Logging | Pino |
+| Metrics | prom-client |
+| Resilience | Cockatiel |
+| WhatsApp | @whiskeysockets/baileys |
 | Video | HeyGen API |
+| CRM | HubSpot API |
 | Container | Docker |
+
+## Deployment
+
+### Docker Compose
+
+```yaml
+services:
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+
+  nexthello:
+    build: .
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      - SWARM_ENABLED=true
+      - REDIS_HOST=redis
+    ports: ["3000:3000"]
+```
+
+### Commands
+
+```bash
+# Start with swarm enabled
+docker compose up -d
+
+# Run swarm test
+npx tsx src/swarm/test-swarm.ts
+
+# View logs
+docker compose logs -f nexthello
+
+# Check health
+curl http://localhost:3000/health
+```
 
 ## Key Design Decisions
 
-1. **Rule-based vs LLM Agent**: Pattern matching for speed and cost
-2. **Multi-process**: Separate WhatsApp client from HTTP server for stability
-3. **Async video generation**: Don't block welcome message on video creation
-4. **Typing simulation**: 5-10 second delay to feel human
-5. **Phone as primary key**: WhatsApp identity is phone number
+1. **Orchestrator Pattern**: Central coordinator routes to specialized agents rather than peer-to-peer
+2. **Tool-based Actions**: Agents use Claude's tool use for structured operations
+3. **Redis State**: Conversation state persisted in Redis for scalability
+4. **Async Processing**: Background queues for research, qualification, CRM sync
+5. **Graceful Degradation**: Automatic fallback to rule-based when AI fails
+6. **Circuit Breakers**: Per-integration protection against cascading failures
+7. **Correlation IDs**: Full request tracing across agents and services

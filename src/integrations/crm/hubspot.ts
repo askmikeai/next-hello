@@ -5,6 +5,7 @@ import type {
   CrmProvider,
 } from "./base.js";
 import { applyPropertyMappings, normalizePhoneForCrm, toCrmContactData } from "./base.js";
+import { recordIntegrationCall, startTimer } from "../../observability/metrics.js";
 
 const HUBSPOT_API_BASE = "https://api.hubapi.com";
 
@@ -55,6 +56,7 @@ export class HubSpotProvider implements CrmProvider {
       properties.phone = normalizePhoneForCrm(properties.phone);
     }
 
+    const endTimer = startTimer();
     try {
       const response = await fetch(`${HUBSPOT_API_BASE}/crm/v3/objects/contacts`, {
         method: "POST",
@@ -65,6 +67,7 @@ export class HubSpotProvider implements CrmProvider {
       if (!response.ok) {
         const error = await response.text();
         log(`Create contact failed: ${response.status} - ${error}`);
+        recordIntegrationCall("hubspot", "create_contact", "failure", endTimer());
 
         // Check for duplicate
         if (response.status === 409) {
@@ -83,11 +86,13 @@ export class HubSpotProvider implements CrmProvider {
 
       const result = (await response.json()) as { id?: string };
       log(`Contact created: ${result.id}`);
+      recordIntegrationCall("hubspot", "create_contact", "success", endTimer());
 
       return { success: true, contactId: result.id };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       log(`Error creating contact: ${message}`);
+      recordIntegrationCall("hubspot", "create_contact", "failure", endTimer());
       return { success: false, error: message };
     }
   }

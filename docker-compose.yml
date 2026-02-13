@@ -26,10 +26,13 @@
 
 # Common environment variables (inherited by all services)
 x-common-env: &common-env
-  # Database
-  SUPABASE_URL: ${SUPABASE_URL:-}
-  SUPABASE_KEY: ${SUPABASE_KEY:-}
-  SUPABASE_TABLE: ${SUPABASE_TABLE:-tech_founders_contacts}
+  # Database (PostgreSQL)
+  DATABASE_URL: ${DATABASE_URL:-postgresql://nexthello:nexthello_dev@postgres:5432/nexthello}
+  POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+  POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+  POSTGRES_DB: ${POSTGRES_DB:-nexthello}
+  POSTGRES_USER: ${POSTGRES_USER:-nexthello}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nexthello_dev}
   # AI
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -39,9 +42,9 @@ x-common-env: &common-env
   NEXTHELLO_CALENDLY_LINK: ${NEXTHELLO_CALENDLY_LINK:-}
   # Integrations
   HEYGEN_API_KEY: ${HEYGEN_API_KEY:-}
+  ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
   HUBSPOT_API_KEY: ${HUBSPOT_API_KEY:-}
   SENDGRID_API_KEY: ${SENDGRID_API_KEY:-}
-  PROXYCURL_API_KEY: ${PROXYCURL_API_KEY:-}
   CALENDLY_API_KEY: ${CALENDLY_API_KEY:-}
   # WhatsApp
   WHATSAPP_AUTH_DIR: /app/data/auth/whatsapp
@@ -52,6 +55,9 @@ x-common-env: &common-env
   # Swarm
   SWARM_ENABLED: ${SWARM_ENABLED:-false}
   SWARM_ROLLOUT_PERCENTAGE: ${SWARM_ROLLOUT_PERCENTAGE:-0}
+  # Logging
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  NODE_ENV: ${NODE_ENV:-development}
 
 services:
   # ──────────────────────────────────────────────────────────────────────────
@@ -87,10 +93,19 @@ services:
     container_name: nexthello-connect
     stdin_open: true
     tty: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     env_file:
       - .env
     environment:
       <<: *common-env
+      # Override for Docker networking
+      REDIS_HOST: redis
+      POSTGRES_HOST: postgres
+      DATABASE_URL: postgresql://${POSTGRES_USER:-nexthello}:${POSTGRES_PASSWORD:-nexthello_dev}@postgres:5432/${POSTGRES_DB:-nexthello}
     volumes:
       - nexthello-auth:/app/data/auth
       - ./nexthello.config.json:/app/nexthello.config.json:ro
@@ -121,6 +136,49 @@ services:
       - tools
 
   # ──────────────────────────────────────────────────────────────────────────
+  # POSTGRESQL - Primary database
+  # Usage: docker compose up postgres -d
+  # ──────────────────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: nexthello-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-nexthello}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nexthello_dev}
+      POSTGRES_DB: ${POSTGRES_DB:-nexthello}
+    volumes:
+      - nexthello-postgres:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nexthello -d nexthello"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # LIQUIBASE - Database migrations
+  # Usage: docker compose --profile migrations run --rm liquibase
+  # ──────────────────────────────────────────────────────────────────────────
+  liquibase:
+    image: liquibase/liquibase:4.25
+    container_name: nexthello-liquibase
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./migrations/liquibase:/liquibase/changelog
+    command: >
+      --url=jdbc:postgresql://postgres:5432/${POSTGRES_DB:-nexthello}
+      --username=${POSTGRES_USER:-nexthello}
+      --password=${POSTGRES_PASSWORD:-nexthello_dev}
+      --changelog-file=changelog.xml
+      update
+    profiles:
+      - migrations
+
+  # ──────────────────────────────────────────────────────────────────────────
   # REDIS - State management and job queues (for AI swarm)
   # Automatically starts with nexthello if swarm is enabled
   # ──────────────────────────────────────────────────────────────────────────
@@ -148,6 +206,8 @@ services:
     image: nexthello:local
     container_name: nexthello
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
     env_file:
@@ -156,6 +216,10 @@ services:
       <<: *common-env
       NODE_ENV: production
       PORT: 3000
+      # Override for Docker networking (env file may have localhost)
+      REDIS_HOST: redis
+      POSTGRES_HOST: postgres
+      DATABASE_URL: postgresql://${POSTGRES_USER:-nexthello}:${POSTGRES_PASSWORD:-nexthello_dev}@postgres:5432/${POSTGRES_DB:-nexthello}
 
     volumes:
       - nexthello-auth:/app/data/auth
@@ -181,27 +245,82 @@ services:
         max-file: "3"
 
   # ──────────────────────────────────────────────────────────────────────────
-  # WHATSAPP - Standalone WhatsApp listener (optional)
-  # Usage: docker compose up -d whatsapp
+  # WHATSAPP - WhatsApp connection handler
+  # This container maintains the WhatsApp connection and processes messages
+  # First-time setup: docker compose run --rm connect (to scan QR code)
+  # Metrics: http://localhost:3002/metrics
   # ──────────────────────────────────────────────────────────────────────────
   whatsapp:
     build: .
     image: nexthello:local
     container_name: nexthello-whatsapp
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     env_file:
       - .env
     environment:
       <<: *common-env
+      # Override for Docker networking
+      REDIS_HOST: redis
+      POSTGRES_HOST: postgres
+      DATABASE_URL: postgresql://${POSTGRES_USER:-nexthello}:${POSTGRES_PASSWORD:-nexthello_dev}@postgres:5432/${POSTGRES_DB:-nexthello}
+      METRICS_PORT: "3001"
 
     volumes:
       - nexthello-auth:/app/data/auth
       - ./nexthello.config.json:/app/nexthello.config.json:ro
 
+    ports:
+      - "3002:3001"
+
     entrypoint: ["node", "dist/src/channels/whatsapp/connect.js"]
     restart: unless-stopped
 
-    profiles:
-      - whatsapp
+  # ──────────────────────────────────────────────────────────────────────────
+  # PROMETHEUS - Metrics collection
+  # UI: http://localhost:9090
+  # ──────────────────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: nexthello-prometheus
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - nexthello-prometheus:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # GRAFANA - Metrics visualization
+  # UI: http://localhost:3001 (admin/admin)
+  # ──────────────────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.2.2
+    container_name: nexthello-grafana
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-http://localhost:3001}
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - nexthello-grafana:/var/lib/grafana
+    ports:
+      - "${GRAFANA_PORT:-3001}:3000"
+    restart: unless-stopped
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # VOLUMES
@@ -211,8 +330,14 @@ volumes:
     name: nexthello-auth
   nexthello-media:
     name: nexthello-media
+  nexthello-postgres:
+    name: nexthello-postgres
   nexthello-redis:
     name: nexthello-redis
+  nexthello-prometheus:
+    name: nexthello-prometheus
+  nexthello-grafana:
+    name: nexthello-grafana
 
 networks:
   default:

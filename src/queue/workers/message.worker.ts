@@ -4,7 +4,7 @@ import { createWorkerLogger, logQueueJob, logError } from "../../observability/l
 import { getOrchestrator } from "../../swarm/orchestrator.js";
 import { getMessageStore } from "../../history/message-store.js";
 import { getContextBuilder } from "../../history/context-builder.js";
-import { findContactByPhone } from "../../contacts/supabase-repo.js";
+import { findContactByPhone } from "../../contacts/index.js";
 import type { IncomingMessageJob, Channel } from "../../swarm/types.js";
 import type { NetworkingEventConfig } from "../../config/types.js";
 
@@ -113,13 +113,14 @@ async function processIncomingMessage(
 
 /**
  * Create the message worker
+ * Returns null if Redis is unavailable
  */
 export function createMessageWorker(
   config: NetworkingEventConfig,
   options?: {
     concurrency?: number;
   }
-): Worker<IncomingMessageJob, MessageWorkerResult> {
+): Worker<IncomingMessageJob, MessageWorkerResult> | null {
   const processor: JobProcessor<IncomingMessageJob, MessageWorkerResult> = async (job) => {
     return processIncomingMessage(job, config);
   };
@@ -140,6 +141,7 @@ export function createMessageWorker(
 /**
  * Message worker with send callback
  * This version accepts a callback for sending responses
+ * Returns null if Redis is unavailable
  */
 export function createMessageWorkerWithCallback(
   config: NetworkingEventConfig,
@@ -147,7 +149,7 @@ export function createMessageWorkerWithCallback(
   options?: {
     concurrency?: number;
   }
-): Worker<IncomingMessageJob, MessageWorkerResult> {
+): Worker<IncomingMessageJob, MessageWorkerResult> | null {
   const processor: JobProcessor<IncomingMessageJob, MessageWorkerResult> = async (job) => {
     const result = await processIncomingMessage(job, config);
 

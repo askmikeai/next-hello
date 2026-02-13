@@ -3,7 +3,7 @@ import {
   findContactByPhone,
   updateContactByPhone,
   updateContactStatus,
-} from "../../contacts/supabase-repo.js";
+} from "../../contacts/index.js";
 import { validateField } from "../../contacts/field-validator.js";
 import {
   determineNextStatus,

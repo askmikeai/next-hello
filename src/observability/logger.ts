@@ -1,4 +1,5 @@
-import pino, { type Logger, type LoggerOptions } from "pino";
+import { pino } from "pino";
+import type { Logger, LoggerOptions } from "pino";
 import { randomUUID } from "crypto";
 
 /**
@@ -45,11 +46,24 @@ const redactPaths = [
 ];
 
 /**
+ * Check if pino-pretty is available
+ */
+function hasPinoPretty(): boolean {
+  try {
+    require.resolve("pino-pretty");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Default logger configuration
  */
 function createLoggerConfig(): LoggerOptions {
   const isDevelopment = process.env.NODE_ENV !== "production";
   const level = (process.env.LOG_LEVEL as LogLevel) || (isDevelopment ? "debug" : "info");
+  const usePretty = isDevelopment && hasPinoPretty();
 
   return {
     level,
@@ -68,8 +82,8 @@ function createLoggerConfig(): LoggerOptions {
       }),
     },
     timestamp: pino.stdTimeFunctions.isoTime,
-    // Use pino-pretty in development for readable output
-    transport: isDevelopment
+    // Use pino-pretty in development if available
+    transport: usePretty
       ? {
           target: "pino-pretty",
           options: {

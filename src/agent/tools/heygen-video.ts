@@ -3,7 +3,7 @@ import {
   generatePersonalizedVideo,
   getVideoStatus,
 } from "../../integrations/heygen/client.js";
-import { updateHeyGenVideo } from "../../contacts/supabase-repo.js";
+import { updateHeyGenVideo } from "../../contacts/index.js";
 
 export interface HeyGenVideoParams {
   phoneNumber: string;

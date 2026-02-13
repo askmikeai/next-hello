@@ -3,7 +3,7 @@ import { createWorker, type JobProcessor } from "../client.js";
 import { createWorkerLogger, logError } from "../../observability/logger.js";
 import { createAgent } from "../../swarm/base-agent.js";
 import { createLogger } from "../../observability/logger.js";
-import { findContactByPhone, updateContactByPhone } from "../../contacts/supabase-repo.js";
+import { findContactByPhone, updateContactByPhone } from "../../contacts/index.js";
 import type { ResearchJob, AgentContext } from "../../swarm/types.js";
 import type { NetworkingEventConfig } from "../../config/types.js";
 
@@ -73,7 +73,7 @@ async function processResearchJob(
       companyName,
       firstName,
       lastName,
-      email: contact?.email,
+      email: contact?.email ?? undefined,
     });
 
     // Execute research
@@ -84,8 +84,8 @@ async function processResearchJob(
     await updateContactByPhone(
       phoneNumber,
       {
-        research_status: newStatus,
-        research_data: result.data ? JSON.stringify(result.data) : undefined,
+        research_status: newStatus as "pending" | "in_progress" | "complete" | "failed",
+        research_data: result.data ? result.data : undefined,
       },
       config.supabase
     );
@@ -168,7 +168,7 @@ export function createResearchWorker(
   options?: {
     concurrency?: number;
   }
-): Worker<ResearchJob, ResearchWorkerResult> {
+): Worker<ResearchJob, ResearchWorkerResult> | null {
   const processor: JobProcessor<ResearchJob, ResearchWorkerResult> = async (job) => {
     return processResearchJob(job, config);
   };

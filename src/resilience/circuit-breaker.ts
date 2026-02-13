@@ -1,14 +1,15 @@
 import {
-  CircuitBreakerPolicy,
+  circuitBreaker,
   ConsecutiveBreaker,
   ExponentialBackoff,
   handleAll,
   retry,
   wrap,
   type IPolicy,
+  CircuitState as CockatielCircuitState,
 } from "cockatiel";
 import type { Logger } from "pino";
-import { createLogger, logEvent, logError } from "../observability/logger.js";
+import { createLogger, logEvent } from "../observability/logger.js";
 import type { CircuitBreakerState } from "../swarm/types.js";
 
 /**
@@ -51,7 +52,6 @@ export class CircuitBreaker {
   private name: string;
   private config: Required<CircuitBreakerConfig>;
   private policy: IPolicy;
-  private breaker: ConsecutiveBreaker;
   private logger: Logger;
   private failures: number = 0;
   private successes: number = 0;
@@ -65,23 +65,20 @@ export class CircuitBreaker {
     this.logger = createLogger({ component: "circuit-breaker", breaker: name });
 
     // Create the circuit breaker
-    this.breaker = new ConsecutiveBreaker(this.config.failureThreshold);
+    const breaker = new ConsecutiveBreaker(this.config.failureThreshold);
 
     // Create circuit breaker policy
-    const circuitBreakerPolicy = new CircuitBreakerPolicy(
-      handleAll,
-      {
-        halfOpenAfter: this.config.halfOpenAfterMs,
-        breaker: this.breaker,
-      }
-    );
+    const circuitBreakerPolicy = circuitBreaker(handleAll, {
+      halfOpenAfter: this.config.halfOpenAfterMs,
+      breaker,
+    });
 
     // Subscribe to state changes
     circuitBreakerPolicy.onStateChange((state) => {
-      this.state = state as CircuitState;
+      this.state = state === CockatielCircuitState.Closed ? "closed" : state === CockatielCircuitState.Open ? "open" : "half-open";
       logEvent(this.logger, "circuit_state_changed", {
         breaker: this.name,
-        state,
+        state: this.state,
         failures: this.failures,
         successes: this.successes,
       });
@@ -90,10 +87,13 @@ export class CircuitBreaker {
     circuitBreakerPolicy.onFailure((failure) => {
       this.failures++;
       this.lastFailure = new Date();
+      const errorMsg = failure.reason && "error" in failure.reason
+        ? (failure.reason.error as Error).message
+        : "Unknown error";
       logEvent(this.logger, "circuit_failure", {
         breaker: this.name,
         failures: this.failures,
-        error: failure.reason?.message,
+        error: errorMsg,
       });
     });
 
@@ -240,8 +240,8 @@ export const circuitBreakers = {
     halfOpenAfterMs: 120000, // 2 minutes for video
   }),
 
-  /** ProxyCurl/LinkedIn circuit breaker */
-  proxycurl: () => getCircuitBreaker("proxycurl", {
+  /** LinkedIn data provider circuit breaker (ProxyCurl shut down) */
+  linkedin: () => getCircuitBreaker("linkedin", {
     failureThreshold: 3,
     halfOpenAfterMs: 60000,
   }),

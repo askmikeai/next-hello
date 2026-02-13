@@ -32,7 +32,8 @@ export type {
 
 // Contacts
 export {
-  getSupabaseClient,
+  getSupabaseClient, // Backwards compatibility alias
+  getDatabaseClient,
   findContactByPhone,
   findContactByEmail,
   findContactByCrmId,
@@ -47,7 +48,16 @@ export {
   getContactsByStatus,
   getContactsNeedingCrmSync,
   getContactsByEvent,
-} from "./contacts/supabase-repo.js";
+  getContactsWithPendingVideos,
+} from "./contacts/index.js";
+
+// Database
+export {
+  getDatabase,
+  isDatabaseConfigured,
+  checkDatabaseHealth,
+  closeDatabase,
+} from "./database/client.js";
 
 export {
   isValidTransition,

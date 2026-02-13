@@ -11,6 +11,7 @@ export type AgentType =
   | "qualification"
   | "personalization"
   | "video"
+  | "voice"
   | "crm";
 
 /**
@@ -225,9 +226,11 @@ export interface LLMRequest {
  */
 export type QueueName =
   | "incoming-messages"
+  | "outbound-messages"
   | "agent-tasks"
   | "research-jobs"
   | "video-generation"
+  | "voice-generation"
   | "crm-sync"
   | "lead-qualification";
 
@@ -240,6 +243,19 @@ export interface IncomingMessageJob {
   channel: Channel;
   message: string;
   timestamp: Date;
+}
+
+/**
+ * Queue job data for outbound messages (videos, follow-ups, etc.)
+ */
+export interface OutboundMessageJob {
+  correlationId: string;
+  phoneNumber: string;
+  channel: Channel;
+  messageType: "text" | "video" | "image" | "voice";
+  content: string; // Text message or URL for media
+  caption?: string; // Caption for video/image
+  metadata?: Record<string, unknown>;
 }
 
 /**
@@ -273,6 +289,18 @@ export interface VideoGenerationJob {
   firstName: string;
   scriptTemplate: string;
   variables: Record<string, string>;
+}
+
+/**
+ * Queue job data for voice message generation
+ */
+export interface VoiceGenerationJob {
+  correlationId: string;
+  contactId: string;
+  phoneNumber: string;
+  firstName: string;
+  scriptText: string;
+  variables?: Record<string, string>;
 }
 
 /**
@@ -311,6 +339,7 @@ export interface SwarmConfig {
     qualification?: { enabled?: boolean };
     personalization?: { enabled?: boolean };
     video?: { enabled?: boolean };
+    voice?: { enabled?: boolean };
     crm?: { enabled?: boolean };
   };
 }

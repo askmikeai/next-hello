@@ -25,7 +25,7 @@ export {
   createContact,
   updateContactByPhone,
   getContactsByStatus,
-} from "./src/contacts/supabase-repo.js";
+} from "./src/contacts/index.js";
 
 export {
   parseConfig,

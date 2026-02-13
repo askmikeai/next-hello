@@ -1,7 +1,7 @@
 import type { Job, Worker } from "bullmq";
 import { createWorker, type JobProcessor } from "../client.js";
 import { createWorkerLogger, logError } from "../../observability/logger.js";
-import { updateHeyGenVideo } from "../../contacts/supabase-repo.js";
+import { updateHeyGenVideo } from "../../contacts/index.js";
 import type { VideoGenerationJob } from "../../swarm/types.js";
 import type { NetworkingEventConfig } from "../../config/types.js";
 
@@ -273,7 +273,7 @@ export function createVideoWorker(
   options?: {
     concurrency?: number;
   }
-): Worker<VideoGenerationJob, VideoWorkerResult> {
+): Worker<VideoGenerationJob, VideoWorkerResult> | null {
   const processor: JobProcessor<VideoGenerationJob, VideoWorkerResult> = async (job) => {
     return processVideoJob(job, config);
   };

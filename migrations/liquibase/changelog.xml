@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+    xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.25.xsd">
+
+    <!-- Base contacts table -->
+    <include file="changesets/001-base-contacts.xml" relativeToChangelogFile="true"/>
+
+    <!-- Swarm architecture tables (message history, agent activity) -->
+    <include file="changesets/002-swarm-tables.xml" relativeToChangelogFile="true"/>
+
+</databaseChangeLog>

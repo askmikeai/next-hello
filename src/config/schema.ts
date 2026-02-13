@@ -23,7 +23,7 @@ export const calendlyConfigSchema = z.object({
 });
 
 export const linkedinConfigSchema = z.object({
-  provider: z.literal("proxycurl").optional().default("proxycurl"),
+  provider: z.literal("disabled").optional().default("disabled"),
   apiKey: z.string().optional(),
 });
 

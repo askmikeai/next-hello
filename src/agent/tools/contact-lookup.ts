@@ -2,7 +2,7 @@ import type { SupabaseConfig } from "../../config/types.js";
 import {
   findContactByEmail,
   findContactByPhone,
-} from "../../contacts/supabase-repo.js";
+} from "../../contacts/index.js";
 import { getMissingRequiredFields } from "../../contacts/state-machine.js";
 
 export interface ContactLookupParams {

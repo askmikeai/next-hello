@@ -14,6 +14,8 @@
 import { createWhatsAppClient } from "./client.js";
 import { safeParseConfig } from "../../config/schema.js";
 import type { NetworkingEventConfig } from "../../config/types.js";
+import { getMetrics, getMetricsContentType } from "../../observability/metrics.js";
+import { createServer } from "http";
 import fs from "fs";
 import path from "path";
 
@@ -85,6 +87,25 @@ async function main(): Promise<void> {
   log(`Event: ${config.eventName}`);
   log(`Owner: ${config.ownerName}`);
   console.log("");
+
+  // Start metrics server
+  const metricsPort = parseInt(process.env.METRICS_PORT ?? "3001", 10);
+  const metricsServer = createServer(async (req, res) => {
+    if (req.url === "/metrics") {
+      const metrics = await getMetrics();
+      res.writeHead(200, { "Content-Type": getMetricsContentType() });
+      res.end(metrics);
+    } else if (req.url === "/health") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: "ok", service: "whatsapp" }));
+    } else {
+      res.writeHead(404);
+      res.end("Not found");
+    }
+  });
+  metricsServer.listen(metricsPort, () => {
+    log(`Metrics server running on port ${metricsPort}`);
+  });
 
   try {
     const client = await createWhatsAppClient(config, {

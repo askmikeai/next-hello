@@ -319,15 +319,17 @@ export class SwarmOrchestrator {
     const redis = getRedisConnection();
     const key = `swarm:state:${phoneNumber}`;
 
-    try {
-      const existing = await redis.get(key);
-      if (existing) {
-        const state = JSON.parse(existing) as SwarmState;
-        state.lastActivityAt = new Date();
-        return state;
+    if (redis) {
+      try {
+        const existing = await redis.get(key);
+        if (existing) {
+          const state = JSON.parse(existing) as SwarmState;
+          state.lastActivityAt = new Date();
+          return state;
+        }
+      } catch (error) {
+        this.logger.warn({ error: (error as Error).message }, "Failed to load state from Redis");
       }
-    } catch (error) {
-      this.logger.warn({ error: (error as Error).message }, "Failed to load state from Redis");
     }
 
     // Create new state
@@ -377,10 +379,12 @@ export class SwarmOrchestrator {
       state.completedTasks = state.completedTasks.slice(-20);
     }
 
-    try {
-      await redis.setex(key, this.config.stateExpirySecs, JSON.stringify(state));
-    } catch (error) {
-      this.logger.warn({ error: (error as Error).message }, "Failed to save state to Redis");
+    if (redis) {
+      try {
+        await redis.setex(key, this.config.stateExpirySecs, JSON.stringify(state));
+      } catch (error) {
+        this.logger.warn({ error: (error as Error).message }, "Failed to save state to Redis");
+      }
     }
   }
 

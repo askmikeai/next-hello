@@ -1,7 +1,7 @@
 import { BaseAgent, type AgentConfig, registerAgentFactory } from "../base-agent.js";
 import { defineTool } from "../llm/tool-executor.js";
 import type { AgentContext, ToolDefinition, AgentType, QualificationTier } from "../types.js";
-import { updateContactByPhone } from "../../contacts/supabase-repo.js";
+import { updateContactByPhone } from "../../contacts/index.js";
 import type { NetworkingContact } from "../../config/types.js";
 
 /**
@@ -205,11 +205,11 @@ Analyze this contact and provide a qualification assessment.`;
             {
               qualification_score: score,
               qualification_tier: tier,
-              swarm_metadata: JSON.stringify({
+              swarm_metadata: {
                 qualificationFactors: input.factors,
                 qualificationNotes: input.notes,
                 qualifiedAt: new Date().toISOString(),
-              }),
+              } as Record<string, unknown>,
             },
             context.config.supabase
           );

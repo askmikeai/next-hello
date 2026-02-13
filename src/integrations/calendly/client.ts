@@ -1,5 +1,6 @@
 import type { CalendlyConfig } from "../../config/types.js";
 import crypto from "crypto";
+import { recordIntegrationCall, startTimer } from "../../observability/metrics.js";
 
 const CALENDLY_API_BASE = "https://api.calendly.com";
 
@@ -97,6 +98,7 @@ function getHeaders(): Record<string, string> {
  * Get current user info
  */
 export async function getCurrentUser(): Promise<CalendlyUser | null> {
+  const endTimer = startTimer();
   try {
     const response = await fetch(`${CALENDLY_API_BASE}/users/me`, {
       method: "GET",
@@ -105,6 +107,7 @@ export async function getCurrentUser(): Promise<CalendlyUser | null> {
 
     if (!response.ok) {
       log(`Failed to get current user: ${response.status}`);
+      recordIntegrationCall("calendly", "get_user", "failure", endTimer());
       return null;
     }
 
@@ -119,9 +122,11 @@ export async function getCurrentUser(): Promise<CalendlyUser | null> {
     };
 
     if (!data.resource) {
+      recordIntegrationCall("calendly", "get_user", "failure", endTimer());
       return null;
     }
 
+    recordIntegrationCall("calendly", "get_user", "success", endTimer());
     return {
       uri: data.resource.uri,
       name: data.resource.name,
@@ -131,6 +136,7 @@ export async function getCurrentUser(): Promise<CalendlyUser | null> {
     };
   } catch (error) {
     log(`Error getting user: ${error instanceof Error ? error.message : String(error)}`);
+    recordIntegrationCall("calendly", "get_user", "failure", endTimer());
     return null;
   }
 }

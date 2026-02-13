@@ -22,8 +22,14 @@
     "setup": "node dist/src/cli/index.js setup",
     "connect": "node dist/src/cli/index.js connect",
     "test": "vitest",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration",
+    "test:watch": "vitest watch",
+    "test:coverage": "vitest run --coverage",
     "lint": "eslint src/",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "db:migrate": "docker compose --profile migrations run --rm liquibase",
+    "db:status": "docker compose --profile migrations run --rm liquibase --changelog-file=changelog.xml status"
   },
   "keywords": [
     "networking",
@@ -43,7 +49,7 @@
   "license": "MIT",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.35.0",
-    "@supabase/supabase-js": "^2.39.0",
+    "postgres": "^3.4.0",
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "bullmq": "^5.0.0",
     "chalk": "^5.6.2",

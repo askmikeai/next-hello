@@ -4,7 +4,7 @@ import {
   findContactByEmail,
   updateCalendlyBooking,
   updateContactByPhone,
-} from "../contacts/supabase-repo.js";
+} from "../contacts/index.js";
 import {
   parseWebhookPayload,
   verifyWebhookSignature,

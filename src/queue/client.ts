@@ -1,9 +1,20 @@
 import { Queue, Worker, Job, QueueEvents, type ConnectionOptions } from "bullmq";
-import Redis from "ioredis";
+import { Redis, type Redis as RedisType } from "ioredis";
 import { createLogger, logQueueJob, logEvent } from "../observability/logger.js";
 import type { QueueName } from "../swarm/types.js";
+import { recordRedisOp, startTimer, redisConnectionState } from "../observability/metrics.js";
 
 const logger = createLogger({ component: "queue-client" });
+
+// Track if Redis is available
+let redisAvailable: boolean | null = null;
+
+/**
+ * Check if Redis is configured via environment variables
+ */
+export function isRedisConfigured(): boolean {
+  return !!(process.env.REDIS_HOST || process.env.REDIS_URL);
+}
 
 /**
  * Redis connection configuration
@@ -46,32 +57,56 @@ function toConnectionOptions(config: RedisConfig): ConnectionOptions {
 }
 
 // Singleton Redis connection
-let redisConnection: Redis | null = null;
+let redisConnection: RedisType | null = null;
 
 /**
  * Get or create the Redis connection
+ * Returns null if Redis is explicitly disabled or known to be unavailable
  */
-export function getRedisConnection(config?: RedisConfig): Redis {
+export function getRedisConnection(config?: RedisConfig): RedisType | null {
+  // If we already know Redis is unavailable, return null quickly
+  if (redisAvailable === false) {
+    return null;
+  }
+
   if (!redisConnection) {
     const redisConfig = config || getDefaultRedisConfig();
-    redisConnection = new Redis({
-      ...redisConfig,
+    const connection = new Redis({
+      host: redisConfig.host,
+      port: redisConfig.port,
+      password: redisConfig.password,
+      db: redisConfig.db,
+      tls: redisConfig.tls ? {} : undefined,
       lazyConnect: true,
       maxRetriesPerRequest: null,
       enableReadyCheck: false,
+      retryStrategy: (times: number) => {
+        if (times > 3) {
+          redisAvailable = false;
+          logger.warn("Redis unavailable after 3 retries, running without queues");
+          return null; // Stop retrying
+        }
+        return Math.min(times * 200, 2000);
+      },
     });
 
-    redisConnection.on("connect", () => {
+    connection.on("connect", () => {
+      redisAvailable = true;
+      redisConnectionState.set(1);
       logEvent(logger, "redis_connected", { host: redisConfig.host, port: redisConfig.port });
     });
 
-    redisConnection.on("error", (error) => {
+    connection.on("error", (error: Error) => {
+      redisConnectionState.set(0);
       logger.error({ error: error.message }, "Redis connection error");
     });
 
-    redisConnection.on("close", () => {
+    connection.on("close", () => {
+      redisConnectionState.set(0);
       logEvent(logger, "redis_disconnected");
     });
+
+    redisConnection = connection;
   }
 
   return redisConnection;
@@ -104,6 +139,14 @@ const queueDefaults: Record<QueueName, QueueOptions> = {
       removeOnFail: 5000,
     },
   },
+  "outbound-messages": {
+    defaultJobOptions: {
+      attempts: 3,
+      backoff: { type: "exponential", delay: 5000 },
+      removeOnComplete: 500,
+      removeOnFail: 2000,
+    },
+  },
   "agent-tasks": {
     defaultJobOptions: {
       attempts: 3,
@@ -124,6 +167,14 @@ const queueDefaults: Record<QueueName, QueueOptions> = {
     defaultJobOptions: {
       attempts: 2,
       backoff: { type: "fixed", delay: 10000 },
+      removeOnComplete: 50,
+      removeOnFail: 200,
+    },
+  },
+  "voice-generation": {
+    defaultJobOptions: {
+      attempts: 2,
+      backoff: { type: "fixed", delay: 5000 },
       removeOnComplete: 50,
       removeOnFail: 200,
     },
@@ -152,11 +203,17 @@ const queueEvents: Map<QueueName, QueueEvents> = new Map();
 
 /**
  * Get or create a queue
+ * Returns null if Redis is unavailable
  */
 export function getQueue<T = unknown>(
   name: QueueName,
   options?: QueueOptions
-): Queue<T> {
+): Queue<T> | null {
+  // Don't create queues if Redis is known to be unavailable
+  if (redisAvailable === false) {
+    return null;
+  }
+
   if (!queues.has(name)) {
     const connection = toConnectionOptions(getDefaultRedisConfig());
     const queueOptions = { ...queueDefaults[name], ...options };
@@ -175,8 +232,13 @@ export function getQueue<T = unknown>(
 
 /**
  * Get queue events for monitoring
+ * Returns null if Redis is unavailable
  */
-export function getQueueEvents(name: QueueName): QueueEvents {
+export function getQueueEvents(name: QueueName): QueueEvents | null {
+  if (redisAvailable === false) {
+    return null;
+  }
+
   if (!queueEvents.has(name)) {
     const connection = toConnectionOptions(getDefaultRedisConfig());
     const events = new QueueEvents(name, { connection });
@@ -205,12 +267,18 @@ export interface WorkerOptions {
 
 /**
  * Create a worker for a queue
+ * Returns null if Redis is unavailable
  */
 export function createWorker<T, R = void>(
   queueName: QueueName,
   processor: JobProcessor<T, R>,
   options: WorkerOptions = {}
-): Worker<T, R> {
+): Worker<T, R> | null {
+  if (redisAvailable === false) {
+    logger.warn({ queue: queueName }, "Cannot create worker - Redis unavailable");
+    return null;
+  }
+
   const connection = toConnectionOptions(getDefaultRedisConfig());
   const workerLogger = createLogger({ component: "worker", queue: queueName });
 
@@ -277,6 +345,7 @@ export function createWorker<T, R = void>(
 
 /**
  * Add a job to a queue
+ * Returns null if Redis/queues are unavailable
  */
 export async function addJob<T>(
   queueName: QueueName,
@@ -287,8 +356,13 @@ export async function addJob<T>(
     delay?: number;
     attempts?: number;
   }
-): Promise<Job<T>> {
+): Promise<Job<T> | null> {
   const queue = getQueue<T>(queueName);
+  if (!queue) {
+    logger.warn({ queue: queueName }, "Cannot add job - Redis unavailable");
+    return null;
+  }
+
   const jobOptions = {
     jobId: options?.jobId,
     priority: options?.priority,
@@ -296,7 +370,8 @@ export async function addJob<T>(
     attempts: options?.attempts,
   };
 
-  const job = await queue.add(queueName, data, jobOptions);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const job = await queue.add(queueName as any, data as any, jobOptions) as Job<T>;
 
   logEvent(logger, "job_added", {
     queue: queueName,
@@ -309,20 +384,25 @@ export async function addJob<T>(
 
 /**
  * Add multiple jobs to a queue in bulk
+ * Returns empty array if Redis/queues are unavailable
  */
 export async function addBulkJobs<T>(
   queueName: QueueName,
   jobs: Array<{ data: T; opts?: { jobId?: string; priority?: number; delay?: number } }>
 ): Promise<Job<T>[]> {
   const queue = getQueue<T>(queueName);
+  if (!queue) {
+    logger.warn({ queue: queueName, count: jobs.length }, "Cannot add bulk jobs - Redis unavailable");
+    return [];
+  }
 
   const bulkJobs = jobs.map((job) => ({
-    name: queueName,
+    name: queueName as string,
     data: job.data,
     opts: job.opts,
   }));
 
-  const addedJobs = await queue.addBulk(bulkJobs);
+  const addedJobs = await queue.addBulk(bulkJobs as Parameters<typeof queue.addBulk>[0]) as Job<T>[];
 
   logEvent(logger, "jobs_added_bulk", {
     queue: queueName,
@@ -334,6 +414,7 @@ export async function addBulkJobs<T>(
 
 /**
  * Get queue statistics
+ * Returns zeros if Redis/queues are unavailable
  */
 export async function getQueueStats(queueName: QueueName): Promise<{
   waiting: number;
@@ -343,6 +424,9 @@ export async function getQueueStats(queueName: QueueName): Promise<{
   delayed: number;
 }> {
   const queue = getQueue(queueName);
+  if (!queue) {
+    return { waiting: 0, active: 0, completed: 0, failed: 0, delayed: 0 };
+  }
 
   const [waiting, active, completed, failed, delayed] = await Promise.all([
     queue.getWaitingCount(),
@@ -360,6 +444,7 @@ export async function getQueueStats(queueName: QueueName): Promise<{
  */
 export async function pauseQueue(queueName: QueueName): Promise<void> {
   const queue = getQueue(queueName);
+  if (!queue) return;
   await queue.pause();
   logEvent(logger, "queue_paused", { queue: queueName });
 }
@@ -369,6 +454,7 @@ export async function pauseQueue(queueName: QueueName): Promise<void> {
  */
 export async function resumeQueue(queueName: QueueName): Promise<void> {
   const queue = getQueue(queueName);
+  if (!queue) return;
   await queue.resume();
   logEvent(logger, "queue_resumed", { queue: queueName });
 }
@@ -409,18 +495,68 @@ export async function checkRedisHealth(): Promise<{
   latencyMs: number;
   error?: string;
 }> {
+  const endTimer = startTimer();
   try {
     const redis = getRedisConnection();
-    const startTime = Date.now();
+    if (!redis) {
+      return {
+        connected: false,
+        latencyMs: -1,
+        error: "Redis not configured",
+      };
+    }
     await redis.ping();
-    const latencyMs = Date.now() - startTime;
+    const latencyMs = endTimer();
+    redisAvailable = true;
+    redisConnectionState.set(1);
+    recordRedisOp("ping", "success", latencyMs);
 
     return { connected: true, latencyMs };
   } catch (error) {
+    const latencyMs = endTimer();
+    redisAvailable = false;
+    redisConnectionState.set(0);
+    recordRedisOp("ping", "failure", latencyMs);
     return {
       connected: false,
       latencyMs: -1,
       error: error instanceof Error ? error.message : "Unknown error",
     };
+  }
+}
+
+/**
+ * Execute a timed Redis operation with metrics
+ */
+export async function timedRedisOp<T>(
+  operation: string,
+  fn: () => Promise<T>
+): Promise<T> {
+  const endTimer = startTimer();
+  try {
+    const result = await fn();
+    recordRedisOp(operation, "success", endTimer());
+    return result;
+  } catch (error) {
+    recordRedisOp(operation, "failure", endTimer());
+    throw error;
+  }
+}
+
+/**
+ * Check if Redis is available (cached result)
+ */
+export function isRedisAvailable(): boolean {
+  return redisAvailable === true;
+}
+
+/**
+ * Reset Redis availability state (for testing)
+ */
+export function resetRedisState(): void {
+  redisAvailable = null;
+  if (redisConnection) {
+    redisConnection.disconnect();
+    redisConnection = null;
   }
 }

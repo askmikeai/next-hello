@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { Logger } from "pino";
 import { logLLMInteraction, createLogger } from "../../observability/logger.js";
+import { recordLLMCall } from "../../observability/metrics.js";
 import type {
   LLMRequest,
   LLMResponse,
@@ -170,6 +171,15 @@ export class LLMClient {
         success: true,
       });
 
+      // Record metrics for Prometheus
+      recordLLMCall(
+        model,
+        "success",
+        durationMs,
+        response.usage.input_tokens,
+        response.usage.output_tokens
+      );
+
       return {
         id: response.id,
         content: textContent,
@@ -192,6 +202,9 @@ export class LLMClient {
         success: false,
         error: errorMessage,
       });
+
+      // Record failure metrics for Prometheus
+      recordLLMCall(model, "failure", durationMs, 0, 0);
 
       throw error;
     }

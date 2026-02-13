@@ -18,12 +18,45 @@ export type ContactStatus =
 
 export type SupportedChannel = "whatsapp" | "telegram";
 
+/**
+ * @deprecated Use DatabaseConfig instead
+ */
 export interface SupabaseConfig {
   /** Table name for contacts (default: "networking_contacts") */
   tableName?: string;
+  /** Supabase project URL */
+  url?: string;
+  /** Supabase service role key */
+  serviceRoleKey?: string;
+}
+
+/**
+ * PostgreSQL database configuration
+ */
+export interface DatabaseConfig {
+  /** Connection URL (takes precedence over individual options) */
+  url?: string;
+  /** PostgreSQL host */
+  host?: string;
+  /** PostgreSQL port */
+  port?: number;
+  /** Database name */
+  database?: string;
+  /** Username */
+  username?: string;
+  /** Password */
+  password?: string;
+  /** Table name for contacts (default: "networking_contacts") */
+  tableName?: string;
+  /** Maximum connections in pool */
+  maxConnections?: number;
+  /** Enable SSL */
+  ssl?: boolean | "require" | "prefer";
 }
 
 export interface HeyGenConfig {
+  /** HeyGen API key */
+  apiKey?: string;
   /** HeyGen avatar ID for video generation */
   avatarId?: string;
   /** HeyGen voice ID for video generation */
@@ -36,6 +69,25 @@ export interface HeyGenConfig {
   webhookUrl?: string;
 }
 
+export interface ElevenLabsConfig {
+  /** ElevenLabs API key (falls back to ELEVENLABS_API_KEY env) */
+  apiKey?: string;
+  /** Voice ID to use for TTS */
+  voiceId?: string;
+  /** Model ID (default: eleven_monolingual_v1) */
+  modelId?: string;
+  /** Script template for personalized voice messages */
+  scriptTemplate?: string;
+  /** Voice stability (0-1, default: 0.5) */
+  stability?: number;
+  /** Similarity boost (0-1, default: 0.75) */
+  similarityBoost?: number;
+  /** Style (0-1, default: 0) */
+  style?: number;
+  /** Use speaker boost (default: true) */
+  useSpeakerBoost?: boolean;
+}
+
 export interface CalendlyConfig {
   /** Calendly organization URI */
   organizationUri?: string;
@@ -46,9 +98,9 @@ export interface CalendlyConfig {
 }
 
 export interface LinkedInConfig {
-  /** Provider for LinkedIn research (currently only "proxycurl") */
-  provider?: "proxycurl";
-  /** ProxyCurl API key (falls back to PROXYCURL_API_KEY env) */
+  /** Provider for LinkedIn research (ProxyCurl shut down - needs alternative) */
+  provider?: "disabled";
+  /** API key for LinkedIn data provider */
   apiKey?: string;
 }
 
@@ -137,6 +189,7 @@ export interface SwarmConfig {
     qualification?: AgentToggleConfig;
     personalization?: AgentToggleConfig;
     video?: AgentToggleConfig;
+    voice?: AgentToggleConfig;
     crm?: AgentToggleConfig;
   };
 }
@@ -154,11 +207,17 @@ export interface NetworkingEventConfig {
   /** Required fields to collect (default: ["email", "company_name", "job_title"]) */
   requiredFields?: string[];
 
-  /** Supabase configuration */
+  /** Database configuration (PostgreSQL) */
+  database?: DatabaseConfig;
+
+  /** @deprecated Use database instead */
   supabase?: SupabaseConfig;
 
   /** HeyGen video generation configuration */
   heygen?: HeyGenConfig;
+
+  /** ElevenLabs voice message configuration */
+  elevenlabs?: ElevenLabsConfig;
 
   /** Calendly scheduling configuration */
   calendly?: CalendlyConfig;
@@ -184,7 +243,7 @@ export interface NetworkingEventConfig {
 
 /**
  * Contact record stored in Supabase
- * Matches tech_founders_contacts table schema
+ * Matches networking_contacts table schema
  */
 export interface NetworkingContact {
   id?: string; // UUID

@@ -2,7 +2,7 @@ import { BaseAgent, type AgentConfig, registerAgentFactory } from "../base-agent
 import { defineTool } from "../llm/tool-executor.js";
 import type { AgentContext, ToolDefinition, AgentType } from "../types.js";
 import { crmSync } from "../../agent/tools/crm-sync.js";
-import { findContactByPhone } from "../../contacts/supabase-repo.js";
+import { findContactByPhone } from "../../contacts/index.js";
 
 /**
  * CRM Agent Configuration
