@@ -182,7 +182,7 @@ export class ContextBuilder {
    * Estimate tokens for a message
    */
   private estimateMessageTokens(message: ConversationMessage): number {
-    let content = message.content;
+    let content = message.content || "";
 
     // Add overhead for role markers and formatting
     const overhead = 10; // ~10 tokens for role/formatting

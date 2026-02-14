@@ -1,5 +1,6 @@
 import type { Logger } from "pino";
 import { createAgentLogger, logAgentActivity } from "../observability/logger.js";
+import { getActivityStore } from "../observability/activity-store.js";
 import { LLMClient, getLLMClient } from "./llm/client.js";
 import { ToolExecutor, createToolExecutor } from "./llm/tool-executor.js";
 import type {
@@ -90,6 +91,15 @@ export abstract class BaseAgent {
       contactId: context.contact?.id,
     });
 
+    // Start activity tracking in database
+    const activityStore = getActivityStore();
+    const activityId = await activityStore.startActivity({
+      correlationId: context.correlationId,
+      contactId: context.contact?.id,
+      agentType: this.config.type,
+      action: "process",
+    });
+
     try {
       const result = await this.executeWithTools(context, input);
       const durationMs = Date.now() - startTime;
@@ -101,6 +111,16 @@ export abstract class BaseAgent {
         durationMs,
         contactId: context.contact?.id,
       });
+
+      // Complete activity in database
+      if (activityId) {
+        await activityStore.completeActivity(activityId, {
+          status: "completed",
+          durationMs,
+          inputTokens: result.tokensUsed?.input,
+          outputTokens: result.tokensUsed?.output,
+        });
+      }
 
       return result;
     } catch (error) {
@@ -115,6 +135,15 @@ export abstract class BaseAgent {
         contactId: context.contact?.id,
         error: errorMessage,
       });
+
+      // Complete activity in database with error
+      if (activityId) {
+        await activityStore.completeActivity(activityId, {
+          status: "failed",
+          durationMs,
+          errorMessage,
+        });
+      }
 
       return {
         success: false,
@@ -175,6 +204,8 @@ export abstract class BaseAgent {
     // Add conversation history if available
     if (context.messageHistory && context.messageHistory.length > 0) {
       for (const msg of context.messageHistory) {
+        // Skip messages without text content (media-only messages)
+        if (!msg.content) continue;
         messages.push({
           role: msg.direction === "inbound" ? "user" : "assistant",
           content: msg.content,
