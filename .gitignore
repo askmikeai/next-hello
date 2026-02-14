@@ -32,3 +32,6 @@ coverage/
 # Misc
 *.tgz
 .npm
+
+# Data directory (auth, media, sessions)
+data/
