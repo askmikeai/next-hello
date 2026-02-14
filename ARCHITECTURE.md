@@ -6,7 +6,7 @@
 
 **Architecture Type:** Multi-agent swarm with orchestrator pattern
 **Agent Model:** LLM-powered agents (Anthropic Claude) with tool use
-**Infrastructure:** Redis (state/queues), Supabase (persistence), BullMQ (job processing)
+**Infrastructure:** Redis (state/queues), PostgreSQL (persistence), BullMQ (job processing)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -21,9 +21,10 @@
 │         ┌────────────┬───────────┼───────────┬────────────┬────────────┐    │
 │         │            │           │           │            │            │    │
 │    ┌────▼────┐ ┌─────▼────┐ ┌────▼────┐ ┌────▼─────┐ ┌────▼───┐ ┌─────▼──┐ │
-│    │Conversa-│ │ Research │ │Qualifi- │ │Personal- │ │ Video  │ │  CRM   │ │
-│    │  tion   │ │  Agent   │ │ cation  │ │ ization  │ │ Agent  │ │ Agent  │ │
-│    │  Agent  │ │          │ │  Agent  │ │  Agent   │ │        │ │        │ │
+│    │Conversa-│ │ Research │ │Qualifi- │ │  Voice   │ │ Video  │ │  CRM   │ │
+│    │  tion   │ │  Agent   │ │ cation  │ │  Agent   │ │ Agent  │ │ Agent  │ │
+│    │  Agent  │ │          │ │  Agent  │ │(Eleven-  │ │(HeyGen)│ │(HubSpot│ │
+│    │         │ │(LinkedIn)│ │         │ │  Labs)   │ │        │ │        │ │
 │    └────┬────┘ └────┬─────┘ └────┬────┘ └────┬─────┘ └────┬───┘ └────┬───┘ │
 │         │           │            │           │            │          │      │
 │         └───────────┴────────────┴───────────┴────────────┴──────────┘      │
@@ -34,15 +35,14 @@
 │    │  ┌──────────────┬──────────────┬──────────────┬───────────────┐  │     │
 │    │  │contact_lookup│contact_update│calendly_link │linkedin_research│ │     │
 │    │  ├──────────────┼──────────────┼──────────────┼───────────────┤  │     │
-│    │  │set_qualific- │get_engagement│update_research│    ...       │  │     │
-│    │  │   ation      │    _data     │   _status    │               │  │     │
+│    │  │generate_voice│ send_video   │  sync_to_crm │ delete_contact│  │     │
 │    │  └──────────────┴──────────────┴──────────────┴───────────────┘  │     │
 │    └──────────────────────────────────────────────────────────────────┘     │
 │                                  │                                           │
 │         ┌────────────────────────┼────────────────────────┐                 │
 │         ▼                        ▼                        ▼                 │
 │    ┌─────────┐            ┌─────────────┐          ┌──────────┐            │
-│    │  Redis  │            │  Supabase   │          │  BullMQ  │            │
+│    │  Redis  │            │ PostgreSQL  │          │  BullMQ  │            │
 │    │ (State) │            │ (Database)  │          │ (Queues) │            │
 │    └─────────┘            └─────────────┘          └──────────┘            │
 │                                                                              │
@@ -62,14 +62,14 @@ The central coordinator that:
 
 ### Specialized Agents
 
-| Agent | Purpose | Tools |
-|-------|---------|-------|
-| **ConversationAgent** | Natural language dialog, field collection | `contact_lookup`, `contact_update`, `calendly_link` |
-| **ResearchAgent** | LinkedIn/company research, profile enrichment | `linkedin_research`, `update_research_status` |
-| **QualificationAgent** | Lead scoring (hot/warm/cold/unqualified) | `set_qualification`, `get_engagement_data` |
-| **PersonalizationAgent** | Dynamic content generation | Template tools |
-| **VideoAgent** | HeyGen video coordination | `generate_video`, `check_video_status` |
-| **CRMAgent** | HubSpot synchronization | `sync_to_crm`, `update_crm_status` |
+| Agent | Type | Purpose | Tools | Temperature |
+|-------|------|---------|-------|-------------|
+| **ConversationAgent** | conversation | Natural language dialog, field collection | `contact_lookup`, `contact_update`, `calendly_link`, `send_video` | 0.7 |
+| **ResearchAgent** | research | LinkedIn/company research, profile enrichment | `linkedin_research`, `update_research_status` | 0.3 |
+| **QualificationAgent** | qualification | Lead scoring (hot/warm/cold/unqualified) | `set_qualification`, `get_engagement_data` | 0.2 |
+| **VoiceAgent** | voice | ElevenLabs voice message generation | `generate_voice`, `send_voice` | 0.6 |
+| **VideoAgent** | video | HeyGen video coordination | `generate_video`, `check_video_status` | 0.5 |
+| **CRMAgent** | crm | HubSpot synchronization | `sync_to_crm`, `update_crm_status` | 0.3 |
 
 ### Tool System
 
@@ -98,13 +98,14 @@ registerTool(
 | `agent-tasks` | Agent-to-agent handoffs | Normal |
 | `research-jobs` | Background LinkedIn research | Low |
 | `video-generation` | Long-running HeyGen jobs | Low |
+| `voice-generation` | ElevenLabs voice message jobs | Low |
 | `crm-sync` | Background CRM synchronization | Low |
 | `lead-qualification` | Batch lead scoring | Low |
 
 ### Resilience
 
 **Circuit Breakers** protect against cascading failures:
-- Per-integration breakers (Claude, HeyGen, LinkedIn, HubSpot, Supabase, Redis)
+- Per-integration breakers (Claude, HeyGen, ElevenLabs, LinkedIn, HubSpot, PostgreSQL, Redis)
 - Configurable failure thresholds and recovery times
 - Automatic state transitions: Closed → Open → Half-Open → Closed
 
@@ -113,22 +114,55 @@ registerTool(
 - Max 3 attempts per operation
 - Configurable per-queue retry policies
 
-### Observability
+### Observability (Cross-Cutting Layer)
+
+The observability layer spans the entire system, providing visibility into all components.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         OBSERVABILITY LAYER                                  │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌───────────────┐   │
+│  │    Pino      │  │  Prometheus  │  │   Activity   │  │    Health     │   │
+│  │   Logging    │  │   Metrics    │  │    Store     │  │    Checks     │   │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘  └───────┬───────┘   │
+│         │                 │                 │                   │           │
+│         └─────────────────┴─────────────────┴───────────────────┘           │
+│                                     │                                        │
+│    Spans: Agents | Queues | LLM | Database | Redis | Integrations | HTTP    │
+└─────────────────────────────────────┴───────────────────────────────────────┘
+```
 
 **Structured Logging (Pino):**
-- Correlation IDs for request tracing
-- Automatic sensitive data redaction
-- JSON format in production, pretty-print in development
+- Correlation IDs for end-to-end request tracing
+- Child loggers for agents, workers, requests
+- Automatic sensitive data redaction (passwords, tokens, API keys)
+- Structured event logging (`logEvent`, `logError`, `logLLMInteraction`, `logAgentActivity`, `logQueueJob`)
+- JSON format in production, pino-pretty in development
 
 **Metrics (Prometheus):**
-- Agent execution counts and durations
-- LLM token usage and latency
-- Queue depths and processing times
-- Circuit breaker states
 
-**Health Checks:**
-- `/health` endpoint with dependency status
-- Redis, Supabase, Claude API connectivity
+| Category | Metrics |
+|----------|---------|
+| **Agent** | `nexthello_agent_executions_total`, `nexthello_agent_execution_duration_seconds`, `nexthello_active_agents` |
+| **LLM** | `nexthello_llm_calls_total`, `nexthello_llm_call_duration_seconds`, `nexthello_tokens_used_total`, `nexthello_llm_cost_usd_total` |
+| **Queue** | `nexthello_queue_depth`, `nexthello_queue_active_jobs`, `nexthello_jobs_processed_total`, `nexthello_job_processing_duration_seconds` |
+| **Message** | `nexthello_messages_received_total`, `nexthello_messages_sent_total`, `nexthello_message_processing_duration_seconds` |
+| **Contact** | `nexthello_contacts_by_status`, `nexthello_contacts_by_qualification`, `nexthello_contacts_created_total` |
+| **Database** | `nexthello_db_queries_total`, `nexthello_db_query_duration_seconds`, `nexthello_db_connection_pool` |
+| **Redis** | `nexthello_redis_ops_total`, `nexthello_redis_op_duration_seconds`, `nexthello_redis_connected` |
+| **HTTP** | `nexthello_http_requests_total`, `nexthello_http_request_duration_seconds` |
+| **Integration** | `nexthello_integration_calls_total`, `nexthello_integration_call_duration_seconds`, `nexthello_circuit_breaker_state` |
+
+**Activity Store (PostgreSQL):**
+- Persists all agent activity to `agent_activity_log` table
+- Tracks: agent type, action, duration, tokens used, errors
+- Query by correlation ID or agent type
+- Enables debugging and analytics
+
+**Health Checks (`/health`):**
+- Dependency status (Redis, PostgreSQL, Claude API)
+- Returns: `healthy`, `degraded`, or `unhealthy`
+- Latency measurements per dependency
 
 ## Data Flow
 
@@ -225,7 +259,7 @@ nexthello/
 │   │   │   ├── conversation.agent.ts
 │   │   │   ├── research.agent.ts
 │   │   │   ├── qualification.agent.ts
-│   │   │   ├── personalization.agent.ts
+│   │   │   ├── voice.agent.ts      # ElevenLabs voice messages
 │   │   │   ├── video.agent.ts
 │   │   │   └── crm.agent.ts
 │   │   ├── llm/
@@ -234,41 +268,58 @@ nexthello/
 │   │   └── state/
 │   │       └── swarm-state.ts      # Redis state management
 │   │
-│   ├── queue/                      # Job Processing
-│   │   ├── client.ts               # BullMQ/Redis setup
-│   │   └── workers/
-│   │       ├── message.worker.ts
-│   │       ├── research.worker.ts
-│   │       ├── video.worker.ts
-│   │       └── crm.worker.ts
+│   ├── queue/                      # Job Queue Management
+│   │   └── client.ts               # BullMQ/Redis setup
+│   │
+│   ├── workers/                    # Background Job Processors
+│   │   ├── message.worker.ts       # Incoming message processing
+│   │   ├── research.worker.ts      # LinkedIn research jobs
+│   │   ├── video.worker.ts         # HeyGen video generation
+│   │   ├── video-poller.ts         # Video completion polling
+│   │   └── crm.worker.ts           # CRM sync jobs
 │   │
 │   ├── history/                    # Conversation Context
-│   │   ├── message-store.ts        # Message persistence
+│   │   ├── message-store.ts        # Message persistence (PostgreSQL)
 │   │   └── context-builder.ts      # Context window management
 │   │
 │   ├── observability/              # Monitoring
 │   │   ├── logger.ts               # Pino structured logging
 │   │   ├── metrics.ts              # Prometheus metrics
-│   │   └── health.ts               # Health checks
+│   │   ├── health.ts               # Health checks
+│   │   └── activity-store.ts       # Agent activity logging
 │   │
 │   ├── resilience/                 # Fault Tolerance
 │   │   ├── circuit-breaker.ts      # Circuit breaker pattern
 │   │   ├── retry.ts                # Exponential backoff
 │   │   └── rate-limiter.ts         # Rate limiting
 │   │
-│   ├── channels/whatsapp/          # WhatsApp Client
+│   ├── channels/whatsapp/          # WhatsApp Client (Baileys)
 │   ├── handlers/                   # Message Routing
 │   ├── contacts/                   # Contact Management
+│   ├── database/                   # PostgreSQL client
+│   ├── storage/                    # S3/file storage (FlyDrive)
 │   ├── integrations/               # External APIs
+│   │   ├── heygen/                 # Video generation
+│   │   ├── elevenlabs/             # Voice message TTS
+│   │   ├── calendly/               # Scheduling
+│   │   ├── linkedin/               # Profile research (ProxyCurl)
+│   │   ├── crm/                    # HubSpot integration
+│   │   └── email/                  # SendGrid email
 │   ├── webhooks/                   # Callback Handlers
 │   ├── cli/                        # CLI Interface
-│   ├── config/                     # Configuration
+│   ├── config/                     # Configuration (Zod validation)
+│   ├── tests/                      # Test files
 │   └── server.ts                   # HTTP Server
 │
-├── migrations/
-│   ├── 000_base_contacts.sql       # Contact table
-│   └── 001_swarm_tables.sql        # Swarm tables
+├── migrations/liquibase/           # Database Migrations
+│   ├── changelog.xml               # Liquibase changelog
+│   ├── changesets/                 # Changeset files
+│   │   └── 003-message-types.xml
+│   └── sql/
+│       ├── 001_swarm_tables.sql    # Swarm tables
+│       └── 002_message_types.sql   # Message types
 │
+├── monitoring/                     # Grafana & Prometheus configs
 ├── docker-compose.yml              # Container orchestration
 └── .env                            # Environment variables
 ```
@@ -338,9 +389,14 @@ CREATE TABLE agent_activity_log (
 ### Environment Variables
 
 ```bash
-# Database
-SUPABASE_URL=https://xxx.supabase.co
-SUPABASE_KEY=eyJ...
+# Database (PostgreSQL)
+DATABASE_URL=postgres://user:pass@localhost:5432/nexthello
+# OR individual params:
+PGHOST=localhost
+PGPORT=5432
+PGUSER=nexthello
+PGPASSWORD=...
+PGDATABASE=nexthello
 
 # AI
 ANTHROPIC_API_KEY=sk-ant-...
@@ -348,6 +404,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 # Redis
 REDIS_HOST=localhost
 REDIS_PORT=6379
+REDIS_PASSWORD=...
 
 # Swarm
 SWARM_ENABLED=true
@@ -355,8 +412,10 @@ SWARM_ROLLOUT_PERCENTAGE=100
 
 # Integrations
 HEYGEN_API_KEY=sk_...
+ELEVENLABS_API_KEY=...
 HUBSPOT_API_KEY=pat-...
-# LINKEDIN_API_KEY=... (ProxyCurl shut down - needs alternative provider)
+PROXYCURL_API_KEY=...  # LinkedIn research
+SENDGRID_API_KEY=...   # Email sending
 ```
 
 ### Swarm Configuration
@@ -382,34 +441,69 @@ interface SwarmConfig {
 | LLM SDK | @anthropic-ai/sdk |
 | Queue | BullMQ |
 | Cache/State | Redis (ioredis) |
-| Database | Supabase (PostgreSQL) |
+| Database | PostgreSQL (postgres library) |
+| Migrations | Liquibase |
 | Logging | Pino |
 | Metrics | prom-client |
 | Resilience | Cockatiel |
 | WhatsApp | @whiskeysockets/baileys |
 | Video | HeyGen API |
+| Voice/TTS | ElevenLabs API |
+| Scheduling | Calendly API |
+| LinkedIn | ProxyCurl API |
 | CRM | HubSpot API |
+| Email | SendGrid API |
+| Storage | FlyDrive + AWS S3 |
 | Container | Docker |
 
 ## Deployment
+
+### Docker Compose Services
+
+| Service | Purpose |
+|---------|---------|
+| **nexthello** | Main application server (Node.js) |
+| **postgres** | PostgreSQL database |
+| **redis** | Redis cache/queues |
+| **liquibase** | Database migrations |
+| **grafana** | Metrics dashboard |
+| **prometheus** | Metrics collection |
+| **setup** | Interactive configuration |
+| **connect** | WhatsApp QR code scanner |
+
+### Volumes
+
+- `nexthello-auth` - WhatsApp credentials
+- `postgres-data` - Database files
+- `redis-data` - Queue persistence
 
 ### Docker Compose
 
 ```yaml
 services:
+  postgres:
+    image: postgres:16-alpine
+    ports: ["5432:5432"]
+    volumes: ["postgres-data:/var/lib/postgresql/data"]
+
   redis:
     image: redis:7-alpine
     ports: ["6379:6379"]
+    volumes: ["redis-data:/data"]
 
   nexthello:
     build: .
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
     environment:
       - SWARM_ENABLED=true
       - REDIS_HOST=redis
+      - PGHOST=postgres
     ports: ["3000:3000"]
+    volumes: ["nexthello-auth:/app/data/auth"]
 ```
 
 ### Commands
