@@ -150,6 +150,42 @@ export interface RedisConfig {
 }
 
 /**
+ * Storage configuration for media files
+ */
+export interface StorageConfig {
+  /** Storage backend type (default: local) */
+  backend?: "local" | "s3" | "r2";
+
+  /** Local filesystem configuration */
+  local?: {
+    /** Base path for media storage (default: ./data/media) */
+    basePath?: string;
+  };
+
+  /** S3/R2 configuration */
+  s3?: {
+    /** S3 bucket name */
+    bucket?: string;
+    /** AWS region */
+    region?: string;
+    /** Custom endpoint (for R2/MinIO) */
+    endpoint?: string;
+    /** Force path style (for non-AWS S3) */
+    forcePathStyle?: boolean;
+  };
+
+  /** Retention policy settings */
+  retention?: {
+    /** Default retention days (default: 90) */
+    defaultDays?: number;
+    /** Enable automatic cleanup (default: true) */
+    autoCleanup?: boolean;
+    /** Cleanup interval in minutes (default: 60) */
+    cleanupIntervalMinutes?: number;
+  };
+}
+
+/**
  * Individual agent toggle configuration
  */
 export interface AgentToggleConfig {
@@ -239,6 +275,9 @@ export interface NetworkingEventConfig {
 
   /** AI Swarm configuration */
   swarm?: SwarmConfig;
+
+  /** Media storage configuration */
+  storage?: StorageConfig;
 }
 
 /**

@@ -76,6 +76,24 @@ export const swarmConfigSchema = z.object({
   }).optional(),
 });
 
+export const storageConfigSchema = z.object({
+  backend: z.enum(["local", "s3", "r2"]).optional().default("local"),
+  local: z.object({
+    basePath: z.string().optional().default("./data/media"),
+  }).optional(),
+  s3: z.object({
+    bucket: z.string().optional(),
+    region: z.string().optional().default("us-east-1"),
+    endpoint: z.string().optional(),
+    forcePathStyle: z.boolean().optional().default(false),
+  }).optional(),
+  retention: z.object({
+    defaultDays: z.number().int().positive().optional().default(90),
+    autoCleanup: z.boolean().optional().default(true),
+    cleanupIntervalMinutes: z.number().int().positive().optional().default(60),
+  }).optional(),
+});
+
 export const networkingEventConfigSchema = z.object({
   enabled: z.boolean().optional().default(false),
   eventName: z.string().optional(),
@@ -96,6 +114,7 @@ export const networkingEventConfigSchema = z.object({
     .optional()
     .default(["whatsapp"]),
   swarm: swarmConfigSchema.optional(),
+  storage: storageConfigSchema.optional(),
 });
 
 export type NetworkingEventConfigInput = z.input<typeof networkingEventConfigSchema>;

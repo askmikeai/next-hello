@@ -32,6 +32,17 @@
     "defaultModel": "claude-sonnet-4-20250514"
   },
 
+  "storage": {
+    "backend": "local",
+    "local": {
+      "basePath": "./data/media"
+    },
+    "retention": {
+      "defaultDays": 90,
+      "autoCleanup": true
+    }
+  },
+
   "messages": {
     "welcome": "Hey! Great meeting you at {{eventName}}! Here's a quick video from me:",
     "collectEmail": "What's your email? I'll send over some resources we discussed.",
