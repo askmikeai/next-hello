@@ -11,4 +11,10 @@
     <!-- Swarm architecture tables (message history, agent activity) -->
     <include file="changesets/002-swarm-tables.xml" relativeToChangelogFile="true"/>
 
+    <!-- Message type support (media, location, view-once) -->
+    <include file="changesets/003-message-types.xml" relativeToChangelogFile="true"/>
+
+    <!-- Media tracking for GDPR compliance -->
+    <include file="changesets/004-media-tracking.xml" relativeToChangelogFile="true"/>
+
 </databaseChangeLog>

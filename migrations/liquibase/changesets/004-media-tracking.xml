@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+    xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.25.xsd">
+
+    <!-- Media tracking for GDPR compliance -->
+    <changeSet id="004-media-tracking" author="nexthello">
+        <comment>
+            Add media_files table for GDPR-compliant media storage tracking.
+            Supports multiple storage backends (local, S3, R2) with full audit trail.
+        </comment>
+
+        <sqlFile
+            path="../sql/003_media_tracking.sql"
+            relativeToChangelogFile="true"
+            splitStatements="false"
+            stripComments="false"/>
+
+        <rollback>
+            DROP FUNCTION IF EXISTS get_media_storage_stats();
+            DROP FUNCTION IF EXISTS cleanup_expired_media();
+            DROP FUNCTION IF EXISTS soft_delete_contact_media(TEXT);
+            DROP FUNCTION IF EXISTS get_contact_media(TEXT);
+            DROP TABLE IF EXISTS media_files;
+        </rollback>
+    </changeSet>
+
+</databaseChangeLog>
