@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS agent_activity_log (
     contact_id UUID REFERENCES networking_contacts(id) ON DELETE SET NULL,
     agent_type TEXT NOT NULL CHECK (agent_type IN (
         'orchestrator', 'conversation', 'research',
-        'qualification', 'personalization', 'video', 'crm'
+        'qualification', 'personalization', 'video', 'crm', 'voice'
     )),
     action TEXT NOT NULL,
     started_at TIMESTAMPTZ NOT NULL,

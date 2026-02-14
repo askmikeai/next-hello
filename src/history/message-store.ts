@@ -5,6 +5,7 @@ import { createLogger, logEvent, logError } from "../observability/logger.js";
 import type {
   ConversationMessage,
   MessageDirection,
+  MessageType,
   Channel,
   ToolCall,
 } from "../swarm/types.js";
@@ -26,12 +27,31 @@ interface MessageRow {
   correlation_id: string;
   direction: string;
   channel: string;
-  content: string;
+  message_type: string;
+  content: string | null;
   agent_id: string | null;
   model_used: string | null;
   tokens_used: number | null;
   tool_calls: unknown | null;
   created_at: string;
+  // Media fields
+  media_url: string | null;
+  media_mimetype: string | null;
+  media_size_bytes: number | null;
+  media_duration_seconds: number | null;
+  media_width: number | null;
+  media_height: number | null;
+  // Location fields
+  location_latitude: number | null;
+  location_longitude: number | null;
+  location_name: string | null;
+  location_address: string | null;
+  // Flags
+  is_voice_note: boolean | null;
+  is_video_note: boolean | null;
+  is_gif: boolean | null;
+  is_view_once: boolean | null;
+  is_animated: boolean | null;
 }
 
 /**
@@ -43,11 +63,30 @@ export interface CreateMessageInput {
   correlationId: string;
   direction: MessageDirection;
   channel: Channel;
-  content: string;
+  messageType?: MessageType;
+  content?: string;
   agentId?: string;
   modelUsed?: string;
   tokensUsed?: number;
   toolCalls?: ToolCall[];
+  // Media fields
+  mediaUrl?: string;
+  mediaMimetype?: string;
+  mediaSizeBytes?: number;
+  mediaDurationSeconds?: number;
+  mediaWidth?: number;
+  mediaHeight?: number;
+  // Location fields
+  locationLatitude?: number;
+  locationLongitude?: number;
+  locationName?: string;
+  locationAddress?: string;
+  // Flags
+  isVoiceNote?: boolean;
+  isVideoNote?: boolean;
+  isGif?: boolean;
+  isViewOnce?: boolean;
+  isAnimated?: boolean;
 }
 
 const DEFAULT_TABLE = "message_history";
@@ -99,22 +138,54 @@ export class MessageStore {
           correlation_id,
           direction,
           channel,
+          message_type,
           content,
           agent_id,
           model_used,
           tokens_used,
-          tool_calls
+          tool_calls,
+          media_url,
+          media_mimetype,
+          media_size_bytes,
+          media_duration_seconds,
+          media_width,
+          media_height,
+          location_latitude,
+          location_longitude,
+          location_name,
+          location_address,
+          is_voice_note,
+          is_video_note,
+          is_gif,
+          is_view_once,
+          is_animated
         ) VALUES (
           ${input.contactId || null},
           ${input.phoneNumber},
           ${input.correlationId},
           ${input.direction},
           ${input.channel},
-          ${input.content},
+          ${input.messageType || "text"},
+          ${input.content || null},
           ${input.agentId || null},
           ${input.modelUsed || null},
           ${input.tokensUsed || null},
-          ${input.toolCalls ? JSON.stringify(input.toolCalls) : null}
+          ${input.toolCalls ? JSON.stringify(input.toolCalls) : null},
+          ${input.mediaUrl || null},
+          ${input.mediaMimetype || null},
+          ${input.mediaSizeBytes || null},
+          ${input.mediaDurationSeconds || null},
+          ${input.mediaWidth || null},
+          ${input.mediaHeight || null},
+          ${input.locationLatitude || null},
+          ${input.locationLongitude || null},
+          ${input.locationName || null},
+          ${input.locationAddress || null},
+          ${input.isVoiceNote || false},
+          ${input.isVideoNote || false},
+          ${input.isGif || false},
+          ${input.isViewOnce || false},
+          ${input.isAnimated || false}
         )
         RETURNING *
       `;
@@ -124,6 +195,7 @@ export class MessageStore {
       logEvent(this.logger, "message_stored", {
         messageId: data.id,
         direction: input.direction,
+        messageType: input.messageType || "text",
         phoneNumber: input.phoneNumber,
       });
 
@@ -389,12 +461,31 @@ export class MessageStore {
       correlationId: row.correlation_id,
       direction: row.direction as MessageDirection,
       channel: row.channel as Channel,
-      content: row.content,
+      messageType: (row.message_type as MessageType) || "text",
+      content: row.content || undefined,
       agentId: row.agent_id || undefined,
       modelUsed: row.model_used || undefined,
       tokensUsed: row.tokens_used || undefined,
       toolCalls,
       createdAt: new Date(row.created_at),
+      // Media fields
+      mediaUrl: row.media_url || undefined,
+      mediaMimetype: row.media_mimetype || undefined,
+      mediaSizeBytes: row.media_size_bytes || undefined,
+      mediaDurationSeconds: row.media_duration_seconds || undefined,
+      mediaWidth: row.media_width || undefined,
+      mediaHeight: row.media_height || undefined,
+      // Location fields
+      locationLatitude: row.location_latitude || undefined,
+      locationLongitude: row.location_longitude || undefined,
+      locationName: row.location_name || undefined,
+      locationAddress: row.location_address || undefined,
+      // Flags
+      isVoiceNote: row.is_voice_note || undefined,
+      isVideoNote: row.is_video_note || undefined,
+      isGif: row.is_gif || undefined,
+      isViewOnce: row.is_view_once || undefined,
+      isAnimated: row.is_animated || undefined,
     };
   }
 
@@ -409,12 +500,31 @@ export class MessageStore {
       correlationId: input.correlationId,
       direction: input.direction,
       channel: input.channel,
+      messageType: input.messageType || "text",
       content: input.content,
       agentId: input.agentId,
       modelUsed: input.modelUsed,
       tokensUsed: input.tokensUsed,
       toolCalls: input.toolCalls,
       createdAt: new Date(),
+      // Media fields
+      mediaUrl: input.mediaUrl,
+      mediaMimetype: input.mediaMimetype,
+      mediaSizeBytes: input.mediaSizeBytes,
+      mediaDurationSeconds: input.mediaDurationSeconds,
+      mediaWidth: input.mediaWidth,
+      mediaHeight: input.mediaHeight,
+      // Location fields
+      locationLatitude: input.locationLatitude,
+      locationLongitude: input.locationLongitude,
+      locationName: input.locationName,
+      locationAddress: input.locationAddress,
+      // Flags
+      isVoiceNote: input.isVoiceNote,
+      isVideoNote: input.isVideoNote,
+      isGif: input.isGif,
+      isViewOnce: input.isViewOnce,
+      isAnimated: input.isAnimated,
     };
   }
 }

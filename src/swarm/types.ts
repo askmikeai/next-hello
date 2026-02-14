@@ -30,6 +30,11 @@ export type MessageDirection = "inbound" | "outbound";
 export type Channel = "whatsapp" | "telegram" | "email";
 
 /**
+ * Message content type
+ */
+export type MessageType = "text" | "image" | "video" | "audio" | "document" | "sticker" | "location";
+
+/**
  * Lead qualification tiers
  */
 export type QualificationTier = "hot" | "warm" | "cold" | "unqualified";
@@ -80,12 +85,31 @@ export interface ConversationMessage {
   correlationId: string;
   direction: MessageDirection;
   channel: Channel;
-  content: string;
+  messageType: MessageType;
+  content?: string;
   agentId?: string;
   modelUsed?: string;
   tokensUsed?: number;
   toolCalls?: ToolCall[];
   createdAt: Date;
+  // Media fields
+  mediaUrl?: string;
+  mediaMimetype?: string;
+  mediaSizeBytes?: number;
+  mediaDurationSeconds?: number;
+  mediaWidth?: number;
+  mediaHeight?: number;
+  // Location fields
+  locationLatitude?: number;
+  locationLongitude?: number;
+  locationName?: string;
+  locationAddress?: string;
+  // Flags
+  isVoiceNote?: boolean;
+  isVideoNote?: boolean;
+  isGif?: boolean;
+  isViewOnce?: boolean;
+  isAnimated?: boolean;
 }
 
 /**
