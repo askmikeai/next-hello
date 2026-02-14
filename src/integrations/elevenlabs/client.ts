@@ -1,5 +1,6 @@
 import type { ElevenLabsConfig } from "../../config/types.js";
 import { recordIntegrationCall, startTimer } from "../../observability/metrics.js";
+import { spawn } from "child_process";
 
 const ELEVENLABS_API_BASE = "https://api.elevenlabs.io/v1";
 
@@ -26,6 +27,55 @@ function getApiKey(): string | null {
 
 function log(message: string): void {
   console.log(`[elevenlabs] ${message}`);
+}
+
+/**
+ * Convert MP3 buffer to OGG/Opus format for better WhatsApp compatibility
+ * WhatsApp voice notes on Android require OGG/Opus format
+ */
+async function convertToOgg(mp3Buffer: Buffer): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const ffmpeg = spawn("ffmpeg", [
+      "-i", "pipe:0",           // Read from stdin
+      "-c:a", "libopus",        // Use Opus codec
+      "-b:a", "64k",            // Bitrate
+      "-vbr", "on",             // Variable bitrate
+      "-compression_level", "10", // Highest compression
+      "-application", "voip",   // Optimize for voice
+      "-f", "ogg",              // Output format
+      "pipe:1"                  // Write to stdout
+    ]);
+
+    const chunks: Buffer[] = [];
+
+    ffmpeg.stdout.on("data", (chunk: Buffer) => {
+      chunks.push(chunk);
+    });
+
+    ffmpeg.stderr.on("data", (data: Buffer) => {
+      // ffmpeg logs to stderr, we can ignore most of it
+      const msg = data.toString();
+      if (msg.includes("Error") || msg.includes("error")) {
+        log(`ffmpeg: ${msg}`);
+      }
+    });
+
+    ffmpeg.on("close", (code) => {
+      if (code === 0) {
+        resolve(Buffer.concat(chunks));
+      } else {
+        reject(new Error(`ffmpeg exited with code ${code}`));
+      }
+    });
+
+    ffmpeg.on("error", (err) => {
+      reject(err);
+    });
+
+    // Write MP3 data to ffmpeg stdin
+    ffmpeg.stdin.write(mp3Buffer);
+    ffmpeg.stdin.end();
+  });
 }
 
 /**
@@ -86,10 +136,22 @@ export async function generateVoiceMessage(
     recordIntegrationCall("elevenlabs", "text_to_speech", "success", endTimer());
 
     const arrayBuffer = await response.arrayBuffer();
-    const audioData = Buffer.from(arrayBuffer);
-    const contentType = response.headers.get("content-type") ?? "audio/mpeg";
+    const mp3Data = Buffer.from(arrayBuffer);
 
-    log(`Voice message generated: ${audioData.length} bytes`);
+    log(`Voice message generated (MP3): ${mp3Data.length} bytes`);
+
+    // Convert to OGG/Opus for WhatsApp Android compatibility
+    let audioData: Buffer;
+    let contentType: string;
+    try {
+      audioData = await convertToOgg(mp3Data);
+      contentType = "audio/ogg; codecs=opus";
+      log(`Converted to OGG/Opus: ${audioData.length} bytes`);
+    } catch (conversionError) {
+      log(`OGG conversion failed, using MP3: ${conversionError}`);
+      audioData = mp3Data;
+      contentType = "audio/mpeg";
+    }
 
     return {
       audioData,

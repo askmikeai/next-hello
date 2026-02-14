@@ -63,7 +63,7 @@ async function generateAndQueueVoiceFollowUp(
 
     const timestamp = Date.now();
     const phoneClean = phoneNumber.replace(/[^0-9]/g, "");
-    const filename = `voice_${phoneClean}_${timestamp}.mp3`;
+    const filename = `voice_${phoneClean}_${timestamp}.ogg`;
     const audioPath = join(mediaDir, filename);
 
     await writeFile(audioPath, result.audioData);

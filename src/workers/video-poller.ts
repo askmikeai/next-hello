@@ -79,7 +79,7 @@ async function generateAndQueueVoiceMessage(contact: NetworkingContact): Promise
 
     const timestamp = Date.now();
     const phoneClean = contact.phone_number.replace(/[^0-9]/g, "");
-    const filename = `voice_${phoneClean}_${timestamp}.mp3`;
+    const filename = `voice_${phoneClean}_${timestamp}.ogg`;
     const audioPath = join(mediaDir, filename);
 
     await writeFile(audioPath, result.audioData);
