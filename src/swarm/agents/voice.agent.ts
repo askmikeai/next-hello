@@ -6,8 +6,7 @@ import { updateContactByPhone } from "../../contacts/index.js";
 import { addJob } from "../../queue/client.js";
 import type { OutboundMessageJob } from "../types.js";
 import { createCorrelationId } from "../../observability/logger.js";
-import { writeFile, mkdir } from "fs/promises";
-import { join } from "path";
+import { getMediaStore } from "../../storage/media-store.js";
 
 /**
  * Voice Agent Configuration
@@ -161,18 +160,28 @@ ${context.contact?.swarm_metadata?.voiceMessageSent ? "Voice message already sen
             };
           }
 
-          // Save the audio file
-          const mediaDir = process.env.MEDIA_DIR || "./data/media/voice";
-          await mkdir(mediaDir, { recursive: true });
+          // Store using MediaStore for GDPR tracking
+          const mediaStore = getMediaStore();
+          const storeResult = await mediaStore.store({
+            phoneNumber,
+            contactId: context.contact?.id,
+            mediaType: "voice",
+            data: result.audioData,
+            mimeType: "audio/ogg",
+            source: "generated",
+          });
 
-          const timestamp = Date.now();
-          const filename = `voice_${phoneNumber.replace(/[^0-9]/g, "")}_${timestamp}.mp3`;
-          const audioPath = join(mediaDir, filename);
+          if (!storeResult.success) {
+            return {
+              success: false,
+              error: storeResult.error || "Failed to store voice message",
+            };
+          }
 
-          await writeFile(audioPath, result.audioData);
+          const audioPath = mediaStore.getLocalPath(storeResult.storageKey!);
 
           context.logger.info(
-            { phoneNumber, audioPath, size: result.audioData.length },
+            { phoneNumber, audioPath, size: result.audioData.length, storageKey: storeResult.storageKey },
             "Voice message generated and saved"
           );
 
@@ -184,6 +193,7 @@ ${context.contact?.swarm_metadata?.voiceMessageSent ? "Voice message already sen
                 ...context.contact?.swarm_metadata,
                 voiceMessageGenerated: true,
                 voiceMessagePath: audioPath,
+                voiceMessageStorageKey: storeResult.storageKey,
                 voiceMessageGeneratedAt: new Date().toISOString(),
               },
             },
@@ -193,6 +203,7 @@ ${context.contact?.swarm_metadata?.voiceMessageSent ? "Voice message already sen
           return {
             success: true,
             audioPath,
+            storageKey: storeResult.storageKey,
             size: result.audioData.length,
             message: "Voice message generated successfully",
           };

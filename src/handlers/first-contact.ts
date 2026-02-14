@@ -10,11 +10,13 @@ import {
   updateContactByPhone,
 } from "../contacts/index.js";
 import { generatePersonalizedVideo } from "../integrations/heygen/client.js";
+import { generateVoiceMessage } from "../integrations/elevenlabs/client.js";
 import { getSchedulingLink } from "../integrations/calendly/client.js";
 import { enrichContactWithLinkedIn } from "../integrations/linkedin/client.js";
 import { addJob } from "../queue/client.js";
 import { createCorrelationId } from "../observability/logger.js";
 import type { OutboundMessageJob } from "../swarm/types.js";
+import { getMediaStore } from "../storage/media-store.js";
 
 export interface FirstContactParams {
   phoneNumber: string;
@@ -180,6 +182,81 @@ export async function handleFirstContact(
   }
 }
 
+const VOICE_DELAY_MS = 5_000; // 5 seconds delay between video and voice
+
+/**
+ * Generate and queue a voice follow-up message after video
+ */
+async function generateAndQueueVoiceFollowUp(
+  phoneNumber: string,
+  recipientName: string,
+  heygenConfig: HeyGenConfig
+): Promise<void> {
+  // Load elevenlabs config from config file
+  let elevenlabsConfig;
+  try {
+    const configPath = process.env.NEXTHELLO_CONFIG || "./nexthello.config.json";
+    const { readFileSync } = await import("fs");
+    const configData = JSON.parse(readFileSync(configPath, "utf-8"));
+    elevenlabsConfig = configData.elevenlabs;
+  } catch (err) {
+    log(`Could not load ElevenLabs config: ${err}`);
+    return;
+  }
+
+  if (!elevenlabsConfig?.voiceId) {
+    log("ElevenLabs not configured, skipping voice follow-up");
+    return;
+  }
+
+  const scriptTemplate = elevenlabsConfig.scriptTemplate ||
+    "Hey {name}! I would love to have a cup of coffee with you. Would you like to schedule a meeting with me?";
+
+  log(`Generating voice follow-up for ${recipientName}...`);
+
+  try {
+    const result = await generateVoiceMessage(elevenlabsConfig, scriptTemplate, recipientName);
+
+    if (result.status !== "completed" || !result.audioData) {
+      log(`Failed to generate voice: ${result.error}`);
+      return;
+    }
+
+    // Store using MediaStore for GDPR tracking
+    const mediaStore = getMediaStore();
+    const storeResult = await mediaStore.store({
+      phoneNumber,
+      mediaType: "voice",
+      data: result.audioData,
+      mimeType: "audio/ogg",
+      source: "generated",
+    });
+
+    if (!storeResult.success) {
+      log(`Failed to store voice message: ${storeResult.error}`);
+      return;
+    }
+
+    const audioPath = mediaStore.getLocalPath(storeResult.storageKey!);
+    log(`Voice message saved: ${audioPath} (${result.audioData.length} bytes)`);
+
+    // Queue voice message with delay after video
+    const outboundJob: OutboundMessageJob = {
+      correlationId: createCorrelationId(),
+      phoneNumber,
+      channel: "whatsapp",
+      messageType: "voice",
+      content: audioPath,
+      metadata: { followUpToVideo: true },
+    };
+
+    await addJob("outbound-messages", outboundJob, { delay: VOICE_DELAY_MS });
+    log(`Voice follow-up queued for ${phoneNumber}`);
+  } catch (error) {
+    log(`Error generating voice follow-up: ${error}`);
+  }
+}
+
 /**
  * Generate HeyGen video and send it when ready
  */
@@ -221,6 +298,9 @@ async function generateAndSendHeyGenVideo(
         };
         await addJob("outbound-messages", outboundJob);
         log(`Queued HeyGen video for ${phoneNumber}: ${result.videoId}`);
+
+        // Generate and queue voice follow-up after video
+        await generateAndQueueVoiceFollowUp(phoneNumber, recipientName, heygenConfig);
       } else if (result.status === "pending" || result.status === "processing") {
         log(`HeyGen video ${result.videoId} still processing, poller will send when ready`);
       }

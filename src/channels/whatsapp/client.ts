@@ -11,19 +11,25 @@ import makeWASocket, {
   proto,
   makeCacheableSignalKeyStore,
   fetchLatestBaileysVersion,
+  downloadMediaMessage,
 } from "@whiskeysockets/baileys";
 import qrcode from "qrcode-terminal";
 import fs from "fs";
 import path from "path";
 import type { NetworkingEventConfig } from "../../config/types.js";
+import type { MessageType } from "../../swarm/types.js";
+import type { CreateMessageInput } from "../../history/message-store.js";
 import { handleFirstContact, isFirstContact } from "../../handlers/first-contact.js";
 import { handleFollowUp, isFollowUpMessage } from "../../handlers/follow-up.js";
 import { findContactByPhone } from "../../contacts/index.js";
 import { createLogger, createCorrelationId } from "../../observability/logger.js";
+import { getMessageStore } from "../../history/message-store.js";
 import { createWorker } from "../../queue/client.js";
 import type { OutboundMessageJob } from "../../swarm/types.js";
 import type { Worker } from "bullmq";
 import { startVideoPoller } from "../../workers/video-poller.js";
+import { getMediaStore } from "../../storage/media-store.js";
+import type { MediaCategory } from "../../storage/types.js";
 
 const AUTH_DIR = process.env.WHATSAPP_AUTH_DIR ?? "./data/auth/whatsapp";
 
@@ -151,6 +157,23 @@ export class WhatsAppClient {
     const msgLogger = createLogger({ channel: "whatsapp", correlationId });
 
     try {
+      // DEBUG: Log ALL incoming messages for schema development (including view-once)
+      const messageKeys = message.message ? Object.keys(message.message).filter(k => message.message?.[k as keyof typeof message.message]) : [];
+      msgLogger.info({
+        msg: "DEBUG: Raw message received",
+        hasMessage: !!message.message,
+        hasKey: !!message.key,
+        fromMe: message.key?.fromMe,
+        messageTypes: messageKeys,
+        rawMessage: JSON.stringify(message, (key, value) => {
+          // Truncate binary data
+          if (value instanceof Uint8Array || Buffer.isBuffer(value)) {
+            return `<Buffer ${value.length} bytes>`;
+          }
+          return value;
+        }, 2)
+      });
+
       // Skip if no message content or key
       if (!message.message || !message.key) {
         msgLogger.debug({ msg: "Skipping message - no content or key" });
@@ -170,10 +193,10 @@ export class WhatsAppClient {
         return;
       }
 
-      // Extract message text
-      const text = this.extractMessageText(message);
-      if (!text) {
-        msgLogger.debug({ msg: "Skipping message - no text content" });
+      // Extract full message info
+      const messageInfo = this.extractMessageInfo(message);
+      if (!messageInfo) {
+        msgLogger.debug({ msg: "Skipping message - unsupported type" });
         return;
       }
 
@@ -198,9 +221,27 @@ export class WhatsAppClient {
         msg: "Incoming message",
         phoneNumber,
         pushName,
-        textPreview: text.substring(0, 50),
-        textLength: text.length
+        messageType: messageInfo.messageType,
+        contentPreview: messageInfo.content?.substring(0, 50),
+        isViewOnce: messageInfo.isViewOnce,
+        isVoiceNote: messageInfo.isVoiceNote,
+        isVideoNote: messageInfo.isVideoNote,
+        isGif: messageInfo.isGif,
       });
+
+      // Store inbound message with full info
+      const messageStore = getMessageStore();
+      await messageStore.storeMessage({
+        phoneNumber,
+        correlationId,
+        direction: "inbound",
+        channel: "whatsapp",
+        ...messageInfo,
+      });
+
+      // For non-text messages, we may still want to process them
+      // but handlers currently only work with text
+      const text = messageInfo.content;
 
       // Check if first contact or follow-up
       const contact = await findContactByPhone(phoneNumber, this.config.supabase ?? {});
@@ -231,8 +272,8 @@ export class WhatsAppClient {
           });
           msgLogger.info({ msg: "First contact handled successfully" });
         }
-      } else {
-        // Follow-up
+      } else if (text) {
+        // Follow-up (only if we have text content to process)
         msgLogger.info({ msg: "Handling as FOLLOW-UP", phoneNumber, swarmEnabled: this.config.swarm?.enabled });
         if (isFollowUpMessage({
           phoneNumber,
@@ -249,6 +290,8 @@ export class WhatsAppClient {
           });
           msgLogger.info({ msg: "Follow-up handled", result });
         }
+      } else {
+        msgLogger.debug({ msg: "Skipping follow-up handling - no text content for AI processing" });
       }
     } catch (error) {
       msgLogger.error({
@@ -260,36 +303,167 @@ export class WhatsAppClient {
   }
 
   /**
-   * Extract text from message
+   * Extracted message info from WhatsApp
    */
-  private extractMessageText(message: proto.IWebMessageInfo): string | null {
+  private extractMessageInfo(message: proto.IWebMessageInfo): Partial<CreateMessageInput> | null {
     const msg = message.message;
     if (!msg) return null;
 
-    // Try different message types
-    if (msg.conversation) {
-      return msg.conversation;
+    // Check for view-once wrappers first
+    const viewOnceMsg = msg.viewOnceMessage?.message || msg.viewOnceMessageV2?.message;
+    const actualMsg = viewOnceMsg || msg;
+    const isViewOnce = !!viewOnceMsg;
+
+    // Text message (conversation)
+    if (actualMsg.conversation) {
+      return {
+        messageType: "text",
+        content: actualMsg.conversation,
+        isViewOnce,
+      };
     }
-    if (msg.extendedTextMessage?.text) {
-      return msg.extendedTextMessage.text;
+
+    // Extended text message (with links/mentions)
+    if (actualMsg.extendedTextMessage?.text) {
+      return {
+        messageType: "text",
+        content: actualMsg.extendedTextMessage.text,
+        isViewOnce,
+      };
     }
-    if (msg.imageMessage?.caption) {
-      return msg.imageMessage.caption;
+
+    // Image message
+    if (actualMsg.imageMessage) {
+      const img = actualMsg.imageMessage;
+      return {
+        messageType: "image",
+        content: img.caption || undefined,
+        mediaUrl: img.directPath || undefined,
+        mediaMimetype: img.mimetype || undefined,
+        mediaSizeBytes: img.fileLength ? Number(img.fileLength) : undefined,
+        mediaWidth: img.width || undefined,
+        mediaHeight: img.height || undefined,
+        isViewOnce: isViewOnce || img.viewOnce || false,
+      };
     }
-    if (msg.videoMessage?.caption) {
-      return msg.videoMessage.caption;
+
+    // Video message (includes GIFs and video notes)
+    if (actualMsg.videoMessage) {
+      const vid = actualMsg.videoMessage;
+      return {
+        messageType: "video",
+        content: vid.caption || undefined,
+        mediaUrl: vid.directPath || undefined,
+        mediaMimetype: vid.mimetype || undefined,
+        mediaSizeBytes: vid.fileLength ? Number(vid.fileLength) : undefined,
+        mediaDurationSeconds: vid.seconds || undefined,
+        mediaWidth: vid.width || undefined,
+        mediaHeight: vid.height || undefined,
+        isGif: vid.gifPlayback || false,
+        isViewOnce: isViewOnce || vid.viewOnce || false,
+      };
     }
-    if (msg.documentMessage?.caption) {
-      return msg.documentMessage.caption;
+
+    // PTV message (video note - circular video)
+    if (actualMsg.ptvMessage) {
+      const ptv = actualMsg.ptvMessage;
+      return {
+        messageType: "video",
+        content: ptv.caption || undefined,
+        mediaUrl: ptv.directPath || undefined,
+        mediaMimetype: ptv.mimetype || undefined,
+        mediaSizeBytes: ptv.fileLength ? Number(ptv.fileLength) : undefined,
+        mediaDurationSeconds: ptv.seconds || undefined,
+        mediaWidth: ptv.width || undefined,
+        mediaHeight: ptv.height || undefined,
+        isVideoNote: true,
+        isViewOnce,
+      };
+    }
+
+    // Audio message (includes voice notes)
+    if (actualMsg.audioMessage) {
+      const aud = actualMsg.audioMessage;
+      return {
+        messageType: "audio",
+        mediaUrl: aud.directPath || undefined,
+        mediaMimetype: aud.mimetype || undefined,
+        mediaSizeBytes: aud.fileLength ? Number(aud.fileLength) : undefined,
+        mediaDurationSeconds: aud.seconds || undefined,
+        isVoiceNote: aud.ptt || false,
+        isViewOnce: isViewOnce || aud.viewOnce || false,
+      };
+    }
+
+    // Document message
+    if (actualMsg.documentMessage) {
+      const doc = actualMsg.documentMessage;
+      return {
+        messageType: "document",
+        content: doc.caption || doc.fileName || undefined,
+        mediaUrl: doc.directPath || undefined,
+        mediaMimetype: doc.mimetype || undefined,
+        mediaSizeBytes: doc.fileLength ? Number(doc.fileLength) : undefined,
+        isViewOnce,
+      };
+    }
+
+    // Sticker message
+    if (actualMsg.stickerMessage) {
+      const sticker = actualMsg.stickerMessage;
+      return {
+        messageType: "sticker",
+        mediaUrl: sticker.directPath || undefined,
+        mediaMimetype: sticker.mimetype || undefined,
+        mediaSizeBytes: sticker.fileLength ? Number(sticker.fileLength) : undefined,
+        mediaWidth: sticker.width || undefined,
+        mediaHeight: sticker.height || undefined,
+        isAnimated: sticker.isAnimated || sticker.isLottie || false,
+        isViewOnce,
+      };
+    }
+
+    // Location message
+    if (actualMsg.locationMessage) {
+      const loc = actualMsg.locationMessage;
+      return {
+        messageType: "location",
+        content: loc.comment || undefined,
+        locationLatitude: loc.degreesLatitude || undefined,
+        locationLongitude: loc.degreesLongitude || undefined,
+        locationName: loc.name || undefined,
+        locationAddress: loc.address || undefined,
+        isViewOnce,
+      };
+    }
+
+    // Live location message
+    if (actualMsg.liveLocationMessage) {
+      const loc = actualMsg.liveLocationMessage;
+      return {
+        messageType: "location",
+        content: loc.caption || undefined,
+        locationLatitude: loc.degreesLatitude || undefined,
+        locationLongitude: loc.degreesLongitude || undefined,
+        isViewOnce,
+      };
     }
 
     return null;
   }
 
   /**
+   * Extract text from message (for backward compatibility)
+   */
+  private extractMessageText(message: proto.IWebMessageInfo): string | null {
+    const info = this.extractMessageInfo(message);
+    return info?.content || null;
+  }
+
+  /**
    * Send a text message with typing indicator
    */
-  async sendMessage(chatId: string, text: string): Promise<void> {
+  async sendMessage(chatId: string, text: string, correlationId?: string): Promise<void> {
     if (!this.sock) {
       throw new Error("WhatsApp not connected");
     }
@@ -306,6 +480,16 @@ export class WhatsAppClient {
     // Stop typing indicator and send message
     await this.sock.sendPresenceUpdate("paused", chatId);
     await this.sock.sendMessage(chatId, { text });
+
+    // Store outbound message
+    const phoneNumber = chatId.replace("@s.whatsapp.net", "").replace("@lid", "");
+    const messageStore = getMessageStore();
+    await messageStore.storeOutboundMessage(
+      phoneNumber,
+      text,
+      "whatsapp",
+      correlationId || createCorrelationId()
+    );
   }
 
   /**
@@ -336,6 +520,11 @@ export class WhatsAppClient {
     const audioBuffer = fs.readFileSync(audioPath);
     log(`Loaded voice message: ${(audioBuffer.length / 1024).toFixed(2)} KB`);
 
+    // Detect mimetype from file extension
+    const isOgg = audioPath.endsWith(".ogg");
+    const mimetype = isOgg ? "audio/ogg; codecs=opus" : "audio/mpeg";
+    log(`Using mimetype: ${mimetype}`);
+
     // Show recording indicator briefly
     await this.sock.sendPresenceUpdate("recording", chatId);
     await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -344,7 +533,7 @@ export class WhatsAppClient {
     // Send as voice note (ptt = push to talk)
     await this.sock.sendMessage(chatId, {
       audio: audioBuffer,
-      mimetype: "audio/mpeg",
+      mimetype,
       ptt: true, // This makes it appear as a voice note, not an audio file
     });
 
@@ -465,6 +654,115 @@ export class WhatsAppClient {
    */
   getSocket(): WASocket | null {
     return this.sock;
+  }
+
+  /**
+   * Download and store received media with GDPR tracking
+   */
+  async downloadAndStoreMedia(
+    message: proto.IWebMessageInfo,
+    phoneNumber: string,
+    contactId?: string
+  ): Promise<{ success: boolean; storageKey?: string; error?: string }> {
+    if (!this.sock) {
+      return { success: false, error: "WhatsApp not connected" };
+    }
+
+    const msg = message.message;
+    if (!msg || !message.key) {
+      return { success: false, error: "No message content or key" };
+    }
+
+    // Check for view-once wrappers
+    const viewOnceMsg = msg.viewOnceMessage?.message || msg.viewOnceMessageV2?.message;
+    const actualMsg = viewOnceMsg || msg;
+
+    // Determine media type and mime type
+    let mediaType: MediaCategory | null = null;
+    let mimeType: string | null = null;
+
+    if (actualMsg.imageMessage) {
+      mediaType = "image";
+      mimeType = actualMsg.imageMessage.mimetype || "image/jpeg";
+    } else if (actualMsg.videoMessage) {
+      mediaType = "video";
+      mimeType = actualMsg.videoMessage.mimetype || "video/mp4";
+    } else if (actualMsg.audioMessage) {
+      mediaType = "voice";
+      mimeType = actualMsg.audioMessage.mimetype || "audio/ogg";
+    } else if (actualMsg.documentMessage) {
+      mediaType = "document";
+      mimeType = actualMsg.documentMessage.mimetype || "application/octet-stream";
+    } else if (actualMsg.stickerMessage) {
+      mediaType = "image";
+      mimeType = actualMsg.stickerMessage.mimetype || "image/webp";
+    }
+
+    if (!mediaType || !mimeType) {
+      return { success: false, error: "Unsupported media type" };
+    }
+
+    try {
+      // Download media using Baileys
+      // Cast to the expected type since we've already validated key exists
+      const waMessage = message as Parameters<typeof downloadMediaMessage>[0];
+      const buffer = await downloadMediaMessage(
+        waMessage,
+        "buffer",
+        {},
+        {
+          logger: {
+            trace: () => {},
+            debug: () => {},
+            info: () => {},
+            warn: console.warn,
+            error: console.error,
+            level: "warn" as const,
+            child: () => ({
+              trace: () => {},
+              debug: () => {},
+              info: () => {},
+              warn: console.warn,
+              error: console.error,
+              level: "warn" as const,
+              child: function() { return this; },
+            }),
+          } as never,
+          reuploadRequest: this.sock.updateMediaMessage,
+        }
+      );
+
+      if (!buffer) {
+        return { success: false, error: "Failed to download media" };
+      }
+
+      // Store with MediaStore for GDPR tracking
+      const mediaStore = getMediaStore();
+      const result = await mediaStore.store({
+        phoneNumber,
+        contactId,
+        mediaType,
+        data: buffer as Buffer,
+        mimeType,
+        source: "received",
+      });
+
+      if (!result.success) {
+        return { success: false, error: result.error };
+      }
+
+      log(`Stored received ${mediaType} from ${phoneNumber}: ${result.storageKey}`);
+
+      return {
+        success: true,
+        storageKey: result.storageKey,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
   }
 }
 
