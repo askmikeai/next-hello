@@ -52,6 +52,15 @@ x-common-env: &common-env
   REDIS_HOST: ${REDIS_HOST:-redis}
   REDIS_PORT: ${REDIS_PORT:-6379}
   REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+  # Storage (S3-compatible via MinIO)
+  STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+  MEDIA_DIR: /app/data/media
+  S3_BUCKET: ${S3_BUCKET:-nexthello-media}
+  S3_REGION: ${S3_REGION:-us-east-1}
+  S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
+  AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+  AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+  S3_FORCE_PATH_STYLE: "true"
   # Swarm
   SWARM_ENABLED: ${SWARM_ENABLED:-false}
   SWARM_ROLLOUT_PERCENTAGE: ${SWARM_ROLLOUT_PERCENTAGE:-0}
@@ -271,6 +280,7 @@ services:
 
     volumes:
       - nexthello-auth:/app/data/auth
+      - nexthello-media:/app/data/media
       - ./nexthello.config.json:/app/nexthello.config.json:ro
 
     ports:
@@ -278,6 +288,56 @@ services:
 
     entrypoint: ["node", "dist/src/channels/whatsapp/connect.js"]
     restart: unless-stopped
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # MINIO - S3-compatible object storage
+  # API: http://localhost:9000
+  # Console: http://localhost:9001 (minioadmin/minioadmin)
+  # Use STORAGE_BACKEND=s3 to enable S3 storage mode
+  # ──────────────────────────────────────────────────────────────────────────
+  minio:
+    image: minio/minio:latest
+    container_name: nexthello-minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    volumes:
+      - nexthello-minio:/data
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    command: server /data --console-address ":9001"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # MINIO-INIT - Creates default bucket on startup
+  # Usage: Runs automatically with minio
+  # ──────────────────────────────────────────────────────────────────────────
+  minio-init:
+    image: minio/mc:latest
+    container_name: nexthello-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      S3_BUCKET: ${S3_BUCKET:-nexthello-media}
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set myminio http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD};
+      mc mb --ignore-existing myminio/$${S3_BUCKET};
+      mc anonymous set download myminio/$${S3_BUCKET};
+      echo 'Bucket $${S3_BUCKET} created successfully';
+      exit 0;
+      "
+    profiles:
+      - storage
 
   # ──────────────────────────────────────────────────────────────────────────
   # PROMETHEUS - Metrics collection
@@ -334,6 +394,8 @@ volumes:
     name: nexthello-postgres
   nexthello-redis:
     name: nexthello-redis
+  nexthello-minio:
+    name: nexthello-minio
   nexthello-prometheus:
     name: nexthello-prometheus
   nexthello-grafana:
