@@ -147,6 +147,13 @@ export class WhatsAppClient {
       }
     });
 
+    // Handle incoming calls - reject and send auto-reply
+    this.sock.ev.on("call", async (calls) => {
+      for (const call of calls) {
+        await this.handleIncomingCall(call);
+      }
+    });
+
     log("WhatsApp client initialized. Waiting for connection...");
   }
 
@@ -336,6 +343,88 @@ export class WhatsAppClient {
         msg: "Error handling message",
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined
+      });
+    }
+  }
+
+  /**
+   * Handle incoming call - reject and send auto-reply
+   */
+  private async handleIncomingCall(call: {
+    chatId: string;
+    from: string;
+    id: string;
+    date: Date;
+    isVideo?: boolean;
+    status: string;
+    offline: boolean;
+  }): Promise<void> {
+    const correlationId = createCorrelationId();
+    const callLogger = createLogger({ channel: "whatsapp", correlationId, component: "call-handler" });
+
+    try {
+      // Only handle incoming call offers
+      if (call.status !== "offer") {
+        callLogger.debug({
+          msg: "Ignoring call event",
+          status: call.status,
+          from: call.from,
+        });
+        return;
+      }
+
+      const isVideo = call.isVideo ?? false;
+      const callType = isVideo ? "video" : "voice";
+
+      callLogger.info({
+        msg: "Incoming call detected",
+        from: call.from,
+        callType,
+        callId: call.id,
+      });
+
+      // Reject the call
+      if (this.sock) {
+        try {
+          await this.sock.rejectCall(call.id, call.from);
+          callLogger.info({ msg: "Call rejected", callId: call.id });
+        } catch (rejectError) {
+          callLogger.warn({
+            msg: "Failed to reject call (may have already ended)",
+            error: rejectError instanceof Error ? rejectError.message : String(rejectError),
+          });
+        }
+      }
+
+      // Extract phone number from the call.from JID
+      let phoneNumber: string;
+      if (call.from.endsWith("@lid")) {
+        // LID format - extract number
+        phoneNumber = call.from.replace("@lid", "");
+      } else {
+        phoneNumber = call.from.replace("@s.whatsapp.net", "");
+      }
+
+      // Send auto-reply message
+      const autoReplyMessage = `Hey! I can't take ${callType} calls right now, but I'm here and ready to chat! 🎤
+
+Send me a voice message and I'll respond right away - my AI assistant transcribes and processes them instantly.
+
+What's on your mind?`;
+
+      await this.sendMessage(call.chatId, autoReplyMessage, { phoneNumber, correlationId });
+
+      callLogger.info({
+        msg: "Auto-reply sent after call rejection",
+        phoneNumber,
+        callType,
+      });
+
+    } catch (error) {
+      callLogger.error({
+        msg: "Error handling incoming call",
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
       });
     }
   }
