@@ -1,6 +1,7 @@
 import type { Job, Worker } from "bullmq";
 import { createWorker, type JobProcessor } from "../client.js";
 import { createWorkerLogger, logError } from "../../observability/logger.js";
+import { recordJobProcessed, startTimer } from "../../observability/metrics.js";
 import { crmSync } from "../../agent/tools/crm-sync.js";
 import { findContactByPhone } from "../../contacts/index.js";
 import type { CrmSyncJob } from "../../swarm/types.js";
@@ -30,11 +31,13 @@ async function processCrmSyncJob(
 ): Promise<CrmWorkerResult> {
   const { correlationId, contactId, phoneNumber, operation } = job.data;
   const jobLogger = logger.child({ correlationId, contactId, jobId: job.id });
+  const endTimer = startTimer();
 
   try {
     // Check if CRM is configured
     if (!config.crm?.apiKey) {
       jobLogger.warn("CRM not configured, skipping sync");
+      recordJobProcessed("crm-sync", "failure", endTimer());
       return {
         success: false,
         correlationId,
@@ -47,6 +50,7 @@ async function processCrmSyncJob(
     // Get the contact
     const contact = await findContactByPhone(phoneNumber, config.supabase);
     if (!contact) {
+      recordJobProcessed("crm-sync", "failure", endTimer());
       return {
         success: false,
         correlationId,
@@ -59,6 +63,7 @@ async function processCrmSyncJob(
     // Check if already synced for create operation
     if (operation === "create" && contact.crm_contact_id) {
       jobLogger.info("Contact already synced to CRM");
+      recordJobProcessed("crm-sync", "success", endTimer());
       return {
         success: true,
         correlationId,
@@ -98,6 +103,8 @@ async function processCrmSyncJob(
       "CRM sync completed"
     );
 
+    recordJobProcessed("crm-sync", result.success ? "success" : "failure", endTimer());
+
     return {
       success: result.success,
       correlationId,
@@ -110,6 +117,8 @@ async function processCrmSyncJob(
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     logError(jobLogger, error as Error, "CRM sync job failed");
+
+    recordJobProcessed("crm-sync", "failure", endTimer());
 
     return {
       success: false,

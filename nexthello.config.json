@@ -5,6 +5,7 @@
   "requiredFields": ["email", "company_name", "job_title"],
 
   "heygen": {
+    "enabled": false,
     "avatarId": "a47b8b5054e644c4bdcbcea569f47432",
     "voiceId": "7d0a0fae149c4128acafbebd994eb5ce",
     "scriptTemplate": "<break time=\"1s\"/> Hey {name}! This video was generated specifically for you by a swarm of AI agents running in the background. I design these kinds of systems to help founders and teams move faster, automate intelligently, and unlock new leverage. If you're curious what this could look like inside your business, let's connect."

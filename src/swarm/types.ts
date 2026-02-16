@@ -267,6 +267,10 @@ export interface IncomingMessageJob {
   channel: Channel;
   message: string;
   timestamp: Date;
+  // Voice message metadata
+  isVoiceMessage?: boolean;
+  voiceMessageDurationSeconds?: number;
+  transcriptionSource?: "whisper";
 }
 
 /**

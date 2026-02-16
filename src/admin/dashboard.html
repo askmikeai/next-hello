@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NextHello Admin</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --bg-secondary: #161b22;
+      --border: #30363d;
+      --text: #c9d1d9;
+      --text-muted: #8b949e;
+      --accent: #58a6ff;
+      --success: #3fb950;
+      --warning: #d29922;
+      --danger: #f85149;
+      --hot: #f85149;
+      --warm: #d29922;
+      --cold: #58a6ff;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      padding: 1rem;
+      min-height: 100vh;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 1rem;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 1rem;
+    }
+    h1 { font-size: 1.25rem; font-weight: 600; }
+    .refresh-btn {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.5rem 1rem;
+      border-radius: 6px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .refresh-btn:hover { border-color: var(--accent); }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+    .stat-card {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem;
+      text-align: center;
+    }
+    .stat-value { font-size: 2rem; font-weight: 700; color: var(--accent); }
+    .stat-label { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; }
+    .health-ok { color: var(--success); }
+    .health-fail { color: var(--danger); }
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+    @media (max-width: 900px) { .grid-2 { grid-template-columns: 1fr; } }
+    .panel {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .panel-header {
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid var(--border);
+      font-weight: 600;
+      font-size: 0.875rem;
+    }
+    .panel-body { padding: 0; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
+    th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border); }
+    th { color: var(--text-muted); font-weight: 500; font-size: 0.75rem; text-transform: uppercase; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover { background: rgba(88, 166, 255, 0.05); }
+    .badge {
+      display: inline-block;
+      padding: 0.125rem 0.5rem;
+      border-radius: 9999px;
+      font-size: 0.6875rem;
+      font-weight: 500;
+      text-transform: uppercase;
+    }
+    .badge-hot { background: rgba(248, 81, 73, 0.2); color: var(--hot); }
+    .badge-warm { background: rgba(210, 153, 34, 0.2); color: var(--warm); }
+    .badge-cold { background: rgba(88, 166, 255, 0.2); color: var(--cold); }
+    .badge-status { background: rgba(139, 148, 158, 0.2); color: var(--text-muted); }
+    .badge-success { background: rgba(63, 185, 80, 0.2); color: var(--success); }
+    .badge-fail { background: rgba(248, 81, 73, 0.2); color: var(--danger); }
+    .badge-in { background: rgba(88, 166, 255, 0.2); color: var(--accent); }
+    .badge-out { background: rgba(63, 185, 80, 0.2); color: var(--success); }
+    .msg-content { max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .phone-link { color: var(--accent); text-decoration: none; }
+    .phone-link:hover { text-decoration: underline; }
+    .action-btn {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.25rem 0.5rem;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.75rem;
+      margin-right: 0.25rem;
+    }
+    .action-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .breakdown-list { list-style: none; padding: 0.5rem 1rem; }
+    .breakdown-list li {
+      display: flex;
+      justify-content: space-between;
+      padding: 0.25rem 0;
+      font-size: 0.8125rem;
+    }
+    .breakdown-list li span:last-child { color: var(--text-muted); }
+    .text-muted { color: var(--text-muted); }
+    .text-sm { font-size: 0.75rem; }
+    .loading { opacity: 0.5; }
+    .auto-refresh { font-size: 0.75rem; color: var(--text-muted); }
+    footer { text-align: center; padding: 1rem; color: var(--text-muted); font-size: 0.75rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>NextHello Admin</h1>
+    <div>
+      <span class="auto-refresh" id="countdown">Auto-refresh in 30s</span>
+      <button class="refresh-btn" onclick="refreshAll()">Refresh</button>
+    </div>
+  </header>
+
+  <div class="stats-grid" id="stats-cards">
+    <div class="stat-card"><div class="stat-value" id="total-contacts">-</div><div class="stat-label">Contacts</div></div>
+    <div class="stat-card"><div class="stat-value" id="hot-leads">-</div><div class="stat-label">Hot Leads</div></div>
+    <div class="stat-card"><div class="stat-value" id="total-jobs">-</div><div class="stat-label">Queue Jobs</div></div>
+    <div class="stat-card"><div class="stat-value" id="health-status">-</div><div class="stat-label">Health</div></div>
+  </div>
+
+  <div class="grid-2">
+    <div class="panel">
+      <div class="panel-header">Status Breakdown</div>
+      <ul class="breakdown-list" id="status-breakdown"></ul>
+    </div>
+    <div class="panel">
+      <div class="panel-header">Queue Status</div>
+      <div class="panel-body">
+        <table>
+          <thead><tr><th>Queue</th><th>Wait</th><th>Active</th><th>Done</th><th>Fail</th></tr></thead>
+          <tbody id="queue-table"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel" style="margin-bottom: 1.5rem;">
+    <div class="panel-header">Recent Contacts</div>
+    <div class="panel-body">
+      <table>
+        <thead><tr><th>Name</th><th>Phone</th><th>Status</th><th>Qual</th><th>Updated</th><th>Actions</th></tr></thead>
+        <tbody id="contacts-table"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="panel" style="margin-bottom: 1.5rem;">
+    <div class="panel-header">
+      Messages <span id="messages-filter" class="text-muted text-sm"></span>
+      <button class="action-btn" id="clear-filter-btn" style="display:none; float:right;" onclick="clearPhoneFilter()">Show All</button>
+    </div>
+    <div class="panel-body">
+      <table>
+        <thead><tr><th>Time</th><th>Phone</th><th>Dir</th><th>Message</th></tr></thead>
+        <tbody id="messages-table"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">Agent Activity (last 20)</div>
+    <div class="panel-body">
+      <table>
+        <thead><tr><th>Time</th><th>Agent</th><th>Action</th><th>Duration</th><th>Status</th></tr></thead>
+        <tbody id="activity-table"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <footer>NextHello Admin Dashboard</footer>
+
+  <script>
+    let refreshTimer = 30;
+    let countdown;
+
+    async function fetchJson(url) {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    }
+
+    function formatTime(isoString) {
+      if (!isoString) return '-';
+      const d = new Date(isoString);
+      return d.toLocaleTimeString('en-US', { hour12: false });
+    }
+
+    function formatDate(isoString) {
+      if (!isoString) return '-';
+      const d = new Date(isoString);
+      const now = new Date();
+      const diffMs = now - d;
+      const diffMins = Math.floor(diffMs / 60000);
+      if (diffMins < 1) return 'just now';
+      if (diffMins < 60) return `${diffMins}m ago`;
+      const diffHours = Math.floor(diffMins / 60);
+      if (diffHours < 24) return `${diffHours}h ago`;
+      return d.toLocaleDateString();
+    }
+
+    function qualBadge(tier) {
+      if (!tier) return '<span class="badge badge-status">-</span>';
+      const cls = tier === 'hot' ? 'badge-hot' : tier === 'warm' ? 'badge-warm' : 'badge-cold';
+      return `<span class="badge ${cls}">${tier}</span>`;
+    }
+
+    function statusBadge(status) {
+      return `<span class="badge badge-status">${status || '-'}</span>`;
+    }
+
+    function activityStatus(status) {
+      if (status === 'completed') return '<span class="badge badge-success">OK</span>';
+      if (status === 'failed') return '<span class="badge badge-fail">FAIL</span>';
+      return '<span class="badge badge-status">...</span>';
+    }
+
+    async function loadStats() {
+      try {
+        const stats = await fetchJson('/admin/api/stats');
+        document.getElementById('total-contacts').textContent = stats.total || 0;
+        document.getElementById('hot-leads').textContent = stats.byQualification?.hot || 0;
+
+        const breakdown = document.getElementById('status-breakdown');
+        breakdown.innerHTML = Object.entries(stats.byStatus || {})
+          .sort((a, b) => b[1] - a[1])
+          .map(([k, v]) => `<li><span>${k}</span><span>${v}</span></li>`)
+          .join('') || '<li class="text-muted">No data</li>';
+      } catch (e) {
+        console.error('Failed to load stats:', e);
+      }
+    }
+
+    async function loadQueues() {
+      try {
+        const queues = await fetchJson('/admin/api/queues');
+        let totalJobs = 0;
+        const tbody = document.getElementById('queue-table');
+        tbody.innerHTML = queues.map(q => {
+          totalJobs += q.waiting + q.active;
+          return `<tr>
+            <td>${q.name}</td>
+            <td>${q.waiting}</td>
+            <td>${q.active}</td>
+            <td class="text-muted">${q.completed}</td>
+            <td class="${q.failed > 0 ? 'health-fail' : 'text-muted'}">${q.failed}</td>
+          </tr>`;
+        }).join('');
+        document.getElementById('total-jobs').textContent = totalJobs;
+      } catch (e) {
+        console.error('Failed to load queues:', e);
+      }
+    }
+
+    async function loadHealth() {
+      try {
+        const health = await fetchJson('/admin/api/health');
+        const el = document.getElementById('health-status');
+        const ok = health.redis.connected && health.postgres.healthy;
+        el.textContent = ok ? 'OK' : 'FAIL';
+        el.className = 'stat-value ' + (ok ? 'health-ok' : 'health-fail');
+      } catch (e) {
+        document.getElementById('health-status').textContent = 'ERR';
+        document.getElementById('health-status').className = 'stat-value health-fail';
+      }
+    }
+
+    async function loadContacts() {
+      try {
+        const contacts = await fetchJson('/admin/api/contacts?limit=15');
+        const tbody = document.getElementById('contacts-table');
+        tbody.innerHTML = contacts.map(c => `<tr>
+          <td>${c.first_name || ''} ${c.last_name || ''}</td>
+          <td><a href="#" class="phone-link" onclick="filterByPhone('${c.phone_number}'); return false;">${c.phone_number || '-'}</a></td>
+          <td>${statusBadge(c.status)}</td>
+          <td>${qualBadge(c.qualification_tier)}</td>
+          <td class="text-muted text-sm">${formatDate(c.updated_at || c.created_at)}</td>
+          <td>
+            <button class="action-btn" onclick="sendVoice('${c.id}')" title="Send Voice">Voice</button>
+            <button class="action-btn" onclick="sendVideo('${c.id}')" title="Send Video">Video</button>
+          </td>
+        </tr>`).join('') || '<tr><td colspan="6" class="text-muted">No contacts</td></tr>';
+      } catch (e) {
+        console.error('Failed to load contacts:', e);
+      }
+    }
+
+    async function loadActivities() {
+      try {
+        const activities = await fetchJson('/admin/api/activities?limit=20');
+        const tbody = document.getElementById('activity-table');
+        tbody.innerHTML = activities.map(a => `<tr>
+          <td class="text-muted">${formatTime(a.startedAt)}</td>
+          <td>${a.agentType}</td>
+          <td>${a.action}</td>
+          <td class="text-muted">${a.durationMs ? a.durationMs + 'ms' : '-'}</td>
+          <td>${activityStatus(a.status)}</td>
+        </tr>`).join('') || '<tr><td colspan="5" class="text-muted">No activity</td></tr>';
+      } catch (e) {
+        console.error('Failed to load activities:', e);
+      }
+    }
+
+    function dirBadge(dir) {
+      if (dir === 'inbound') return '<span class="badge badge-in">IN</span>';
+      return '<span class="badge badge-out">OUT</span>';
+    }
+
+    function truncate(str, len = 80) {
+      if (!str) return '-';
+      str = str.replace(/\n/g, ' ');
+      return str.length > len ? str.substring(0, len) + '...' : str;
+    }
+
+    let currentPhoneFilter = null;
+
+    async function loadMessages() {
+      try {
+        let url = '/admin/api/messages?limit=50';
+        if (currentPhoneFilter) {
+          url += '&phone=' + encodeURIComponent(currentPhoneFilter);
+        }
+        const messages = await fetchJson(url);
+        const tbody = document.getElementById('messages-table');
+        const filterSpan = document.getElementById('messages-filter');
+        const clearBtn = document.getElementById('clear-filter-btn');
+
+        if (currentPhoneFilter) {
+          filterSpan.textContent = '- ' + currentPhoneFilter;
+          clearBtn.style.display = 'inline-block';
+        } else {
+          filterSpan.textContent = '(last 30)';
+          clearBtn.style.display = 'none';
+        }
+
+        tbody.innerHTML = messages.map(m => `<tr>
+          <td class="text-muted text-sm">${formatDate(m.createdAt)}</td>
+          <td><a href="#" class="phone-link" onclick="filterByPhone('${m.phoneNumber}'); return false;">${m.phoneNumber}</a></td>
+          <td>${dirBadge(m.direction)}</td>
+          <td class="msg-content" title="${(m.content || '').replace(/"/g, '&quot;')}">${truncate(m.content)}</td>
+        </tr>`).join('') || '<tr><td colspan="4" class="text-muted">No messages</td></tr>';
+      } catch (e) {
+        console.error('Failed to load messages:', e);
+      }
+    }
+
+    function filterByPhone(phone) {
+      currentPhoneFilter = phone;
+      loadMessages();
+    }
+
+    function clearPhoneFilter() {
+      currentPhoneFilter = null;
+      loadMessages();
+    }
+
+    async function sendVoice(contactId) {
+      if (!confirm('Send voice message to this contact?')) return;
+      try {
+        const res = await fetch(`/admin/api/send-voice/${contactId}`, { method: 'POST' });
+        const data = await res.json();
+        alert(data.success ? 'Voice message queued!' : `Error: ${data.error}`);
+      } catch (e) {
+        alert('Failed to send voice: ' + e.message);
+      }
+    }
+
+    async function sendVideo(contactId) {
+      if (!confirm('Generate video for this contact?')) return;
+      try {
+        const res = await fetch(`/admin/api/send-video/${contactId}`, { method: 'POST' });
+        const data = await res.json();
+        alert(data.success ? 'Video generation queued!' : `Error: ${data.error}`);
+      } catch (e) {
+        alert('Failed to send video: ' + e.message);
+      }
+    }
+
+    async function refreshAll() {
+      refreshTimer = 30;
+      await Promise.all([
+        loadStats(),
+        loadQueues(),
+        loadHealth(),
+        loadContacts(),
+        loadMessages(),
+        loadActivities()
+      ]);
+    }
+
+    function startCountdown() {
+      countdown = setInterval(() => {
+        refreshTimer--;
+        document.getElementById('countdown').textContent = `Auto-refresh in ${refreshTimer}s`;
+        if (refreshTimer <= 0) {
+          refreshAll();
+        }
+      }, 1000);
+    }
+
+    // Initial load
+    refreshAll();
+    startCountdown();
+  </script>
+</body>
+</html>

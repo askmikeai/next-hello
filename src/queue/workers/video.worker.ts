@@ -1,6 +1,7 @@
 import type { Job, Worker } from "bullmq";
 import { createWorker, type JobProcessor } from "../client.js";
 import { createWorkerLogger, logError } from "../../observability/logger.js";
+import { recordJobProcessed, startTimer } from "../../observability/metrics.js";
 import { updateHeyGenVideo } from "../../contacts/index.js";
 import type { VideoGenerationJob } from "../../swarm/types.js";
 import type { NetworkingEventConfig } from "../../config/types.js";
@@ -193,11 +194,13 @@ async function processVideoJob(
   const { correlationId, contactId, phoneNumber, firstName, scriptTemplate, variables } =
     job.data;
   const jobLogger = logger.child({ correlationId, contactId, jobId: job.id });
+  const endTimer = startTimer();
 
   try {
     // Check if HeyGen is configured
     if (!config.heygen?.apiKey) {
       jobLogger.warn("HeyGen not configured, skipping video generation");
+      recordJobProcessed("video-generation", "failure", endTimer());
       return {
         success: false,
         correlationId,
@@ -217,6 +220,7 @@ async function processVideoJob(
     // Generate the video
     const generateResult = await generateHeyGenVideo(script, config);
     if (generateResult.error || !generateResult.videoId) {
+      recordJobProcessed("video-generation", "failure", endTimer());
       return {
         success: false,
         correlationId,
@@ -231,6 +235,7 @@ async function processVideoJob(
     // Wait for completion
     const waitResult = await waitForVideo(videoId, config);
     if (waitResult.error || !waitResult.videoUrl) {
+      recordJobProcessed("video-generation", "failure", endTimer());
       return {
         success: false,
         correlationId,
@@ -245,6 +250,8 @@ async function processVideoJob(
 
     jobLogger.info({ videoId, videoUrl: waitResult.videoUrl }, "Video generation completed");
 
+    recordJobProcessed("video-generation", "success", endTimer());
+
     return {
       success: true,
       correlationId,
@@ -255,6 +262,8 @@ async function processVideoJob(
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     logError(jobLogger, error as Error, "Video generation job failed");
+
+    recordJobProcessed("video-generation", "failure", endTimer());
 
     return {
       success: false,

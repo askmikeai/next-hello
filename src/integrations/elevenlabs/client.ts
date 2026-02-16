@@ -200,6 +200,7 @@ export async function listVoices(): Promise<VoiceInfo[]> {
     return [];
   }
 
+  const endTimer = startTimer();
   try {
     const response = await fetch(`${ELEVENLABS_API_BASE}/voices`, {
       method: "GET",
@@ -207,6 +208,7 @@ export async function listVoices(): Promise<VoiceInfo[]> {
     });
 
     if (!response.ok) {
+      recordIntegrationCall("elevenlabs", "list_voices", "failure", endTimer());
       return [];
     }
 
@@ -214,8 +216,10 @@ export async function listVoices(): Promise<VoiceInfo[]> {
       voices?: VoiceInfo[];
     };
 
+    recordIntegrationCall("elevenlabs", "list_voices", "success", endTimer());
     return data.voices ?? [];
   } catch {
+    recordIntegrationCall("elevenlabs", "list_voices", "failure", endTimer());
     return [];
   }
 }
@@ -229,6 +233,7 @@ export async function getVoice(voiceId: string): Promise<VoiceInfo | null> {
     return null;
   }
 
+  const endTimer = startTimer();
   try {
     const response = await fetch(`${ELEVENLABS_API_BASE}/voices/${voiceId}`, {
       method: "GET",
@@ -236,11 +241,14 @@ export async function getVoice(voiceId: string): Promise<VoiceInfo | null> {
     });
 
     if (!response.ok) {
+      recordIntegrationCall("elevenlabs", "get_voice", "failure", endTimer());
       return null;
     }
 
+    recordIntegrationCall("elevenlabs", "get_voice", "success", endTimer());
     return (await response.json()) as VoiceInfo;
   } catch {
+    recordIntegrationCall("elevenlabs", "get_voice", "failure", endTimer());
     return null;
   }
 }
@@ -254,6 +262,7 @@ export async function listModels(): Promise<Array<{ model_id: string; name: stri
     return [];
   }
 
+  const endTimer = startTimer();
   try {
     const response = await fetch(`${ELEVENLABS_API_BASE}/models`, {
       method: "GET",
@@ -261,12 +270,15 @@ export async function listModels(): Promise<Array<{ model_id: string; name: stri
     });
 
     if (!response.ok) {
+      recordIntegrationCall("elevenlabs", "list_models", "failure", endTimer());
       return [];
     }
 
     const models = (await response.json()) as Array<{ model_id: string; name: string }>;
+    recordIntegrationCall("elevenlabs", "list_models", "success", endTimer());
     return models;
   } catch {
+    recordIntegrationCall("elevenlabs", "list_models", "failure", endTimer());
     return [];
   }
 }
@@ -284,6 +296,7 @@ export async function getSubscriptionInfo(): Promise<{
     return null;
   }
 
+  const endTimer = startTimer();
   try {
     const response = await fetch(`${ELEVENLABS_API_BASE}/user/subscription`, {
       method: "GET",
@@ -291,6 +304,7 @@ export async function getSubscriptionInfo(): Promise<{
     });
 
     if (!response.ok) {
+      recordIntegrationCall("elevenlabs", "get_subscription_info", "failure", endTimer());
       return null;
     }
 
@@ -299,12 +313,14 @@ export async function getSubscriptionInfo(): Promise<{
       character_limit: number;
     };
 
+    recordIntegrationCall("elevenlabs", "get_subscription_info", "success", endTimer());
     return {
       character_count: data.character_count,
       character_limit: data.character_limit,
       remaining: data.character_limit - data.character_count,
     };
   } catch {
+    recordIntegrationCall("elevenlabs", "get_subscription_info", "failure", endTimer());
     return null;
   }
 }

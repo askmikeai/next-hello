@@ -279,6 +279,7 @@ export async function listAvatars(): Promise<
     return [];
   }
 
+  const endTimer = startTimer();
   try {
     const response = await fetch(`${HEYGEN_API_BASE}/avatars`, {
       method: "GET",
@@ -286,6 +287,7 @@ export async function listAvatars(): Promise<
     });
 
     if (!response.ok) {
+      recordIntegrationCall("heygen", "list_avatars", "failure", endTimer());
       return [];
     }
 
@@ -293,8 +295,10 @@ export async function listAvatars(): Promise<
       data?: { avatars?: Array<{ avatar_id: string; avatar_name: string }> };
     };
 
+    recordIntegrationCall("heygen", "list_avatars", "success", endTimer());
     return data.data?.avatars ?? [];
   } catch {
+    recordIntegrationCall("heygen", "list_avatars", "failure", endTimer());
     return [];
   }
 }
@@ -310,6 +314,7 @@ export async function listVoices(): Promise<
     return [];
   }
 
+  const endTimer = startTimer();
   try {
     const response = await fetch(`${HEYGEN_API_BASE}/voices`, {
       method: "GET",
@@ -317,6 +322,7 @@ export async function listVoices(): Promise<
     });
 
     if (!response.ok) {
+      recordIntegrationCall("heygen", "list_voices", "failure", endTimer());
       return [];
     }
 
@@ -324,8 +330,10 @@ export async function listVoices(): Promise<
       data?: { voices?: Array<{ voice_id: string; name: string; language: string }> };
     };
 
+    recordIntegrationCall("heygen", "list_voices", "success", endTimer());
     return data.data?.voices ?? [];
   } catch {
+    recordIntegrationCall("heygen", "list_voices", "failure", endTimer());
     return [];
   }
 }

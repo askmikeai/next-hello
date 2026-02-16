@@ -1,6 +1,7 @@
 import type { Job, Worker } from "bullmq";
 import { createWorker, type JobProcessor } from "../client.js";
 import { createWorkerLogger, logError } from "../../observability/logger.js";
+import { recordJobProcessed, startTimer } from "../../observability/metrics.js";
 import { createAgent } from "../../swarm/base-agent.js";
 import { createLogger } from "../../observability/logger.js";
 import { findContactByPhone, updateContactByPhone } from "../../contacts/index.js";
@@ -43,6 +44,7 @@ async function processResearchJob(
   } = job.data;
 
   const jobLogger = logger.child({ correlationId, contactId, jobId: job.id });
+  const endTimer = startTimer();
 
   try {
     // Update research status to in_progress
@@ -92,6 +94,8 @@ async function processResearchJob(
 
     jobLogger.info({ success: result.success, newStatus }, "Research completed");
 
+    recordJobProcessed("research-jobs", result.success ? "success" : "failure", endTimer());
+
     return {
       success: result.success,
       correlationId,
@@ -104,6 +108,8 @@ async function processResearchJob(
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     logError(jobLogger, error as Error, "Research job failed");
+
+    recordJobProcessed("research-jobs", "failure", endTimer());
 
     // Update status to failed
     try {

@@ -1,6 +1,7 @@
 import type { Logger } from "pino";
 import { createAgentLogger, logAgentActivity } from "../observability/logger.js";
 import { getActivityStore } from "../observability/activity-store.js";
+import { recordAgentExecution, activeAgents } from "../observability/metrics.js";
 import { LLMClient, getLLMClient } from "./llm/client.js";
 import { ToolExecutor, createToolExecutor } from "./llm/tool-executor.js";
 import type {
@@ -84,6 +85,9 @@ export abstract class BaseAgent {
       agentId: this.agentId,
     });
 
+    // Increment active agents gauge
+    activeAgents.inc({ agent_type: this.config.type });
+
     logAgentActivity(agentLogger, {
       agentType: this.config.type,
       action: "process",
@@ -122,6 +126,10 @@ export abstract class BaseAgent {
         });
       }
 
+      // Record agent execution metrics
+      recordAgentExecution(this.config.type, "process", "success", durationMs);
+      activeAgents.dec({ agent_type: this.config.type });
+
       return result;
     } catch (error) {
       const durationMs = Date.now() - startTime;
@@ -144,6 +152,10 @@ export abstract class BaseAgent {
           errorMessage,
         });
       }
+
+      // Record agent execution metrics for failure
+      recordAgentExecution(this.config.type, "process", "failure", durationMs);
+      activeAgents.dec({ agent_type: this.config.type });
 
       return {
         success: false,

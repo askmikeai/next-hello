@@ -21,6 +21,7 @@ import type { MessageType } from "../../swarm/types.js";
 import type { CreateMessageInput } from "../../history/message-store.js";
 import { handleFirstContact, isFirstContact } from "../../handlers/first-contact.js";
 import { handleFollowUp, isFollowUpMessage } from "../../handlers/follow-up.js";
+import { processVoiceMessage } from "../../handlers/voice-message.js";
 import { findContactByPhone } from "../../contacts/index.js";
 import { createLogger, createCorrelationId } from "../../observability/logger.js";
 import { getMessageStore } from "../../history/message-store.js";
@@ -241,7 +242,7 @@ export class WhatsAppClient {
 
       // For non-text messages, we may still want to process them
       // but handlers currently only work with text
-      const text = messageInfo.content;
+      let text = messageInfo.content;
 
       // Check if first contact or follow-up
       const contact = await findContactByPhone(phoneNumber, this.config.supabase ?? {});
@@ -252,6 +253,43 @@ export class WhatsAppClient {
         sentPersonalizedMessage: contact?.sent_personalized_message,
         status: contact?.status
       });
+
+      // Handle voice messages - transcribe before processing
+      if (messageInfo.isVoiceNote && contact) {
+        msgLogger.info({ msg: "Processing voice message", phoneNumber });
+
+        const mediaResult = await this.downloadAndStoreMedia(message, phoneNumber, contact.id);
+
+        if (mediaResult.success && mediaResult.storageKey) {
+          const transcription = await processVoiceMessage({
+            phoneNumber,
+            mediaStorageKey: mediaResult.storageKey,
+            mediaMimetype: messageInfo.mediaMimetype || "audio/ogg",
+            durationSeconds: messageInfo.mediaDurationSeconds,
+            config: this.config,
+            correlationId,
+          });
+
+          if (transcription.success && transcription.transcription) {
+            msgLogger.info({
+              msg: "Voice message transcribed",
+              textLength: transcription.transcription.length,
+              language: transcription.language,
+            });
+            text = transcription.transcription; // Use transcribed text for AI processing
+          } else {
+            msgLogger.warn({
+              msg: "Voice transcription failed",
+              error: transcription.error,
+            });
+          }
+        } else {
+          msgLogger.warn({
+            msg: "Failed to download voice message",
+            error: mediaResult.error,
+          });
+        }
+      }
 
       if (!contact || !contact.sent_personalized_message) {
         // First contact
@@ -268,7 +306,7 @@ export class WhatsAppClient {
             pushName,
             channel: "whatsapp",
             config: this.config,
-            sendMessage: async (msg) => this.sendMessage(chatId, msg),
+            sendMessage: async (msg) => this.sendMessage(chatId, msg, { phoneNumber }),
           });
           msgLogger.info({ msg: "First contact handled successfully" });
         }
@@ -286,7 +324,7 @@ export class WhatsAppClient {
             phoneNumber,
             messageText: text,
             config: this.config,
-            sendMessage: async (msg) => this.sendMessage(chatId, msg),
+            sendMessage: async (msg) => this.sendMessage(chatId, msg, { phoneNumber }),
           });
           msgLogger.info({ msg: "Follow-up handled", result });
         }
@@ -462,8 +500,15 @@ export class WhatsAppClient {
 
   /**
    * Send a text message with typing indicator
+   * @param chatId - WhatsApp chat ID (JID)
+   * @param text - Message text
+   * @param options - Optional parameters for correlation and phone number override
    */
-  async sendMessage(chatId: string, text: string, correlationId?: string): Promise<void> {
+  async sendMessage(
+    chatId: string,
+    text: string,
+    options?: { correlationId?: string; phoneNumber?: string }
+  ): Promise<void> {
     if (!this.sock) {
       throw new Error("WhatsApp not connected");
     }
@@ -481,14 +526,14 @@ export class WhatsAppClient {
     await this.sock.sendPresenceUpdate("paused", chatId);
     await this.sock.sendMessage(chatId, { text });
 
-    // Store outbound message
-    const phoneNumber = chatId.replace("@s.whatsapp.net", "").replace("@lid", "");
+    // Store outbound message - use provided phoneNumber or extract from chatId
+    const phoneNumber = options?.phoneNumber || chatId.replace("@s.whatsapp.net", "").replace("@lid", "");
     const messageStore = getMessageStore();
     await messageStore.storeOutboundMessage(
       phoneNumber,
       text,
       "whatsapp",
-      correlationId || createCorrelationId()
+      options?.correlationId || createCorrelationId()
     );
   }
 
@@ -500,7 +545,7 @@ export class WhatsAppClient {
     const normalized = phoneNumber.replace(/[^0-9]/g, "");
     const chatId = `${normalized}@s.whatsapp.net`;
 
-    await this.sendMessage(chatId, text);
+    await this.sendMessage(chatId, text, { phoneNumber: normalized });
   }
 
   /**

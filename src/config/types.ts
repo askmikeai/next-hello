@@ -55,6 +55,8 @@ export interface DatabaseConfig {
 }
 
 export interface HeyGenConfig {
+  /** Enable HeyGen video generation (default: true) */
+  enabled?: boolean;
   /** HeyGen API key */
   apiKey?: string;
   /** HeyGen avatar ID for video generation */
@@ -86,6 +88,15 @@ export interface ElevenLabsConfig {
   style?: number;
   /** Use speaker boost (default: true) */
   useSpeakerBoost?: boolean;
+}
+
+export interface OpenAIConfig {
+  /** OpenAI API key (falls back to OPENAI_API_KEY env) */
+  apiKey?: string;
+  /** Enable Whisper for voice transcription (default: true if API key present) */
+  enableWhisper?: boolean;
+  /** Maximum voice message duration in seconds (default: 300) */
+  maxVoiceDuration?: number;
 }
 
 export interface CalendlyConfig {
@@ -254,6 +265,9 @@ export interface NetworkingEventConfig {
 
   /** ElevenLabs voice message configuration */
   elevenlabs?: ElevenLabsConfig;
+
+  /** OpenAI configuration (Whisper for voice transcription) */
+  openai?: OpenAIConfig;
 
   /** Calendly scheduling configuration */
   calendly?: CalendlyConfig;

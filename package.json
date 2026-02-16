@@ -15,21 +15,31 @@
     }
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && cp src/admin/dashboard.html dist/src/admin/",
     "dev": "tsc --watch",
     "start": "node dist/src/server.js",
     "cli": "node dist/src/cli/index.js",
     "setup": "node dist/src/cli/index.js setup",
     "connect": "node dist/src/cli/index.js connect",
+    "connect:session1": "npx tsx scripts/connect-session.ts session-1 17542959900",
+    "connect:session2": "npx tsx scripts/connect-session.ts session-2 13054272115",
+    "test:sessions": "npx tsx scripts/test-two-sessions.ts",
+    "test:swarm:e2e": "set -a && source .env_test && set +a && npx tsx scripts/test-swarm-e2e.ts",
+    "test:swarm": "npm run test:db -- --run src/tests/integration/swarm-quality.test.ts",
+    "test:swarm:live": "set -a && source .env_test && set +a && vitest run --run src/tests/integration/swarm-integration.test.ts",
+    "test:e2e": "set -a && source .env_test && set +a && vitest run --run src/tests/integration/multi-agent-e2e.test.ts",
     "test": "vitest",
     "test:unit": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration",
     "test:watch": "vitest watch",
     "test:coverage": "vitest run --coverage",
+    "test:db": "set -a && source .env_test && set +a && vitest run",
     "lint": "eslint src/",
     "typecheck": "tsc --noEmit",
     "db:migrate": "docker compose --profile migrations run --rm liquibase",
-    "db:status": "docker compose --profile migrations run --rm liquibase --changelog-file=changelog.xml status"
+    "db:status": "docker compose --profile migrations run --rm liquibase --changelog-file=changelog.xml status",
+    "db:test:init": "docker compose --profile test run --rm test-db-init",
+    "db:test:migrate": "docker compose --profile test run --rm liquibase-test"
   },
   "keywords": [
     "networking",

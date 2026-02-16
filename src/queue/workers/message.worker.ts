@@ -1,6 +1,7 @@
 import type { Job, Worker } from "bullmq";
 import { createWorker, type JobProcessor } from "../client.js";
 import { createWorkerLogger, logQueueJob, logError } from "../../observability/logger.js";
+import { recordJobProcessed, startTimer } from "../../observability/metrics.js";
 import { getOrchestrator } from "../../swarm/orchestrator.js";
 import { getMessageStore } from "../../history/message-store.js";
 import { getContextBuilder } from "../../history/context-builder.js";
@@ -33,6 +34,7 @@ async function processIncomingMessage(
 ): Promise<MessageWorkerResult> {
   const { correlationId, phoneNumber, channel, message, timestamp } = job.data;
   const jobLogger = logger.child({ correlationId, jobId: job.id });
+  const endTimer = startTimer();
 
   try {
     // Get dependencies
@@ -92,6 +94,8 @@ async function processIncomingMessage(
       );
     }
 
+    recordJobProcessed("incoming-messages", result.success ? "success" : "failure", endTimer());
+
     return {
       success: result.success,
       correlationId,
@@ -102,6 +106,8 @@ async function processIncomingMessage(
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     logError(jobLogger, error as Error, "Failed to process message");
+
+    recordJobProcessed("incoming-messages", "failure", endTimer());
 
     return {
       success: false,

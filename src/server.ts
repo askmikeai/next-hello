@@ -121,6 +121,7 @@ async function handleRequest(
         endpoints: {
           health: "/health",
           metrics: "/metrics",
+          admin: "/admin",
           webhooks: {
             calendly: getCalendlyWebhookPath(),
             heygen: getHeyGenWebhookPath(),
@@ -135,6 +136,14 @@ async function handleRequest(
     const route = matchRoute(url);
     if (route) {
       await route.handler(req, res, config);
+      recordHttpRequest(method, pathForMetrics, res.statusCode || 200, endTimer());
+      return;
+    }
+
+    // Admin dashboard
+    if (url.startsWith("/admin")) {
+      const { handleAdminRequest } = await import("./admin/routes.js");
+      await handleAdminRequest(req, res, config);
       recordHttpRequest(method, pathForMetrics, res.statusCode || 200, endTimer());
       return;
     }
@@ -177,6 +186,7 @@ function startServer(): void {
     log("  Endpoints:");
     log(`    Health:   http://${HOST}:${PORT}/health`);
     log(`    Metrics:  http://${HOST}:${PORT}/metrics`);
+    log(`    Admin:    http://${HOST}:${PORT}/admin`);
     log(`    Calendly: http://${HOST}:${PORT}${getCalendlyWebhookPath()}`);
     log(`    HeyGen:   http://${HOST}:${PORT}${getHeyGenWebhookPath()}`);
     log("");

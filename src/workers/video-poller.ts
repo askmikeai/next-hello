@@ -10,6 +10,7 @@ import { getVideoStatus } from "../integrations/heygen/client.js";
 import { generateVoiceMessage } from "../integrations/elevenlabs/client.js";
 import { addJob } from "../queue/client.js";
 import { createLogger, createCorrelationId } from "../observability/logger.js";
+import { recordJobProcessed, startTimer } from "../observability/metrics.js";
 import type { OutboundMessageJob } from "../swarm/types.js";
 import type { NetworkingContact, ElevenLabsConfig } from "../config/types.js";
 import { writeFile, mkdir } from "fs/promises";
@@ -20,27 +21,34 @@ const logger = createLogger({ component: "video-poller" });
 const POLL_INTERVAL_MS = 60_000; // 1 minute
 const VOICE_DELAY_MS = 5_000; // 5 seconds delay between video and voice
 
-// Load config for ElevenLabs settings
+// Load config for ElevenLabs and HeyGen settings
 let elevenlabsConfig: ElevenLabsConfig | null = null;
-async function loadElevenLabsConfig(): Promise<ElevenLabsConfig | null> {
+let heygenEnabled = true; // Default to enabled for backwards compatibility
+
+async function loadConfig(): Promise<void> {
   try {
     const configPath = process.env.NEXTHELLO_CONFIG || "./nexthello.config.json";
     const { readFileSync } = await import("fs");
     const configData = JSON.parse(readFileSync(configPath, "utf-8"));
-    const config = configData.elevenlabs || null;
-    if (config) {
-      logger.info({ voiceId: config.voiceId, hasScript: !!config.scriptTemplate }, "ElevenLabs config loaded");
+
+    // Load ElevenLabs config
+    elevenlabsConfig = configData.elevenlabs || null;
+    if (elevenlabsConfig) {
+      logger.info({ voiceId: elevenlabsConfig.voiceId, hasScript: !!elevenlabsConfig.scriptTemplate }, "ElevenLabs config loaded");
     }
-    return config;
+
+    // Load HeyGen enabled flag
+    if (configData.heygen && configData.heygen.enabled === false) {
+      heygenEnabled = false;
+      logger.info("HeyGen video generation disabled by config");
+    }
   } catch (err) {
-    logger.warn({ error: err instanceof Error ? err.message : String(err) }, "Could not load ElevenLabs config");
-    return null;
+    logger.warn({ error: err instanceof Error ? err.message : String(err) }, "Could not load config");
   }
 }
+
 // Load config on module init
-loadElevenLabsConfig().then(config => {
-  elevenlabsConfig = config;
-});
+loadConfig();
 
 /**
  * Build the personalized video message
@@ -159,26 +167,38 @@ async function checkAndSendVideo(contact: NetworkingContact): Promise<boolean> {
  * Run one polling cycle
  */
 async function pollOnce(): Promise<{ checked: number; sent: number }> {
+  // Skip if HeyGen is disabled
+  if (!heygenEnabled) {
+    return { checked: 0, sent: 0 };
+  }
+
+  const endTimer = startTimer();
   const pendingVideos = await getContactsWithPendingVideos();
 
   if (pendingVideos.length === 0) {
+    recordJobProcessed("video-polling", "success", endTimer());
     return { checked: 0, sent: 0 };
   }
 
   logger.info({ count: pendingVideos.length }, "Found pending videos to check");
 
   let sent = 0;
+  let errors = 0;
   for (const contact of pendingVideos) {
     try {
       const wasSent = await checkAndSendVideo(contact);
       if (wasSent) sent++;
     } catch (error) {
+      errors++;
       logger.error(
         { phoneNumber: contact.phone_number, error: error instanceof Error ? error.message : String(error) },
         "Error checking video"
       );
     }
   }
+
+  // Record polling cycle metrics (success if no errors, or partial success if some succeeded)
+  recordJobProcessed("video-polling", errors === pendingVideos.length ? "failure" : "success", endTimer());
 
   return { checked: pendingVideos.length, sent };
 }

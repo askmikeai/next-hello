@@ -115,6 +115,7 @@ export class HubSpotProvider implements CrmProvider {
       properties.phone = normalizePhoneForCrm(properties.phone);
     }
 
+    const endTimer = startTimer();
     try {
       const response = await fetch(
         `${HUBSPOT_API_BASE}/crm/v3/objects/contacts/${contactId}`,
@@ -128,14 +129,17 @@ export class HubSpotProvider implements CrmProvider {
       if (!response.ok) {
         const error = await response.text();
         log(`Update contact failed: ${response.status} - ${error}`);
+        recordIntegrationCall("hubspot", "update_contact", "failure", endTimer());
         return { success: false, error };
       }
 
       log(`Contact updated: ${contactId}`);
+      recordIntegrationCall("hubspot", "update_contact", "success", endTimer());
       return { success: true, contactId };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       log(`Error updating contact: ${message}`);
+      recordIntegrationCall("hubspot", "update_contact", "failure", endTimer());
       return { success: false, error: message };
     }
   }
@@ -145,6 +149,7 @@ export class HubSpotProvider implements CrmProvider {
       return null;
     }
 
+    const endTimer = startTimer();
     try {
       const response = await fetch(`${HUBSPOT_API_BASE}/crm/v3/objects/contacts/search`, {
         method: "POST",
@@ -165,17 +170,20 @@ export class HubSpotProvider implements CrmProvider {
       });
 
       if (!response.ok) {
+        recordIntegrationCall("hubspot", "find_contact_by_email", "failure", endTimer());
         return null;
       }
 
       const data = (await response.json()) as { results?: Array<{ id: string }> };
 
+      recordIntegrationCall("hubspot", "find_contact_by_email", "success", endTimer());
       if (data.results && data.results.length > 0) {
         return { contactId: data.results[0].id };
       }
 
       return null;
     } catch {
+      recordIntegrationCall("hubspot", "find_contact_by_email", "failure", endTimer());
       return null;
     }
   }
@@ -186,6 +194,7 @@ export class HubSpotProvider implements CrmProvider {
     }
 
     const normalizedPhone = normalizePhoneForCrm(phone);
+    const endTimer = startTimer();
 
     try {
       const response = await fetch(`${HUBSPOT_API_BASE}/crm/v3/objects/contacts/search`, {
@@ -207,17 +216,20 @@ export class HubSpotProvider implements CrmProvider {
       });
 
       if (!response.ok) {
+        recordIntegrationCall("hubspot", "find_contact_by_phone", "failure", endTimer());
         return null;
       }
 
       const data = (await response.json()) as { results?: Array<{ id: string }> };
 
+      recordIntegrationCall("hubspot", "find_contact_by_phone", "success", endTimer());
       if (data.results && data.results.length > 0) {
         return { contactId: data.results[0].id };
       }
 
       return null;
     } catch {
+      recordIntegrationCall("hubspot", "find_contact_by_phone", "failure", endTimer());
       return null;
     }
   }
@@ -265,6 +277,7 @@ export class HubSpotProvider implements CrmProvider {
       return null;
     }
 
+    const endTimer = startTimer();
     try {
       const response = await fetch(
         `${HUBSPOT_API_BASE}/crm/v3/objects/contacts/${contactId}?properties=email,firstname,lastname,phone,company,jobtitle,industry`,
@@ -275,11 +288,14 @@ export class HubSpotProvider implements CrmProvider {
       );
 
       if (!response.ok) {
+        recordIntegrationCall("hubspot", "get_contact", "failure", endTimer());
         return null;
       }
 
+      recordIntegrationCall("hubspot", "get_contact", "success", endTimer());
       return (await response.json()) as Record<string, unknown>;
     } catch {
+      recordIntegrationCall("hubspot", "get_contact", "failure", endTimer());
       return null;
     }
   }
@@ -300,6 +316,7 @@ export class HubSpotProvider implements CrmProvider {
       return { success: false, error: "HubSpot not configured" };
     }
 
+    const endTimer = startTimer();
     try {
       // Create deal
       const dealResponse = await fetch(`${HUBSPOT_API_BASE}/crm/v3/objects/deals`, {
@@ -317,12 +334,14 @@ export class HubSpotProvider implements CrmProvider {
 
       if (!dealResponse.ok) {
         const error = await dealResponse.text();
+        recordIntegrationCall("hubspot", "create_deal", "failure", endTimer());
         return { success: false, error };
       }
 
       const deal = (await dealResponse.json()) as { id?: string };
 
       if (!deal.id) {
+        recordIntegrationCall("hubspot", "create_deal", "failure", endTimer());
         return { success: false, error: "No deal ID returned" };
       }
 
@@ -335,9 +354,11 @@ export class HubSpotProvider implements CrmProvider {
         },
       );
 
+      recordIntegrationCall("hubspot", "create_deal", "success", endTimer());
       return { success: true, contactId: deal.id };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      recordIntegrationCall("hubspot", "create_deal", "failure", endTimer());
       return { success: false, error: message };
     }
   }
@@ -353,6 +374,7 @@ export class HubSpotProvider implements CrmProvider {
       return { success: false, error: "HubSpot not configured" };
     }
 
+    const endTimer = startTimer();
     try {
       const noteResponse = await fetch(`${HUBSPOT_API_BASE}/crm/v3/objects/notes`, {
         method: "POST",
@@ -367,12 +389,14 @@ export class HubSpotProvider implements CrmProvider {
 
       if (!noteResponse.ok) {
         const error = await noteResponse.text();
+        recordIntegrationCall("hubspot", "add_note", "failure", endTimer());
         return { success: false, error };
       }
 
       const note = (await noteResponse.json()) as { id?: string };
 
       if (!note.id) {
+        recordIntegrationCall("hubspot", "add_note", "failure", endTimer());
         return { success: false, error: "No note ID returned" };
       }
 
@@ -385,9 +409,11 @@ export class HubSpotProvider implements CrmProvider {
         },
       );
 
+      recordIntegrationCall("hubspot", "add_note", "success", endTimer());
       return { success: true, contactId: note.id };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      recordIntegrationCall("hubspot", "add_note", "failure", endTimer());
       return { success: false, error: message };
     }
   }

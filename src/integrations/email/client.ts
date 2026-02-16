@@ -1,4 +1,5 @@
 import type { EmailConfig, NetworkingContact } from "../../config/types.js";
+import { recordIntegrationCall, startTimer } from "../../observability/metrics.js";
 
 const SENDGRID_API_BASE = "https://api.sendgrid.com/v3";
 const RESEND_API_BASE = "https://api.resend.com";
@@ -45,6 +46,7 @@ async function sendViaSendGrid(
     return { success: false, error: "From email not configured" };
   }
 
+  const endTimer = startTimer();
   try {
     const response = await fetch(`${SENDGRID_API_BASE}/mail/send`, {
       method: "POST",
@@ -76,14 +78,17 @@ async function sendViaSendGrid(
     if (!response.ok) {
       const error = await response.text();
       log(`SendGrid error: ${response.status} - ${error}`);
+      recordIntegrationCall("sendgrid", "send_email", "failure", endTimer());
       return { success: false, error };
     }
 
     const messageId = response.headers.get("x-message-id") ?? undefined;
+    recordIntegrationCall("sendgrid", "send_email", "success", endTimer());
     return { success: true, messageId };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     log(`SendGrid error: ${message}`);
+    recordIntegrationCall("sendgrid", "send_email", "failure", endTimer());
     return { success: false, error: message };
   }
 }
@@ -104,6 +109,7 @@ async function sendViaResend(
     return { success: false, error: "From email not configured" };
   }
 
+  const endTimer = startTimer();
   try {
     const from = config.fromName
       ? `${config.fromName} <${config.fromEmail}>`
@@ -128,14 +134,17 @@ async function sendViaResend(
     if (!response.ok) {
       const error = await response.text();
       log(`Resend error: ${response.status} - ${error}`);
+      recordIntegrationCall("resend", "send_email", "failure", endTimer());
       return { success: false, error };
     }
 
     const data = (await response.json()) as { id?: string };
+    recordIntegrationCall("resend", "send_email", "success", endTimer());
     return { success: true, messageId: data.id };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     log(`Resend error: ${message}`);
+    recordIntegrationCall("resend", "send_email", "failure", endTimer());
     return { success: false, error: message };
   }
 }

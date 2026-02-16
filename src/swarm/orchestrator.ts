@@ -1,5 +1,6 @@
 import type { Logger } from "pino";
 import { createLogger, logAgentActivity, createCorrelationId } from "../observability/logger.js";
+import { recordAgentExecution, activeAgents, startTimer } from "../observability/metrics.js";
 import { BaseAgent, createAgent, getRegisteredAgentTypes } from "./base-agent.js";
 import type {
   AgentType,
@@ -92,6 +93,10 @@ export class SwarmOrchestrator {
   ): Promise<AgentResult> {
     const correlationId = createCorrelationId();
     const logger = this.logger.child({ correlationId, phoneNumber });
+    const endTimer = startTimer();
+
+    // Increment active agents gauge for orchestrator
+    activeAgents.inc({ agent_type: "orchestrator" });
 
     logAgentActivity(logger, {
       agentType: "orchestrator",
@@ -130,6 +135,10 @@ export class SwarmOrchestrator {
         contactId: contact?.id,
       });
 
+      // Record orchestrator metrics
+      recordAgentExecution("orchestrator", "process_message", "success", endTimer());
+      activeAgents.dec({ agent_type: "orchestrator" });
+
       return result;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Unknown error";
@@ -141,6 +150,10 @@ export class SwarmOrchestrator {
         contactId: contact?.id,
         error: errorMessage,
       });
+
+      // Record orchestrator metrics for failure
+      recordAgentExecution("orchestrator", "process_message", "failure", endTimer());
+      activeAgents.dec({ agent_type: "orchestrator" });
 
       // Fallback to rules if configured
       if (this.config.fallbackToRules) {

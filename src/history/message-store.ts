@@ -405,6 +405,33 @@ export class MessageStore {
   }
 
   /**
+   * Update message content (e.g., after voice transcription)
+   */
+  async updateMessageContent(
+    messageId: string,
+    content: string
+  ): Promise<boolean> {
+    if (!this.sql) {
+      this.logger.debug("Message store not configured, skipping update");
+      return false;
+    }
+
+    try {
+      await this.sql`
+        UPDATE ${this.sql(this.tableName)}
+        SET content = ${content}
+        WHERE id = ${messageId}
+      `;
+
+      logEvent(this.logger, "message_content_updated", { messageId });
+      return true;
+    } catch (error) {
+      logError(this.logger, error as Error, "Error updating message content");
+      return false;
+    }
+  }
+
+  /**
    * Delete old messages (for cleanup)
    */
   async deleteOldMessages(

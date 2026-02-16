@@ -152,6 +152,7 @@ export async function listEventTypes(
     return [];
   }
 
+  const endTimer = startTimer();
   try {
     const params = new URLSearchParams({
       organization: config.organizationUri,
@@ -168,6 +169,7 @@ export async function listEventTypes(
 
     if (!response.ok) {
       log(`Failed to list event types: ${response.status}`);
+      recordIntegrationCall("calendly", "list_event_types", "failure", endTimer());
       return [];
     }
 
@@ -182,6 +184,7 @@ export async function listEventTypes(
       }>;
     };
 
+    recordIntegrationCall("calendly", "list_event_types", "success", endTimer());
     return (data.collection ?? []).map((et) => ({
       uri: et.uri,
       name: et.name,
@@ -192,6 +195,7 @@ export async function listEventTypes(
     }));
   } catch (error) {
     log(`Error listing event types: ${error instanceof Error ? error.message : String(error)}`);
+    recordIntegrationCall("calendly", "list_event_types", "failure", endTimer());
     return [];
   }
 }
@@ -200,6 +204,7 @@ export async function listEventTypes(
  * Get a scheduled event by URI
  */
 export async function getEvent(eventUri: string): Promise<CalendlyEvent | null> {
+  const endTimer = startTimer();
   try {
     const response = await fetch(eventUri, {
       method: "GET",
@@ -208,6 +213,7 @@ export async function getEvent(eventUri: string): Promise<CalendlyEvent | null> 
 
     if (!response.ok) {
       log(`Failed to get event: ${response.status}`);
+      recordIntegrationCall("calendly", "get_event", "failure", endTimer());
       return null;
     }
 
@@ -228,9 +234,11 @@ export async function getEvent(eventUri: string): Promise<CalendlyEvent | null> 
     };
 
     if (!data.resource) {
+      recordIntegrationCall("calendly", "get_event", "failure", endTimer());
       return null;
     }
 
+    recordIntegrationCall("calendly", "get_event", "success", endTimer());
     return {
       uri: data.resource.uri,
       name: data.resource.name,
@@ -248,6 +256,7 @@ export async function getEvent(eventUri: string): Promise<CalendlyEvent | null> 
     };
   } catch (error) {
     log(`Error getting event: ${error instanceof Error ? error.message : String(error)}`);
+    recordIntegrationCall("calendly", "get_event", "failure", endTimer());
     return null;
   }
 }
@@ -258,6 +267,7 @@ export async function getEvent(eventUri: string): Promise<CalendlyEvent | null> 
 export async function getEventInvitees(
   eventUri: string,
 ): Promise<Array<{ uri: string; email: string; name: string; status: string }>> {
+  const endTimer = startTimer();
   try {
     const response = await fetch(`${eventUri}/invitees`, {
       method: "GET",
@@ -266,6 +276,7 @@ export async function getEventInvitees(
 
     if (!response.ok) {
       log(`Failed to get invitees: ${response.status}`);
+      recordIntegrationCall("calendly", "get_event_invitees", "failure", endTimer());
       return [];
     }
 
@@ -278,6 +289,7 @@ export async function getEventInvitees(
       }>;
     };
 
+    recordIntegrationCall("calendly", "get_event_invitees", "success", endTimer());
     return (data.collection ?? []).map((inv) => ({
       uri: inv.uri,
       email: inv.email,
@@ -286,6 +298,7 @@ export async function getEventInvitees(
     }));
   } catch (error) {
     log(`Error getting invitees: ${error instanceof Error ? error.message : String(error)}`);
+    recordIntegrationCall("calendly", "get_event_invitees", "failure", endTimer());
     return [];
   }
 }
@@ -303,6 +316,7 @@ export async function createWebhookSubscription(
     return null;
   }
 
+  const endTimer = startTimer();
   try {
     const response = await fetch(`${CALENDLY_API_BASE}/webhook_subscriptions`, {
       method: "POST",
@@ -318,6 +332,7 @@ export async function createWebhookSubscription(
     if (!response.ok) {
       const error = await response.text();
       log(`Failed to create webhook: ${response.status} - ${error}`);
+      recordIntegrationCall("calendly", "create_webhook_subscription", "failure", endTimer());
       return null;
     }
 
@@ -325,9 +340,11 @@ export async function createWebhookSubscription(
       resource?: { uri: string };
     };
 
+    recordIntegrationCall("calendly", "create_webhook_subscription", "success", endTimer());
     return data.resource?.uri ?? null;
   } catch (error) {
     log(`Error creating webhook: ${error instanceof Error ? error.message : String(error)}`);
+    recordIntegrationCall("calendly", "create_webhook_subscription", "failure", endTimer());
     return null;
   }
 }
