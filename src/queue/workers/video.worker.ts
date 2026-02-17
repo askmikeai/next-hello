@@ -9,6 +9,18 @@ import type { NetworkingEventConfig } from "../../config/types.js";
 const logger = createWorkerLogger("video-worker");
 
 /**
+ * Check if mock mode is enabled
+ */
+function isMockMode(): boolean {
+  return process.env.HEYGEN_MOCK_MODE === "true" || process.env.HEYGEN_MOCK_MODE === "1";
+}
+
+/**
+ * Mock video URL for testing
+ */
+const MOCK_VIDEO_URL = "https://files.heygen.ai/mock/sample-video.mp4";
+
+/**
  * Video worker result
  */
 export interface VideoWorkerResult {
@@ -197,6 +209,36 @@ async function processVideoJob(
   const endTimer = startTimer();
 
   try {
+    // Mock mode for testing without HeyGen API credits
+    if (isMockMode()) {
+      jobLogger.info("Running in MOCK MODE - no HeyGen API calls");
+
+      // Simulate processing delay (2-5 seconds)
+      const mockDelay = 2000 + Math.random() * 3000;
+      await new Promise((resolve) => setTimeout(resolve, mockDelay));
+
+      const mockVideoId = `mock-video-${Date.now()}`;
+      const mockVideoUrl = MOCK_VIDEO_URL;
+
+      // Update contact with mock video URL
+      await updateHeyGenVideo(phoneNumber, mockVideoId, mockVideoUrl, config.supabase);
+
+      jobLogger.info(
+        { videoId: mockVideoId, videoUrl: mockVideoUrl, mockDelay: Math.round(mockDelay) },
+        "Mock video generation completed"
+      );
+
+      recordJobProcessed("video-generation", "success", endTimer());
+
+      return {
+        success: true,
+        correlationId,
+        contactId,
+        videoId: mockVideoId,
+        videoUrl: mockVideoUrl,
+      };
+    }
+
     // Check if HeyGen is configured
     if (!config.heygen?.apiKey) {
       jobLogger.warn("HeyGen not configured, skipping video generation");
@@ -210,8 +252,8 @@ async function processVideoJob(
     }
 
     // Build the script
-    const script = buildScript(scriptTemplate, {
-      name: firstName,
+    const script = buildScript(scriptTemplate || "Hey {name}, great to meet you!", {
+      name: firstName || "there",
       ...variables,
     });
 

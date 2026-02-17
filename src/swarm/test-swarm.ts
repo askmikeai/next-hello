@@ -9,9 +9,12 @@ import { getCircuitBreaker } from "../resilience/circuit-breaker.js";
 import { createAgent } from "./base-agent.js";
 
 // Import agent registrations
-import "./agents/conversation.agent.js";
 import "./agents/research.agent.js";
 import "./agents/qualification.agent.js";
+import "./agents/crm.agent.js";
+import "./agents/video.agent.js";
+import "./agents/voice.agent.js";
+import "./agents/personalization.agent.js";
 
 const logger = createLogger({ component: "swarm-test" });
 
@@ -49,9 +52,9 @@ function testCircuitBreaker(): boolean {
 function testAgentRegistry(): boolean {
   console.log("\n🤖 Testing agent registry...");
   try {
-    const agentTypes = ["conversation", "research", "qualification"] as const;
+    const agentTypes = ["research", "qualification", "crm", "video", "voice", "personalization"] as const;
     for (const type of agentTypes) {
-      const agent = createAgent(type as "conversation" | "research" | "qualification");
+      const agent = createAgent(type);
       console.log(`   ✅ Agent '${type}' created: ${agent.constructor.name}`);
     }
     return true;

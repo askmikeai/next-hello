@@ -195,6 +195,14 @@ const queueDefaults: Record<QueueName, QueueOptions> = {
       removeOnFail: 500,
     },
   },
+  "pdl-enrichment": {
+    defaultJobOptions: {
+      attempts: 3,
+      backoff: { type: "exponential", delay: 6000 }, // 6s base delay for rate limit recovery
+      removeOnComplete: 200,
+      removeOnFail: 500,
+    },
+  },
 };
 
 // Queue instances cache

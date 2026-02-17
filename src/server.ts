@@ -14,8 +14,14 @@ import type { NetworkingEventConfig } from "./config/types.js";
 import { getMetrics, getMetricsContentType, recordHttpRequest, startTimer } from "./observability/metrics.js";
 import fs from "fs";
 import path from "path";
+import { createVideoWorker } from "./queue/workers/video.worker.js";
+import { createAgentTaskWorker } from "./queue/workers/agent-task.worker.js";
+import type { Worker } from "bullmq";
 
 const PORT = parseInt(process.env.PORT ?? "3000", 10);
+
+// Track workers for graceful shutdown
+const workers: Worker[] = [];
 const HOST = process.env.HOST ?? "0.0.0.0";
 
 function log(message: string): void {
@@ -168,6 +174,24 @@ function startServer(): void {
   import("./webhooks/calendly.js").catch(() => {});
   import("./webhooks/heygen.js").catch(() => {});
 
+  // Start video worker
+  const videoWorker = createVideoWorker(config);
+  if (videoWorker) {
+    workers.push(videoWorker);
+    log("Video worker started" + (process.env.HEYGEN_MOCK_MODE ? " (MOCK MODE)" : ""));
+  } else {
+    log("Video worker not started (Redis unavailable)");
+  }
+
+  // Start agent-task worker for parallel execution
+  const agentTaskWorker = createAgentTaskWorker(config);
+  if (agentTaskWorker) {
+    workers.push(agentTaskWorker);
+    log("Agent task worker started");
+  } else {
+    log("Agent task worker not started (Redis unavailable)");
+  }
+
   const server = http.createServer((req, res) => {
     handleRequest(req, res).catch((error) => {
       log(`Unhandled error: ${error}`);
@@ -203,8 +227,16 @@ function startServer(): void {
   });
 
   // Graceful shutdown
-  const shutdown = (signal: string) => {
+  const shutdown = async (signal: string) => {
     log(`Received ${signal}, shutting down...`);
+
+    // Close workers first
+    if (workers.length > 0) {
+      log(`Closing ${workers.length} worker(s)...`);
+      await Promise.all(workers.map((w) => w.close()));
+      log("Workers closed");
+    }
+
     server.close(() => {
       log("Server closed");
       process.exit(0);

@@ -2,11 +2,34 @@ import type { Logger } from "pino";
 import type { NetworkingContact, NetworkingEventConfig } from "../config/types.js";
 
 /**
- * Agent types in the swarm
+ * Agent types in the swarm - Corporate Hierarchy
+ *
+ * ORCHESTRATOR (CEO / AI Brain)
+ * └── Handles ALL conversations, coordinates all agents
+ *     │
+ *     ├── RESEARCH Agent ──► PDL API
+ *     │   └── Contact enrichment via People Data Labs
+ *     │
+ *     ├── QUALIFICATION Agent (depends on Research)
+ *     │   └── Lead scoring (0-100) & tier assignment
+ *     │
+ *     ├── CRM Agent ──► HubSpot API
+ *     │   └── HubSpot synchronization
+ *     │
+ *     ├── PERSONALIZATION Agent
+ *     │   └── Content generation (scripts, messages, emails)
+ *     │
+ *     ├── VIDEO Agent ──► HeyGen API
+ *     │   └── HeyGen video generation
+ *     │
+ *     └── VOICE Agent ──► ElevenLabs API
+ *         └── ElevenLabs text-to-speech
+ *
+ * All agents report directly to Orchestrator.
+ * Only Qualification depends on Research completing first.
  */
 export type AgentType =
   | "orchestrator"
-  | "conversation"
   | "research"
   | "qualification"
   | "personalization"
@@ -256,7 +279,8 @@ export type QueueName =
   | "video-generation"
   | "voice-generation"
   | "crm-sync"
-  | "lead-qualification";
+  | "lead-qualification"
+  | "pdl-enrichment";
 
 /**
  * Queue job data for incoming messages
@@ -362,7 +386,6 @@ export interface SwarmConfig {
   contextTokenBudget?: number;
   defaultModel?: string;
   agents?: {
-    conversation?: { enabled?: boolean };
     research?: { enabled?: boolean };
     qualification?: { enabled?: boolean };
     personalization?: { enabled?: boolean };

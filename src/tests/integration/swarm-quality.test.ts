@@ -68,9 +68,9 @@ describe.skipIf(!runDbTests)("Swarm Quality & Fault Detection", () => {
   });
 
   describe("Agent Type Validation", () => {
+    // Agent types after refactoring - orchestrator handles conversations
     const validAgentTypes = [
       "orchestrator",
-      "conversation",
       "research",
       "qualification",
       "personalization",
@@ -93,13 +93,14 @@ describe.skipIf(!runDbTests)("Swarm Quality & Fault Detection", () => {
   });
 
   describe("Routing Decision Logic", () => {
+    // The orchestrator handles all conversations directly
     const routingTestCases = [
-      { input: "What's your email?", expectedIntent: "contact_info", shouldRoute: "conversation" },
-      { input: "john@example.com", expectedIntent: "email_provided", shouldRoute: "conversation" },
-      { input: "Can we schedule a meeting?", expectedIntent: "scheduling", shouldRoute: "conversation" },
-      { input: "Tell me about your company", expectedIntent: "question", shouldRoute: "conversation" },
-      { input: "I work at Google", expectedIntent: "company_info", shouldRoute: "conversation" },
-      { input: "Check my LinkedIn profile", expectedIntent: "linkedin", shouldRoute: "conversation" },
+      { input: "What's your email?", expectedIntent: "contact_info", shouldRoute: "orchestrator" },
+      { input: "john@example.com", expectedIntent: "email_provided", shouldRoute: "orchestrator" },
+      { input: "Can we schedule a meeting?", expectedIntent: "scheduling", shouldRoute: "orchestrator" },
+      { input: "Tell me about your company", expectedIntent: "question", shouldRoute: "orchestrator" },
+      { input: "I work at Google", expectedIntent: "company_info", shouldRoute: "orchestrator" },
+      { input: "Check my LinkedIn profile", expectedIntent: "linkedin", shouldRoute: "orchestrator" },
     ];
 
     for (const testCase of routingTestCases) {
@@ -114,8 +115,8 @@ describe.skipIf(!runDbTests)("Swarm Quality & Fault Detection", () => {
         if (input.includes("?")) detectedIntent = "question";
         if (input.includes("company") || input.includes("work at")) detectedIntent = "company_info";
 
-        // Default routing should be to conversation agent
-        expect(testCase.shouldRoute).toBe("conversation");
+        // All routing goes through orchestrator
+        expect(testCase.shouldRoute).toBe("orchestrator");
       });
     }
   });
@@ -156,16 +157,17 @@ describe.skipIf(!runDbTests)("Swarm Quality & Fault Detection", () => {
   });
 
   describe("Agent Handoff Validation", () => {
+    // Orchestrator handles conversations and triggers specialized agents
     const validHandoffs = [
-      { from: "conversation", to: "research", trigger: "linkedin_research tool" },
-      { from: "conversation", to: "video", trigger: "heygen_video tool" },
-      { from: "conversation", to: "voice", trigger: "voice_message tool" },
+      { from: "orchestrator", to: "research", trigger: "research_contact tool" },
+      { from: "orchestrator", to: "video", trigger: "generate_video tool" },
+      { from: "orchestrator", to: "voice", trigger: "send_voice_response tool" },
       { from: "research", to: "qualification", trigger: "research complete" },
       { from: "qualification", to: "crm", trigger: "qualification complete" },
     ];
 
     const invalidHandoffs = [
-      { from: "video", to: "conversation", reason: "video is a leaf agent" },
+      { from: "video", to: "orchestrator", reason: "video is a leaf agent" },
       { from: "voice", to: "research", reason: "voice is a leaf agent" },
       { from: "crm", to: "qualification", reason: "crm is a leaf agent" },
       { from: "personalization", to: "video", reason: "personalization is a leaf agent" },
@@ -237,7 +239,7 @@ describe.skipIf(!runDbTests)("Swarm Quality & Fault Detection", () => {
     it("should track conversation turns correctly", () => {
       let state: SwarmState = {
         phoneNumber: "17542959900",
-        currentAgent: "conversation",
+        currentAgent: "orchestrator",
         conversationTurns: 0,
         completedTasks: [],
         taskQueue: [],
@@ -267,14 +269,19 @@ describe.skipIf(!runDbTests)("Swarm Quality & Fault Detection", () => {
 
   describe("Tool Validation", () => {
     const requiredTools = {
-      conversation: [
+      orchestrator: [
         "contact_lookup",
         "contact_update",
         "send_video",
+        "generate_video",
         "delete_contact",
-        "calendly_link",
+        "get_calendly_link",
+        "research_contact",
+        "trigger_parallel_tasks",
+        "set_voice_mode",
+        "send_voice_response",
       ],
-      research: ["linkedin_research", "update_research_status"],
+      research: ["pdl_enrich", "update_research_status"],
       qualification: ["set_qualification", "get_engagement_data"],
       personalization: ["generate_welcome_message", "generate_email", "generate_video_script"],
       video: ["generate_heygen_video", "check_video_status", "get_contact_video"],

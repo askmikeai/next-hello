@@ -31,13 +31,47 @@ export async function handleAdminRequest(
   const pathname = urlObj.pathname;
 
   try {
-    // Serve dashboard HTML
-    if ((pathname === "/admin" || pathname === "/admin/") && method === "GET") {
-      const htmlPath = path.join(__dirname, "dashboard.html");
-      const html = fs.readFileSync(htmlPath, "utf-8");
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-      res.end(html);
-      return;
+    // Serve React build (static assets and SPA fallback)
+    if (method === "GET" && (pathname === "/admin" || pathname === "/admin/" || pathname.startsWith("/admin/assets/"))) {
+      const basePath = __dirname;
+      let filePath: string;
+
+      if (pathname.startsWith("/admin/assets/")) {
+        // Serve static assets
+        filePath = path.join(basePath, pathname.replace("/admin/", ""));
+      } else {
+        // SPA fallback - serve index.html
+        filePath = path.join(basePath, "index.html");
+      }
+
+      try {
+        const content = fs.readFileSync(filePath);
+        const ext = path.extname(filePath);
+        const contentTypes: Record<string, string> = {
+          ".html": "text/html; charset=utf-8",
+          ".js": "application/javascript",
+          ".css": "text/css",
+          ".svg": "image/svg+xml",
+          ".png": "image/png",
+          ".ico": "image/x-icon",
+        };
+        const contentType = contentTypes[ext] || "application/octet-stream";
+
+        res.writeHead(200, { "Content-Type": contentType });
+        res.end(content);
+        return;
+      } catch (fileError) {
+        // If asset not found, fallback to index.html for SPA routing
+        if (pathname.startsWith("/admin/assets/")) {
+          sendError(res, 404, "Asset not found");
+          return;
+        }
+        const indexPath = path.join(basePath, "index.html");
+        const html = fs.readFileSync(indexPath, "utf-8");
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(html);
+        return;
+      }
     }
 
     // API endpoints
@@ -136,6 +170,36 @@ async function handleApiRequest(
     const contactId = videoMatch[1];
     const result = await api.sendVideo(contactId);
     sendJsonResponse(res, result.success ? 200 : 400, result);
+    return;
+  }
+
+  // GET /admin/api/swarm/states
+  if (pathname === "/admin/api/swarm/states" && method === "GET") {
+    const states = await api.getSwarmStates();
+    sendJsonResponse(res, 200, states);
+    return;
+  }
+
+  // GET /admin/api/swarm/handoffs
+  if (pathname === "/admin/api/swarm/handoffs" && method === "GET") {
+    const handoffs = await api.getHandoffs();
+    sendJsonResponse(res, 200, handoffs);
+    return;
+  }
+
+  // GET /admin/api/swarm/agents
+  if (pathname === "/admin/api/swarm/agents" && method === "GET") {
+    const stats = await api.getAgentStats();
+    sendJsonResponse(res, 200, stats);
+    return;
+  }
+
+  // GET /admin/api/swarm/conversation/:id
+  const conversationMatch = pathname.match(/^\/admin\/api\/swarm\/conversation\/([^/]+)$/);
+  if (conversationMatch && method === "GET") {
+    const correlationId = decodeURIComponent(conversationMatch[1]);
+    const data = await api.getSwarmConversation(correlationId);
+    sendJsonResponse(res, 200, data);
     return;
   }
 

@@ -4,165 +4,242 @@
 
 ## System Overview
 
-**Architecture Type:** Multi-agent swarm with orchestrator pattern
-**Agent Model:** LLM-powered agents (Anthropic Claude) with tool use
+**Architecture Type:** AI Orchestrator with specialized agents
+**Agent Model:** Single LLM-powered orchestrator (Anthropic Claude) coordinating 6 specialized agents
 **Infrastructure:** Redis (state/queues), PostgreSQL (persistence), BullMQ (job processing)
 
+## Swarm Hierarchy (Corporate Structure)
+
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           NEXTHELLO SWARM                                    │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│                       ┌─────────────────────┐                               │
-│                       │  SwarmOrchestrator  │                               │
-│                       │ (Central Coordinator)│                               │
-│                       └──────────┬──────────┘                               │
-│                                  │                                           │
-│         ┌────────────┬───────────┼───────────┬────────────┬────────────┐    │
-│         │            │           │           │            │            │    │
-│    ┌────▼────┐ ┌─────▼────┐ ┌────▼────┐ ┌────▼─────┐ ┌────▼───┐ ┌─────▼──┐ │
-│    │Conversa-│ │ Research │ │Qualifi- │ │  Voice   │ │ Video  │ │  CRM   │ │
-│    │  tion   │ │  Agent   │ │ cation  │ │  Agent   │ │ Agent  │ │ Agent  │ │
-│    │  Agent  │ │          │ │  Agent  │ │(Eleven-  │ │(HeyGen)│ │(HubSpot│ │
-│    │         │ │(LinkedIn)│ │         │ │  Labs)   │ │        │ │        │ │
-│    └────┬────┘ └────┬─────┘ └────┬────┘ └────┬─────┘ └────┬───┘ └────┬───┘ │
-│         │           │            │           │            │          │      │
-│         └───────────┴────────────┴───────────┴────────────┴──────────┘      │
-│                                  │                                           │
-│                                  ▼                                           │
-│    ┌──────────────────────────────────────────────────────────────────┐     │
-│    │                        Tool Executor                              │     │
-│    │  ┌──────────────┬──────────────┬──────────────┬───────────────┐  │     │
-│    │  │contact_lookup│contact_update│calendly_link │linkedin_research│ │     │
-│    │  ├──────────────┼──────────────┼──────────────┼───────────────┤  │     │
-│    │  │generate_voice│ send_video   │  sync_to_crm │ delete_contact│  │     │
-│    │  └──────────────┴──────────────┴──────────────┴───────────────┘  │     │
-│    └──────────────────────────────────────────────────────────────────┘     │
-│                                  │                                           │
-│         ┌────────────────────────┼────────────────────────┐                 │
-│         ▼                        ▼                        ▼                 │
-│    ┌─────────┐            ┌─────────────┐          ┌──────────┐            │
-│    │  Redis  │            │ PostgreSQL  │          │  BullMQ  │            │
-│    │ (State) │            │ (Database)  │          │ (Queues) │            │
-│    └─────────┘            └─────────────┘          └──────────┘            │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
+                            ┌─────────────────────────────────────┐
+                            │           ORCHESTRATOR              │
+                            │         (CEO / AI Brain)            │
+                            │                                     │
+                            │  • Handles ALL conversations        │
+                            │  • Makes routing decisions          │
+                            │  • Coordinates all agents           │
+                            │  • Triggers parallel execution      │
+                            └──────────────────┬──────────────────┘
+                                               │
+        ┌──────────────┬──────────────┬────────┴────────┬──────────────┬──────────────┐
+        │              │              │                 │              │              │
+        ▼              ▼              ▼                 ▼              ▼              ▼
+┌───────────────┐ ┌───────────┐ ┌───────────┐ ┌─────────────┐ ┌───────────┐ ┌───────────┐
+│   RESEARCH    │ │QUALIFICATION│ │    CRM    │ │PERSONTIC    │ │   VIDEO   │ │   VOICE   │
+│    Agent      │ │   Agent    │ │   Agent   │ │   Agent     │ │   Agent   │ │   Agent   │
+├───────────────┤ ├───────────┤ ├───────────┤ ├─────────────┤ ├───────────┤ ├───────────┤
+│ Contact       │ │ Lead      │ │ HubSpot   │ │ Content     │ │ HeyGen    │ │ ElevenLabs│
+│ enrichment    │ │ scoring   │ │ sync      │ │ generation  │ │ videos    │ │ TTS       │
+│ via PDL API   │ │ (0-100)   │ │           │ │             │ │           │ │           │
+└───────┬───────┘ └───────────┘ └─────┬─────┘ └─────────────┘ └─────┬─────┘ └─────┬─────┘
+        │                             │                             │             │
+        ▼                             ▼                             ▼             ▼
+   ┌─────────┐                   ┌─────────┐                   ┌─────────┐   ┌──────────┐
+   │   PDL   │                   │ HubSpot │                   │ HeyGen  │   │ElevenLabs│
+   │   API   │                   │   API   │                   │   API   │   │   API    │
+   └─────────┘                   └─────────┘                   └─────────┘   └──────────┘
 ```
 
-## Agent Architecture
+### Reporting Structure
 
-### SwarmOrchestrator
+| Role | Reports To | Single Responsibility |
+|------|------------|----------------------|
+| **Orchestrator** | — | CEO - handles ALL conversations, coordinates agents |
+| **Research Agent** | Orchestrator | Contact enrichment via People Data Labs API |
+| **Qualification Agent** | Orchestrator | Lead scoring (0-100) & tier assignment (hot/warm/cold) |
+| **CRM Agent** | Orchestrator | HubSpot synchronization |
+| **Personalization Agent** | Orchestrator | Content generation (scripts, messages, emails) |
+| **Video Agent** | Orchestrator | HeyGen video generation |
+| **Voice Agent** | Orchestrator | ElevenLabs text-to-speech |
 
-The central coordinator that:
-- Routes incoming messages to appropriate agents
-- Manages swarm state in Redis
-- Handles agent-to-agent handoffs
-- Provides fallback to rule-based handling when AI fails
-- Tracks conversation turns and context
+### Agent Dependencies
 
-### Specialized Agents
+```
+Independent (Fire-and-Forget):
+  Orchestrator ──► Research
+  Orchestrator ──► CRM
+  Orchestrator ──► Video
+  Orchestrator ──► Voice
+  Orchestrator ──► Personalization
 
-| Agent | Type | Purpose | Tools | Temperature |
-|-------|------|---------|-------|-------------|
-| **ConversationAgent** | conversation | Natural language dialog, field collection | `contact_lookup`, `contact_update`, `calendly_link`, `send_video` | 0.7 |
-| **ResearchAgent** | research | LinkedIn/company research, profile enrichment | `linkedin_research`, `update_research_status` | 0.3 |
-| **QualificationAgent** | qualification | Lead scoring (hot/warm/cold/unqualified) | `set_qualification`, `get_engagement_data` | 0.2 |
-| **VoiceAgent** | voice | ElevenLabs voice message generation | `generate_voice`, `send_voice` | 0.6 |
-| **VideoAgent** | video | HeyGen video coordination | `generate_video`, `check_video_status` | 0.5 |
-| **CRMAgent** | crm | HubSpot synchronization | `sync_to_crm`, `update_crm_status` | 0.3 |
+Pipeline (Wait-All with Dependencies):
+  Orchestrator ──► Research ──► Qualification ──► CRM
+```
 
-### Tool System
+All 6 agents report directly to the Orchestrator. The only dependency is that **Qualification waits for Research** to complete before scoring the lead.
 
-Tools are registered with the `ToolExecutor` and exposed to agents via Claude's tool use:
+## Orchestrator (The AI Brain)
+
+The orchestrator is the central AI that:
+- **Uses Claude directly** to analyze messages and decide responses
+- **Generates responses** - handles all conversations itself
+- **Triggers agents** via tools (video generation, research, CRM sync, voice)
+- **Manages state** in Redis for conversation continuity
+- **Runs parallel tasks** for non-blocking background operations
+
+### Tools Available to Orchestrator
+
+| Tool | Purpose | Triggers |
+|------|---------|----------|
+| `contact_lookup` | Look up contact by phone | Database query |
+| `contact_update` | Save email, company, job title, LinkedIn | Database update |
+| `get_calendly_link` | Get scheduling link to share | Config lookup |
+| `send_video` | Send existing video to contact | Outbound queue |
+| `generate_video` | Create personalized HeyGen video | Video Agent |
+| `research_contact` | Background PDL/company research | Research Agent |
+| `delete_contact` | GDPR data deletion | Database delete |
+| `trigger_parallel_tasks` | Run multiple agents in parallel | ParallelTaskRunner |
+| `set_voice_mode` | Enable/disable voice responses | Redis state |
+| `send_voice_response` | Send TTS voice message | Voice Agent |
+
+### System Prompt
+
+The orchestrator receives a system prompt that includes:
+- Event context (event name, owner name)
+- Contact information (if known)
+- Missing required fields
+- Voice mode status
+- Available actions and guidelines
 
 ```typescript
-// Example tool definition
-registerTool(
-  "contact_lookup",
-  "Look up a contact by phone number",
-  { phoneNumber: { type: "string", description: "Phone number to look up" } },
-  async (input, context) => {
-    const contact = await findContactByPhone(input.phoneNumber, context.config.supabase);
-    return contact || { error: "Contact not found" };
+// Simplified orchestrator flow
+async processMessage(phoneNumber, message) {
+  const state = await loadOrCreateState(phoneNumber);
+  const voiceModeEnabled = await checkVoiceMode(phoneNumber);
+  const systemPrompt = buildSystemPrompt(context, state, voiceModeEnabled);
+
+  const response = await llm.runWithTools({
+    systemPrompt,
+    messages: [{ role: "user", content: message }],
+    tools: this.getTools(),
+  }, async (toolCall) => {
+    return await this.toolExecutor.executeTool(toolCall, context);
+  });
+
+  await saveState(state);
+  return response.content;
+}
+```
+
+## Parallel Agent Execution
+
+The swarm supports parallel execution of independent operations, enabling research, CRM sync, and media generation to run concurrently without blocking conversations.
+
+### Execution Strategies
+
+| Strategy | Use Case | Behavior |
+|----------|----------|----------|
+| `fire-and-forget` | Video/voice generation, CRM sync | Queue all tasks, return immediately |
+| `wait-all` | Research → Qualification pipeline | Execute in waves based on dependencies |
+| `first-wins` | Redundant lookups | Return first successful result |
+
+### Agent Parallel Configuration
+
+| Agent | Can Run Parallel With | Depends On | Background | Priority | Timeout |
+|-------|----------------------|------------|------------|----------|---------|
+| orchestrator | - | - | No | 100 | 30s |
+| research | crm, qualification, video, voice | - | Yes | 50 | 60s |
+| crm | research, video, voice, qualification | - | Yes | 30 | 30s |
+| qualification | crm, video, voice | research | No | 40 | 15s |
+| personalization | video, voice | research, qualification | No | 35 | 20s |
+| video | voice, crm, research | - | Yes | 20 | 5min |
+| voice | video, crm, research | - | Yes | 25 | 60s |
+
+### ParallelTaskBuilder API
+
+```typescript
+// Fire-and-forget background tasks
+await orchestrator.triggerBackgroundTasks(phoneNumber, context, {
+  research: true,
+  crm: true,
+  video: { firstName: "John" },
+  voice: { text: "Hello John!" },
+});
+
+// Research pipeline with dependencies
+const result = await orchestrator.runResearchPipeline(phoneNumber, context, {
+  linkedinUrl: "https://linkedin.com/in/johndoe",
+});
+// result.mergedResult contains data from all agents
+```
+
+### Claude Triggering Parallel Tasks
+
+```json
+{
+  "name": "trigger_parallel_tasks",
+  "input": {
+    "phoneNumber": "+14155551234",
+    "tasks": ["research", "crm_sync", "video"],
+    "firstName": "John"
   }
-);
+}
 ```
 
-## Infrastructure
+## Specialized Agents
 
-### Job Queues (BullMQ + Redis)
+### Research Agent
+- **Responsibility:** Contact enrichment via People Data Labs API
+- **Tools:** `pdl_enrich`, `update_research_status`
+- **Next Agent:** Qualification (after research completes)
 
-| Queue | Purpose | Priority |
-|-------|---------|----------|
-| `incoming-messages` | WhatsApp/Telegram messages | High |
-| `agent-tasks` | Agent-to-agent handoffs | Normal |
-| `research-jobs` | Background LinkedIn research | Low |
-| `video-generation` | Long-running HeyGen jobs | Low |
-| `voice-generation` | ElevenLabs voice message jobs | Low |
-| `crm-sync` | Background CRM synchronization | Low |
-| `lead-qualification` | Batch lead scoring | Low |
+### Qualification Agent
+- **Responsibility:** Lead scoring (0-100) and tier assignment
+- **Tiers:** Hot (75-100), Warm (50-74), Cold (25-49), Unqualified (0-24)
+- **Tools:** `set_qualification`, `get_engagement_data`
+- **Depends On:** Research Agent
 
-### Resilience
+### CRM Agent
+- **Responsibility:** HubSpot CRM synchronization
+- **Tools:** `crm_sync`, `check_sync_status`, `generate_deal_name`
 
-**Circuit Breakers** protect against cascading failures:
-- Per-integration breakers (Claude, HeyGen, ElevenLabs, LinkedIn, HubSpot, PostgreSQL, Redis)
-- Configurable failure thresholds and recovery times
-- Automatic state transitions: Closed → Open → Half-Open → Closed
+### Personalization Agent
+- **Responsibility:** Content generation (scripts, messages, emails)
+- **Tools:** `generate_welcome_message`, `generate_email`, `generate_video_script`
 
-**Retry Logic:**
-- Exponential backoff with jitter
-- Max 3 attempts per operation
-- Configurable per-queue retry policies
+### Video Agent
+- **Responsibility:** HeyGen video generation
+- **Tools:** `generate_heygen_video`, `check_video_status`, `get_contact_video`
 
-### Observability (Cross-Cutting Layer)
+### Voice Agent
+- **Responsibility:** ElevenLabs text-to-speech generation
+- **Tools:** `generate_voice_message`, `list_available_voices`, `send_voice_message`
 
-The observability layer spans the entire system, providing visibility into all components.
+## Voice Mode
+
+The system automatically matches the user's communication preference:
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         OBSERVABILITY LAYER                                  │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌───────────────┐   │
-│  │    Pino      │  │  Prometheus  │  │   Activity   │  │    Health     │   │
-│  │   Logging    │  │   Metrics    │  │    Store     │  │    Checks     │   │
-│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘  └───────┬───────┘   │
-│         │                 │                 │                   │           │
-│         └─────────────────┴─────────────────┴───────────────────┘           │
-│                                     │                                        │
-│    Spans: Agents | Queues | LLM | Database | Redis | Integrations | HTTP    │
-└─────────────────────────────────────┴───────────────────────────────────────┘
+User sends VOICE message ──► Auto-enable voice mode ──► Respond with VOICE
+User sends TEXT message  ──► Check voice mode state ──► Respond with TEXT (default)
+User asks for "text"/"write to me" ──► Disable voice mode ──► Respond with TEXT
 ```
 
-**Structured Logging (Pino):**
-- Correlation IDs for end-to-end request tracing
-- Child loggers for agents, workers, requests
-- Automatic sensitive data redaction (passwords, tokens, API keys)
-- Structured event logging (`logEvent`, `logError`, `logLLMInteraction`, `logAgentActivity`, `logQueueJob`)
-- JSON format in production, pino-pretty in development
+### Voice Mode Behavior
+| User Input | System Response |
+|------------|-----------------|
+| Voice message | Auto-enable voice mode, respond with voice |
+| Text message (voice mode on) | Respond with voice |
+| Text message (voice mode off) | Respond with text |
+| "Write to me" / "text please" | Disable voice mode, respond with text |
 
-**Metrics (Prometheus):**
+### Redis State
+- Key: `voice_mode:{phoneNumber}`
+- Value: `"true"` or `"false"`
+- TTL: 24 hours
 
-| Category | Metrics |
-|----------|---------|
-| **Agent** | `nexthello_agent_executions_total`, `nexthello_agent_execution_duration_seconds`, `nexthello_active_agents` |
-| **LLM** | `nexthello_llm_calls_total`, `nexthello_llm_call_duration_seconds`, `nexthello_tokens_used_total`, `nexthello_llm_cost_usd_total` |
-| **Queue** | `nexthello_queue_depth`, `nexthello_queue_active_jobs`, `nexthello_jobs_processed_total`, `nexthello_job_processing_duration_seconds` |
-| **Message** | `nexthello_messages_received_total`, `nexthello_messages_sent_total`, `nexthello_message_processing_duration_seconds` |
-| **Contact** | `nexthello_contacts_by_status`, `nexthello_contacts_by_qualification`, `nexthello_contacts_created_total` |
-| **Database** | `nexthello_db_queries_total`, `nexthello_db_query_duration_seconds`, `nexthello_db_connection_pool` |
-| **Redis** | `nexthello_redis_ops_total`, `nexthello_redis_op_duration_seconds`, `nexthello_redis_connected` |
-| **HTTP** | `nexthello_http_requests_total`, `nexthello_http_request_duration_seconds` |
-| **Integration** | `nexthello_integration_calls_total`, `nexthello_integration_call_duration_seconds`, `nexthello_circuit_breaker_state` |
+## Background Workers
 
-**Activity Store (PostgreSQL):**
-- Persists all agent activity to `agent_activity_log` table
-- Tracks: agent type, action, duration, tokens used, errors
-- Query by correlation ID or agent type
-- Enables debugging and analytics
+Workers process jobs asynchronously, triggered by orchestrator tools:
 
-**Health Checks (`/health`):**
-- Dependency status (Redis, PostgreSQL, Claude API)
-- Returns: `healthy`, `degraded`, or `unhealthy`
-- Latency measurements per dependency
+| Worker | Queue | Purpose | Integration |
+|--------|-------|---------|-------------|
+| **MessageWorker** | `incoming-messages` | Process incoming messages | Orchestrator |
+| **VideoWorker** | `video-generation` | Generate personalized videos | HeyGen API |
+| **ResearchWorker** | `research-jobs` | PDL/company research | PDL API |
+| **CRMWorker** | `crm-sync` | Sync contacts to CRM | HubSpot API |
+| **VoiceWorker** | `voice-generation` | Generate voice messages | ElevenLabs API |
+| **AgentTaskWorker** | `agent-tasks` | Execute parallel agent tasks | All Agents |
 
 ## Data Flow
 
@@ -174,76 +251,87 @@ WhatsApp Message
        ▼
 ┌──────────────────┐
 │  Message Queue   │
-│ (incoming-messages)
+│(incoming-messages)│
 └────────┬─────────┘
          │
          ▼
-┌──────────────────┐
-│ SwarmOrchestrator│
-│                  │
-│ 1. Load state    │
-│ 2. Analyze intent│
-│ 3. Route to agent│
-└────────┬─────────┘
+┌──────────────────────────────────────────┐
+│           SwarmOrchestrator              │
+│                                          │
+│  1. Load state from Redis                │
+│  2. Check voice mode                     │
+│  3. Build system prompt with context     │
+│  4. Call Claude with tools               │
+│  5. Execute any tool calls               │
+│  6. Trigger parallel tasks if needed     │
+│  7. Return response to user              │
+│  8. Update state in Redis                │
+└────────┬─────────────────────────────────┘
          │
-         ▼
-┌──────────────────┐
-│ConversationAgent │
-│                  │
-│ 1. Build context │
-│ 2. Call Claude   │
-│ 3. Execute tools │
-│ 4. Return response│
-└────────┬─────────┘
-         │
-         ▼
-┌──────────────────┐
-│  Send Response   │
-│  Update State    │
-│  Log Activity    │
-└──────────────────┘
+         ├──────────────────────────────────┐
+         │                                  │
+         ▼                                  ▼
+┌──────────────────┐              ┌──────────────────┐
+│ Send Response    │              │ Parallel Tasks   │
+│ (text or voice)  │              │ (research, video,│
+└──────────────────┘              │  CRM, voice)     │
+                                  └──────────────────┘
 ```
 
-### Background Processing Flow
+## Infrastructure
 
+### Job Queues (BullMQ + Redis)
+
+| Queue | Purpose | Concurrency |
+|-------|---------|-------------|
+| `incoming-messages` | WhatsApp messages | 5 |
+| `outbound-messages` | Send messages/videos | 5 |
+| `video-generation` | HeyGen video jobs | 2 |
+| `research-jobs` | PDL research | 3 |
+| `voice-generation` | ElevenLabs TTS | 2 |
+| `crm-sync` | HubSpot sync | 3 |
+| `agent-tasks` | Parallel agent tasks | 5 |
+
+### Redis State
+
+Swarm state stored per phone number:
+
+```typescript
+interface SwarmState {
+  correlationId: string;
+  phoneNumber: string;
+  channel: "whatsapp" | "telegram";
+  currentAgent: "orchestrator";
+  conversationTurns: number;
+  lastActivityAt: Date;
+  taskQueue: AgentTask[];
+  completedTasks: AgentTask[];
+}
 ```
-Contact Created/Updated
-         │
-         ▼
-┌──────────────────┐     ┌──────────────────┐
-│  Research Queue  │────▶│  ResearchAgent   │
-└──────────────────┘     │                  │
-                         │ • LinkedIn lookup│
-                         │ • Company data   │
-                         │ • Update contact │
-                         └────────┬─────────┘
-                                  │
-                                  ▼
-                         ┌──────────────────┐
-                         │Qualification Queue│
-                         └────────┬─────────┘
-                                  │
-                                  ▼
-                         ┌──────────────────┐
-                         │QualificationAgent│
-                         │                  │
-                         │ • Score lead     │
-                         │ • Assign tier    │
-                         │ • Update contact │
-                         └────────┬─────────┘
-                                  │
-                                  ▼
-                         ┌──────────────────┐
-                         │   CRM Queue      │
-                         └────────┬─────────┘
-                                  │
-                                  ▼
-                         ┌──────────────────┐
-                         │    CRMAgent      │
-                         │                  │
-                         │ • Sync to HubSpot│
-                         └──────────────────┘
-```
+
+Key format: `swarm:state:{phoneNumber}`
+Voice mode: `voice_mode:{phoneNumber}`
+TTL: 24 hours
+
+### Observability
+
+**Structured Logging (Pino):**
+- Correlation IDs for end-to-end tracing
+- Agent activity logging
+- Tool execution logging
+- LLM interaction logging
+
+**Metrics (Prometheus):**
+- `nexthello_agent_executions_total` - Orchestrator/agent calls
+- `nexthello_llm_calls_total` - Claude API calls
+- `nexthello_tokens_used_total` - Token consumption
+- `nexthello_jobs_processed_total` - Worker job counts
+- `nexthello_parallel_tasks_total` - Parallel task execution
+- `nexthello_parallel_task_duration_seconds` - Task duration
+
+**Admin Dashboard (`/admin`):**
+- Overview tab: Contacts, queues, health
+- Swarm tab: Agent topology, active conversations, performance metrics
 
 ## Directory Structure
 
@@ -251,137 +339,51 @@ Contact Created/Updated
 nexthello/
 ├── src/
 │   ├── swarm/                      # AI Swarm System
-│   │   ├── orchestrator.ts         # Central coordinator
-│   │   ├── base-agent.ts           # Abstract agent class
-│   │   ├── index.ts                # Swarm exports
+│   │   ├── orchestrator.ts         # THE AI BRAIN - uses Claude
+│   │   ├── base-agent.ts           # Base class for agents
 │   │   ├── types.ts                # Type definitions
-│   │   ├── agents/
-│   │   │   ├── conversation.agent.ts
-│   │   │   ├── research.agent.ts
-│   │   │   ├── qualification.agent.ts
-│   │   │   ├── voice.agent.ts      # ElevenLabs voice messages
-│   │   │   ├── video.agent.ts
-│   │   │   └── crm.agent.ts
-│   │   ├── llm/
-│   │   │   ├── client.ts           # Anthropic SDK wrapper
-│   │   │   └── tool-executor.ts    # Tool registration & execution
-│   │   └── state/
-│   │       └── swarm-state.ts      # Redis state management
+│   │   ├── index.ts                # Swarm exports
+│   │   ├── agents/                 # Specialized agents (6 total)
+│   │   │   ├── research.agent.ts   # PDL enrichment
+│   │   │   ├── qualification.agent.ts # Lead scoring
+│   │   │   ├── crm.agent.ts        # HubSpot sync
+│   │   │   ├── personalization.agent.ts # Content generation
+│   │   │   ├── video.agent.ts      # HeyGen videos
+│   │   │   └── voice.agent.ts      # ElevenLabs TTS
+│   │   ├── parallel/               # Parallel Execution System
+│   │   │   ├── types.ts            # Parallel execution types
+│   │   │   ├── task-runner.ts      # Core execution engine
+│   │   │   ├── task-builder.ts     # Fluent API builder
+│   │   │   ├── metrics.ts          # Prometheus metrics
+│   │   │   └── index.ts            # Barrel export
+│   │   └── llm/
+│   │       ├── client.ts           # Anthropic SDK wrapper
+│   │       └── tool-executor.ts    # Tool registration & execution
 │   │
-│   ├── queue/                      # Job Queue Management
-│   │   └── client.ts               # BullMQ/Redis setup
+│   ├── queue/
+│   │   ├── client.ts               # BullMQ/Redis setup
+│   │   └── workers/
+│   │       ├── message.worker.ts   # Incoming message processing
+│   │       ├── video.worker.ts     # HeyGen video generation
+│   │       ├── agent-task.worker.ts # Parallel agent tasks
+│   │       ├── research.worker.ts  # PDL research
+│   │       └── crm.worker.ts       # CRM sync
 │   │
-│   ├── workers/                    # Background Job Processors
-│   │   ├── message.worker.ts       # Incoming message processing
-│   │   ├── research.worker.ts      # LinkedIn research jobs
-│   │   ├── video.worker.ts         # HeyGen video generation
-│   │   ├── video-poller.ts         # Video completion polling
-│   │   └── crm.worker.ts           # CRM sync jobs
+│   ├── admin/                      # Admin Dashboard
+│   │   ├── routes.ts               # API endpoints
+│   │   ├── api.ts                  # API functions
+│   │   └── frontend/               # React frontend
 │   │
-│   ├── history/                    # Conversation Context
-│   │   ├── message-store.ts        # Message persistence (PostgreSQL)
-│   │   └── context-builder.ts      # Context window management
-│   │
-│   ├── observability/              # Monitoring
-│   │   ├── logger.ts               # Pino structured logging
-│   │   ├── metrics.ts              # Prometheus metrics
-│   │   ├── health.ts               # Health checks
-│   │   └── activity-store.ts       # Agent activity logging
-│   │
-│   ├── resilience/                 # Fault Tolerance
-│   │   ├── circuit-breaker.ts      # Circuit breaker pattern
-│   │   ├── retry.ts                # Exponential backoff
-│   │   └── rate-limiter.ts         # Rate limiting
-│   │
-│   ├── channels/whatsapp/          # WhatsApp Client (Baileys)
-│   ├── handlers/                   # Message Routing
 │   ├── contacts/                   # Contact Management
 │   ├── database/                   # PostgreSQL client
-│   ├── storage/                    # S3/file storage (FlyDrive)
-│   ├── integrations/               # External APIs
-│   │   ├── heygen/                 # Video generation
-│   │   ├── elevenlabs/             # Voice message TTS
-│   │   ├── calendly/               # Scheduling
-│   │   ├── linkedin/               # Profile research (ProxyCurl)
-│   │   ├── crm/                    # HubSpot integration
-│   │   └── email/                  # SendGrid email
-│   ├── webhooks/                   # Callback Handlers
-│   ├── cli/                        # CLI Interface
-│   ├── config/                     # Configuration (Zod validation)
-│   ├── tests/                      # Test files
-│   └── server.ts                   # HTTP Server
+│   ├── channels/whatsapp/          # WhatsApp Client (Baileys)
+│   ├── integrations/               # External APIs (HeyGen, PDL, etc.)
+│   ├── observability/              # Logging, metrics, health
+│   └── server.ts                   # HTTP Server + Worker startup
 │
 ├── migrations/liquibase/           # Database Migrations
-│   ├── changelog.xml               # Liquibase changelog
-│   ├── changesets/                 # Changeset files
-│   │   └── 003-message-types.xml
-│   └── sql/
-│       ├── 001_swarm_tables.sql    # Swarm tables
-│       └── 002_message_types.sql   # Message types
-│
-├── monitoring/                     # Grafana & Prometheus configs
 ├── docker-compose.yml              # Container orchestration
-└── .env                            # Environment variables
-```
-
-## Database Schema
-
-### Core Tables
-
-```sql
--- Contact information
-CREATE TABLE networking_contacts (
-    id UUID PRIMARY KEY,
-    phone_number TEXT UNIQUE NOT NULL,
-    first_name TEXT,
-    last_name TEXT,
-    email TEXT,
-    company_name TEXT,
-    job_title TEXT,
-    linkedin_url TEXT,
-    status TEXT,
-    -- Swarm fields
-    qualification_score NUMERIC(5,2),
-    qualification_tier TEXT,  -- hot/warm/cold/unqualified
-    research_status TEXT,     -- pending/in_progress/complete/failed
-    research_data JSONB,
-    total_turns INTEGER,
-    swarm_metadata JSONB,
-    created_at TIMESTAMPTZ,
-    updated_at TIMESTAMPTZ
-);
-
--- Conversation history
-CREATE TABLE message_history (
-    id UUID PRIMARY KEY,
-    contact_id UUID REFERENCES networking_contacts(id),
-    phone_number TEXT NOT NULL,
-    correlation_id TEXT NOT NULL,
-    direction TEXT NOT NULL,  -- inbound/outbound
-    channel TEXT NOT NULL,    -- whatsapp/telegram/email
-    content TEXT NOT NULL,
-    agent_id TEXT,
-    model_used TEXT,
-    tokens_used INTEGER,
-    tool_calls JSONB,
-    created_at TIMESTAMPTZ
-);
-
--- Agent activity tracking
-CREATE TABLE agent_activity_log (
-    id UUID PRIMARY KEY,
-    correlation_id TEXT NOT NULL,
-    contact_id UUID,
-    agent_type TEXT NOT NULL,
-    action TEXT NOT NULL,
-    started_at TIMESTAMPTZ,
-    completed_at TIMESTAMPTZ,
-    duration_ms INTEGER,
-    status TEXT,
-    input_tokens INTEGER,
-    output_tokens INTEGER,
-    error_message TEXT
-);
+└── ARCHITECTURE.md                 # This file
 ```
 
 ## Configuration
@@ -389,145 +391,49 @@ CREATE TABLE agent_activity_log (
 ### Environment Variables
 
 ```bash
-# Database (PostgreSQL)
-DATABASE_URL=postgres://user:pass@localhost:5432/nexthello
-# OR individual params:
-PGHOST=localhost
-PGPORT=5432
-PGUSER=nexthello
-PGPASSWORD=...
-PGDATABASE=nexthello
-
-# AI
+# AI (Required)
 ANTHROPIC_API_KEY=sk-ant-...
 
-# Redis
+# Database (Required)
+DATABASE_URL=postgres://user:pass@localhost:5432/nexthello
+
+# Redis (Required)
 REDIS_HOST=localhost
 REDIS_PORT=6379
-REDIS_PASSWORD=...
 
-# Swarm
-SWARM_ENABLED=true
-SWARM_ROLLOUT_PERCENTAGE=100
-
-# Integrations
+# Video Generation
 HEYGEN_API_KEY=sk_...
+HEYGEN_MOCK_MODE=true  # Use mock mode for testing
+
+# Voice Generation
 ELEVENLABS_API_KEY=...
+
+# Contact Enrichment
+PDL_API_KEY=...
+
+# CRM
 HUBSPOT_API_KEY=pat-...
-PROXYCURL_API_KEY=...  # LinkedIn research
-SENDGRID_API_KEY=...   # Email sending
-```
-
-### Swarm Configuration
-
-```typescript
-interface SwarmConfig {
-  enabled: boolean;              // Enable AI swarm
-  rolloutPercentage: number;     // 0-100 gradual rollout
-  fallbackToRules: boolean;      // Fallback when AI fails
-  maxConversationTurns: number;  // Max turns before handoff
-  contextTokenBudget: number;    // Token limit for context
-  defaultModel: string;          // claude-sonnet-4-20250514
-}
-```
-
-## Technology Stack
-
-| Component | Technology |
-|-----------|-----------|
-| Runtime | Node.js 22 |
-| Language | TypeScript |
-| LLM | Anthropic Claude (claude-sonnet-4-20250514) |
-| LLM SDK | @anthropic-ai/sdk |
-| Queue | BullMQ |
-| Cache/State | Redis (ioredis) |
-| Database | PostgreSQL (postgres library) |
-| Migrations | Liquibase |
-| Logging | Pino |
-| Metrics | prom-client |
-| Resilience | Cockatiel |
-| WhatsApp | @whiskeysockets/baileys |
-| Video | HeyGen API |
-| Voice/TTS | ElevenLabs API |
-| Scheduling | Calendly API |
-| LinkedIn | ProxyCurl API |
-| CRM | HubSpot API |
-| Email | SendGrid API |
-| Storage | FlyDrive + AWS S3 |
-| Container | Docker |
-
-## Deployment
-
-### Docker Compose Services
-
-| Service | Purpose |
-|---------|---------|
-| **nexthello** | Main application server (Node.js) |
-| **postgres** | PostgreSQL database |
-| **redis** | Redis cache/queues |
-| **liquibase** | Database migrations |
-| **grafana** | Metrics dashboard |
-| **prometheus** | Metrics collection |
-| **setup** | Interactive configuration |
-| **connect** | WhatsApp QR code scanner |
-
-### Volumes
-
-- `nexthello-auth` - WhatsApp credentials
-- `postgres-data` - Database files
-- `redis-data` - Queue persistence
-
-### Docker Compose
-
-```yaml
-services:
-  postgres:
-    image: postgres:16-alpine
-    ports: ["5432:5432"]
-    volumes: ["postgres-data:/var/lib/postgresql/data"]
-
-  redis:
-    image: redis:7-alpine
-    ports: ["6379:6379"]
-    volumes: ["redis-data:/data"]
-
-  nexthello:
-    build: .
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    environment:
-      - SWARM_ENABLED=true
-      - REDIS_HOST=redis
-      - PGHOST=postgres
-    ports: ["3000:3000"]
-    volumes: ["nexthello-auth:/app/data/auth"]
-```
-
-### Commands
-
-```bash
-# Start with swarm enabled
-docker compose up -d
-
-# Run swarm test
-npx tsx src/swarm/test-swarm.ts
-
-# View logs
-docker compose logs -f nexthello
-
-# Check health
-curl http://localhost:3000/health
 ```
 
 ## Key Design Decisions
 
-1. **Orchestrator Pattern**: Central coordinator routes to specialized agents rather than peer-to-peer
-2. **Tool-based Actions**: Agents use Claude's tool use for structured operations
-3. **Redis State**: Conversation state persisted in Redis for scalability
-4. **Async Processing**: Background queues for research, qualification, CRM sync
-5. **Graceful Degradation**: Automatic fallback to rule-based when AI fails
-6. **Circuit Breakers**: Per-integration protection against cascading failures
-7. **Correlation IDs**: Full request tracing across agents and services
+1. **Single Orchestrator**: One AI brain (Claude) handles all conversations
+2. **6 Specialized Agents**: Each agent has ONE responsibility
+3. **Corporate Hierarchy**: All agents report directly to Orchestrator
+4. **Parallel Execution**: Non-blocking background tasks via ParallelTaskRunner
+5. **Tool-based Actions**: Orchestrator uses tools to trigger agents
+6. **Async Workers**: Heavy operations run in BullMQ queues
+7. **Redis State**: Conversation context persisted per phone number
+8. **Auto Voice Mode**: User sends voice → respond with voice; user asks for text → respond with text
+9. **Admin Dashboard**: Real-time visibility into swarm activity
+
+## API Endpoints
+
+| Endpoint | Purpose |
+|----------|---------|
+| `/health` | Health check |
+| `/metrics` | Prometheus metrics |
+| `/admin` | Admin dashboard |
+| `/admin/api/swarm/states` | Active conversations |
+| `/admin/api/swarm/agents` | Agent performance |
+| `/admin/api/swarm/activities` | Recent agent activities |

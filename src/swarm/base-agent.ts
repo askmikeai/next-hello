@@ -12,6 +12,10 @@ import type {
   ToolCall,
   LLMRequest,
 } from "./types.js";
+import {
+  AGENT_PARALLEL_CONFIGS,
+  type AgentParallelConfig,
+} from "./parallel/types.js";
 
 /**
  * Configuration for an agent
@@ -287,6 +291,43 @@ export abstract class BaseAgent {
       model: this.config.model || "default",
       tools: this.getTools().map((t) => t.name),
     };
+  }
+
+  /**
+   * Get parallel execution configuration for this agent type
+   * Used by ParallelTaskRunner to determine execution behavior
+   */
+  getParallelConfig(): AgentParallelConfig {
+    return AGENT_PARALLEL_CONFIGS[this.config.type] || {
+      canRunParallelWith: [],
+      dependsOn: [],
+      isBackground: false,
+      defaultPriority: 50,
+      timeoutMs: 60000,
+    };
+  }
+
+  /**
+   * Check if this agent can run in parallel with another agent type
+   */
+  canRunParallelWith(otherType: AgentType): boolean {
+    const config = this.getParallelConfig();
+    return config.canRunParallelWith.includes(otherType);
+  }
+
+  /**
+   * Check if this agent depends on another agent type
+   */
+  dependsOn(otherType: AgentType): boolean {
+    const config = this.getParallelConfig();
+    return config.dependsOn.includes(otherType);
+  }
+
+  /**
+   * Check if this agent is suitable for background (fire-and-forget) execution
+   */
+  isBackgroundAgent(): boolean {
+    return this.getParallelConfig().isBackground;
   }
 }
 

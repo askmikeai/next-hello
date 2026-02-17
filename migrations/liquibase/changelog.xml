@@ -17,4 +17,7 @@
     <!-- Media tracking for GDPR compliance -->
     <include file="changesets/004-media-tracking.xml" relativeToChangelogFile="true"/>
 
+    <!-- People Data Labs enrichment for research agent -->
+    <include file="changesets/005-pdl-enrichment.xml" relativeToChangelogFile="true"/>
+
 </databaseChangeLog>

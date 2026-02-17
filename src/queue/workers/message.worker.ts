@@ -32,7 +32,7 @@ async function processIncomingMessage(
   job: Job<IncomingMessageJob>,
   config: NetworkingEventConfig
 ): Promise<MessageWorkerResult> {
-  const { correlationId, phoneNumber, channel, message, timestamp } = job.data;
+  const { correlationId, phoneNumber, channel, message, timestamp, isVoiceMessage } = job.data;
   const jobLogger = logger.child({ correlationId, jobId: job.id });
   const endTimer = startTimer();
 
@@ -74,7 +74,8 @@ async function processIncomingMessage(
       phoneNumber,
       message,
       channel,
-      contact ?? undefined
+      contact ?? undefined,
+      { isVoiceMessage }
     );
 
     // Store the outbound message if we have a response

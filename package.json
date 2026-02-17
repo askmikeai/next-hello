@@ -15,8 +15,11 @@
     }
   },
   "scripts": {
-    "build": "tsc && cp src/admin/dashboard.html dist/src/admin/",
+    "build": "npm run build:backend && npm run build:frontend",
+    "build:backend": "tsc",
+    "build:frontend": "cd src/admin/frontend && npm install && npm run build",
     "dev": "tsc --watch",
+    "dev:frontend": "cd src/admin/frontend && npm run dev",
     "start": "node dist/src/server.js",
     "cli": "node dist/src/cli/index.js",
     "setup": "node dist/src/cli/index.js setup",
@@ -25,6 +28,7 @@
     "connect:session2": "npx tsx scripts/connect-session.ts session-2 13054272115",
     "test:sessions": "npx tsx scripts/test-two-sessions.ts",
     "test:swarm:e2e": "set -a && source .env_test && set +a && npx tsx scripts/test-swarm-e2e.ts",
+    "test:voice:e2e": "set -a && source .env_test && set +a && npx tsx scripts/test-voice-e2e.ts",
     "test:swarm": "npm run test:db -- --run src/tests/integration/swarm-quality.test.ts",
     "test:swarm:live": "set -a && source .env_test && set +a && vitest run --run src/tests/integration/swarm-integration.test.ts",
     "test:e2e": "set -a && source .env_test && set +a && vitest run --run src/tests/integration/multi-agent-e2e.test.ts",
@@ -74,12 +78,15 @@
     "postgres": "^3.4.0",
     "prom-client": "^15.1.0",
     "qrcode-terminal": "^0.12.0",
+    "uuid": "^13.0.0",
     "zod": "^3.22.0"
   },
   "devDependencies": {
     "@types/inquirer": "^9.0.9",
     "@types/node": "^20.10.0",
     "@types/qrcode-terminal": "^0.12.2",
+    "@types/uuid": "^10.0.0",
+    "@vitest/coverage-v8": "^1.6.1",
     "pino-pretty": "^10.3.0",
     "typescript": "^5.3.0",
     "vitest": "^1.0.0"

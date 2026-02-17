@@ -2,8 +2,16 @@
  * NextHello AI Swarm - Multi-Agent Architecture
  *
  * This module provides a multi-agent AI system using the Orchestrator Pattern.
- * It coordinates specialized agents for conversation, research, qualification,
- * personalization, video generation, voice message generation, and CRM synchronization.
+ * The orchestrator handles all conversations and coordinates specialized agents:
+ *
+ * - Research Agent: Contact enrichment via People Data Labs API
+ * - Qualification Agent: Lead scoring and tier assignment (hot/warm/cold)
+ * - Personalization Agent: Content generation (scripts, messages, emails)
+ * - Video Agent: HeyGen video generation
+ * - Voice Agent: ElevenLabs text-to-speech generation
+ * - CRM Agent: HubSpot CRM synchronization
+ *
+ * Agents run in parallel using the ParallelTaskRunner for non-blocking execution.
  */
 
 // Core types
@@ -22,7 +30,6 @@ export { SwarmOrchestrator, getOrchestrator, resetOrchestrator } from "./orchest
 export type { OrchestratorConfig } from "./orchestrator.js";
 
 // Import agents to register their factories
-import "./agents/conversation.agent.js";
 import "./agents/research.agent.js";
 import "./agents/qualification.agent.js";
 import "./agents/crm.agent.js";
@@ -31,7 +38,6 @@ import "./agents/video.agent.js";
 import "./agents/voice.agent.js";
 
 // Re-export agents for direct use if needed
-export { ConversationAgent } from "./agents/conversation.agent.js";
 export { ResearchAgent } from "./agents/research.agent.js";
 export { QualificationAgent } from "./agents/qualification.agent.js";
 export { CRMAgent } from "./agents/crm.agent.js";

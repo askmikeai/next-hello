@@ -29,6 +29,7 @@ import { createWorker } from "../../queue/client.js";
 import type { OutboundMessageJob } from "../../swarm/types.js";
 import type { Worker } from "bullmq";
 import { startVideoPoller } from "../../workers/video-poller.js";
+import { createPDLWorker } from "../../queue/workers/pdl.worker.js";
 import { getMediaStore } from "../../storage/media-store.js";
 import type { MediaCategory } from "../../storage/types.js";
 
@@ -319,7 +320,7 @@ export class WhatsAppClient {
         }
       } else if (text) {
         // Follow-up (only if we have text content to process)
-        msgLogger.info({ msg: "Handling as FOLLOW-UP", phoneNumber, swarmEnabled: this.config.swarm?.enabled });
+        msgLogger.info({ msg: "Handling as FOLLOW-UP", phoneNumber, swarmEnabled: this.config.swarm?.enabled, isVoiceNote: messageInfo.isVoiceNote });
         if (isFollowUpMessage({
           phoneNumber,
           isGroup: false,
@@ -332,6 +333,7 @@ export class WhatsAppClient {
             messageText: text,
             config: this.config,
             sendMessage: async (msg) => this.sendMessage(chatId, msg, { phoneNumber }),
+            isVoiceMessage: messageInfo.isVoiceNote,
           });
           msgLogger.info({ msg: "Follow-up handled", result });
         }
@@ -908,6 +910,7 @@ export async function createWhatsAppClient(
   options?: Partial<WhatsAppClientOptions> & {
     startOutboundWorker?: boolean;
     startVideoPoller?: boolean;
+    startPDLWorker?: boolean;
   },
 ): Promise<WhatsAppClient> {
   const client = new WhatsAppClient({
@@ -925,6 +928,11 @@ export async function createWhatsAppClient(
   // Start video poller by default (checks for completed HeyGen videos every minute)
   if (options?.startVideoPoller !== false) {
     startVideoPoller();
+  }
+
+  // Start PDL enrichment worker by default (rate-limited contact enrichment)
+  if (options?.startPDLWorker !== false) {
+    createPDLWorker();
   }
 
   return client;

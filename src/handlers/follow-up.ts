@@ -26,6 +26,8 @@ export interface FollowUpParams {
   messageText: string;
   config: NetworkingEventConfig;
   sendMessage: (text: string) => Promise<void>;
+  /** Whether the original message was a voice note */
+  isVoiceMessage?: boolean;
 }
 
 export interface FollowUpResult {
@@ -68,9 +70,9 @@ export async function handleFollowUp(
 async function handleFollowUpWithSwarm(
   params: FollowUpParams,
 ): Promise<FollowUpResult> {
-  const { phoneNumber, messageText, config, sendMessage } = params;
+  const { phoneNumber, messageText, config, sendMessage, isVoiceMessage } = params;
 
-  log(`Using AI swarm for ${phoneNumber}`);
+  log(`Using AI swarm for ${phoneNumber}${isVoiceMessage ? ' (voice message)' : ''}`);
 
   try {
     const contact = await findContactByPhone(phoneNumber, config.supabase);
@@ -80,7 +82,8 @@ async function handleFollowUpWithSwarm(
       phoneNumber,
       messageText,
       "whatsapp",
-      contact ?? undefined
+      contact ?? undefined,
+      { isVoiceMessage }
     );
 
     if (result.success && result.response) {

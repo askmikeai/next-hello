@@ -6,11 +6,11 @@
 
 import { getDatabase } from "../database/client.js";
 import { checkDatabaseHealth } from "../database/client.js";
-import { checkRedisHealth, getQueueStats, addJob } from "../queue/client.js";
+import { checkRedisHealth, getQueueStats, addJob, getRedisConnection } from "../queue/client.js";
 import { getActivityStore, type AgentActivityRecord } from "../observability/activity-store.js";
 import { getMessageStore } from "../history/message-store.js";
 import type { NetworkingContact, ContactStatus } from "../config/types.js";
-import type { QueueName, ConversationMessage } from "../swarm/types.js";
+import type { QueueName, ConversationMessage, AgentType, SwarmState } from "../swarm/types.js";
 
 /**
  * All queue names for iteration
@@ -341,9 +341,12 @@ export async function sendVideo(
       correlationId: `admin-video-${Date.now()}`,
       contactId,
       phoneNumber: contact.phone_number,
-      firstName: contact.first_name,
-      lastName: contact.last_name,
-      companyName: contact.company_name,
+      firstName: contact.first_name || "there",
+      scriptTemplate: "Hey {name}, it was great meeting you! I wanted to send you a quick personalized video to follow up on our conversation. Looking forward to connecting soon!",
+      variables: {
+        name: contact.first_name || "there",
+        company: contact.company_name || "",
+      },
     });
 
     if (!job) {
@@ -355,4 +358,248 @@ export async function sendVideo(
     const msg = error instanceof Error ? error.message : "Unknown error";
     return { success: false, error: msg };
   }
+}
+
+/**
+ * Swarm state response for API
+ */
+export interface SwarmStateResponse {
+  correlationId: string;
+  phoneNumber: string;
+  currentAgent: AgentType | null;
+  conversationTurns: number;
+  lastActivityAt: string;
+  taskQueueLength: number;
+  channel: string;
+}
+
+/**
+ * Agent handoff data
+ */
+export interface HandoffData {
+  fromAgent: AgentType;
+  toAgent: AgentType;
+  count: number;
+}
+
+/**
+ * Agent performance statistics
+ */
+export interface AgentStatsData {
+  agentType: AgentType;
+  executions: number;
+  avgDurationMs: number;
+  successRate: number;
+}
+
+/**
+ * Get active swarm states from Redis
+ */
+export async function getSwarmStates(): Promise<SwarmStateResponse[]> {
+  const redis = getRedisConnection();
+  if (!redis) {
+    return [];
+  }
+
+  try {
+    // Get all swarm state keys
+    const keys = await redis.keys("swarm:state:*");
+    if (keys.length === 0) {
+      return [];
+    }
+
+    const states: SwarmStateResponse[] = [];
+
+    for (const key of keys) {
+      const data = await redis.get(key);
+      if (data) {
+        try {
+          const state: SwarmState = JSON.parse(data);
+          states.push({
+            correlationId: state.correlationId,
+            phoneNumber: state.phoneNumber,
+            currentAgent: state.currentAgent || null,
+            conversationTurns: state.conversationTurns,
+            lastActivityAt: state.lastActivityAt instanceof Date
+              ? state.lastActivityAt.toISOString()
+              : String(state.lastActivityAt),
+            taskQueueLength: state.taskQueue?.length || 0,
+            channel: state.channel,
+          });
+        } catch {
+          // Skip invalid JSON
+        }
+      }
+    }
+
+    // Sort by last activity (most recent first)
+    states.sort((a, b) =>
+      new Date(b.lastActivityAt).getTime() - new Date(a.lastActivityAt).getTime()
+    );
+
+    return states;
+  } catch (error) {
+    console.error("[admin] Error getting swarm states:", error);
+    return [];
+  }
+}
+
+/**
+ * Get agent handoff statistics (last 24 hours)
+ */
+export async function getHandoffs(): Promise<HandoffData[]> {
+  const sql = getDatabase();
+  if (!sql) {
+    return [];
+  }
+
+  try {
+    const rows = await sql<{ from_agent: string; to_agent: string; count: string }[]>`
+      WITH ordered AS (
+        SELECT
+          correlation_id,
+          agent_type,
+          started_at,
+          LAG(agent_type) OVER (
+            PARTITION BY correlation_id
+            ORDER BY started_at
+          ) as prev_agent
+        FROM agent_activity_log
+        WHERE started_at > NOW() - INTERVAL '24 hours'
+      )
+      SELECT
+        prev_agent as from_agent,
+        agent_type as to_agent,
+        COUNT(*)::text as count
+      FROM ordered
+      WHERE prev_agent IS NOT NULL
+        AND prev_agent != agent_type
+      GROUP BY prev_agent, agent_type
+      ORDER BY count DESC
+    `;
+
+    return rows.map(row => ({
+      fromAgent: row.from_agent as AgentType,
+      toAgent: row.to_agent as AgentType,
+      count: parseInt(row.count, 10),
+    }));
+  } catch (error) {
+    console.error("[admin] Error getting handoffs:", error);
+    return [];
+  }
+}
+
+/**
+ * Get per-agent performance statistics (last 24 hours)
+ */
+export async function getAgentStats(): Promise<AgentStatsData[]> {
+  const sql = getDatabase();
+  if (!sql) {
+    return [];
+  }
+
+  try {
+    const rows = await sql<{
+      agent_type: string;
+      executions: string;
+      avg_duration: string;
+      success_rate: string;
+    }[]>`
+      SELECT
+        agent_type,
+        COUNT(*)::text as executions,
+        COALESCE(AVG(duration_ms)::int, 0)::text as avg_duration,
+        COALESCE(
+          (SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END)::float /
+           NULLIF(COUNT(*), 0) * 100),
+          0
+        )::text as success_rate
+      FROM agent_activity_log
+      WHERE started_at > NOW() - INTERVAL '24 hours'
+      GROUP BY agent_type
+      ORDER BY executions DESC
+    `;
+
+    return rows.map(row => ({
+      agentType: row.agent_type as AgentType,
+      executions: parseInt(row.executions, 10),
+      avgDurationMs: parseInt(row.avg_duration, 10),
+      successRate: parseFloat(row.success_rate),
+    }));
+  } catch (error) {
+    console.error("[admin] Error getting agent stats:", error);
+    return [];
+  }
+}
+
+/**
+ * Get detailed swarm conversation by correlation ID
+ */
+export async function getSwarmConversation(correlationId: string): Promise<{
+  state: SwarmStateResponse | null;
+  activities: AgentActivityRecord[];
+  messages: ConversationMessage[];
+}> {
+  const redis = getRedisConnection();
+  let state: SwarmStateResponse | null = null;
+
+  // Try to get current state from Redis
+  if (redis) {
+    try {
+      const data = await redis.get(`swarm:state:${correlationId}`);
+      if (data) {
+        const parsed: SwarmState = JSON.parse(data);
+        state = {
+          correlationId: parsed.correlationId,
+          phoneNumber: parsed.phoneNumber,
+          currentAgent: parsed.currentAgent || null,
+          conversationTurns: parsed.conversationTurns,
+          lastActivityAt: parsed.lastActivityAt instanceof Date
+            ? parsed.lastActivityAt.toISOString()
+            : String(parsed.lastActivityAt),
+          taskQueueLength: parsed.taskQueue?.length || 0,
+          channel: parsed.channel,
+        };
+      }
+    } catch {
+      // Ignore Redis errors
+    }
+  }
+
+  // Get activities for this correlation ID
+  const store = getActivityStore();
+  const allActivities = await store.getRecentActivities(undefined, 100);
+  const activities = allActivities.filter(a => a.correlationId === correlationId);
+
+  // Get messages for this correlation ID
+  const sql = getDatabase();
+  let messages: ConversationMessage[] = [];
+
+  if (sql) {
+    try {
+      const rows = await sql`
+        SELECT * FROM message_history
+        WHERE correlation_id = ${correlationId}
+        ORDER BY created_at ASC
+        LIMIT 100
+      `;
+
+      messages = rows.map((row) => ({
+        id: row.id,
+        contactId: row.contact_id || "",
+        phoneNumber: row.phone_number,
+        correlationId: row.correlation_id,
+        direction: row.direction,
+        channel: row.channel,
+        messageType: row.message_type || "text",
+        content: row.content || undefined,
+        agentId: row.agent_id || undefined,
+        createdAt: new Date(row.created_at),
+      })) as ConversationMessage[];
+    } catch {
+      // Ignore DB errors
+    }
+  }
+
+  return { state, activities, messages };
 }
