@@ -173,15 +173,28 @@ export async function updateContactByPhone(
   return timedQuery("update", "contacts", async () => {
     const keys = Object.keys(updateData) as (keyof typeof updateData)[];
 
-    const rows = await sql<NetworkingContact[]>`
+    // First try to update
+    let rows = await sql<NetworkingContact[]>`
       UPDATE ${sql(table)}
       SET ${sql(updateData as Record<string, unknown>, ...keys)}
       WHERE phone_number = ${phoneNumber}
       RETURNING *
     `;
 
+    // If no rows updated, create the contact
     if (rows.length === 0) {
-      throw new Error(`Contact not found: ${phoneNumber}`);
+      const insertData = {
+        phone_number: phoneNumber,
+        ...updates,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      const insertKeys = Object.keys(insertData) as (keyof typeof insertData)[];
+
+      rows = await sql<NetworkingContact[]>`
+        INSERT INTO ${sql(table)} ${sql(insertData as Record<string, unknown>, ...insertKeys)}
+        RETURNING *
+      `;
     }
 
     return rows[0];

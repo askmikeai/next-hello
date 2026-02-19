@@ -5,9 +5,11 @@
  * This is the main entry point when running in Docker.
  */
 
+import "dotenv/config";
 import http from "http";
 import { getCalendlyWebhookPath } from "./webhooks/calendly.js";
 import { getHeyGenWebhookPath } from "./webhooks/heygen.js";
+import { getCalendlyOAuthPath } from "./webhooks/calendly-oauth.js";
 import { sendJsonResponse, sendError, matchRoute, getWebhookRoutes } from "./webhooks/registry.js";
 import { safeParseConfig } from "./config/schema.js";
 import type { NetworkingEventConfig } from "./config/types.js";
@@ -146,11 +148,64 @@ async function handleRequest(
       return;
     }
 
+    // Serve mock video for HEYGEN_MOCK_MODE
+    if (url === "/mock-video.mp4" && method === "GET") {
+      const mockVideoPath = process.env.HEYGEN_MOCK_VIDEO_PATH;
+      if (mockVideoPath && fs.existsSync(mockVideoPath)) {
+        const stat = fs.statSync(mockVideoPath);
+        res.writeHead(200, {
+          "Content-Type": "video/mp4",
+          "Content-Length": stat.size,
+        });
+        const readStream = fs.createReadStream(mockVideoPath);
+        readStream.pipe(res);
+        recordHttpRequest(method, pathForMetrics, 200, endTimer());
+        return;
+      }
+      sendError(res, 404, "Mock video not configured");
+      recordHttpRequest(method, pathForMetrics, 404, endTimer());
+      return;
+    }
+
     // Admin dashboard
     if (url.startsWith("/admin")) {
       const { handleAdminRequest } = await import("./admin/routes.js");
       await handleAdminRequest(req, res, config);
       recordHttpRequest(method, pathForMetrics, res.statusCode || 200, endTimer());
+      return;
+    }
+
+    // Test API for conversation simulation (only in development)
+    if (url === "/api/test/process" && method === "POST") {
+      const { getOrchestrator } = await import("./swarm/orchestrator.js");
+      const { findContactByPhone } = await import("./contacts/index.js");
+
+      // Read body
+      const body = await new Promise<string>((resolve) => {
+        let data = "";
+        req.on("data", (chunk) => (data += chunk));
+        req.on("end", () => resolve(data));
+      });
+
+      const { phoneNumber, message, channel = "whatsapp" } = JSON.parse(body);
+
+      if (!phoneNumber || !message) {
+        sendError(res, 400, "phoneNumber and message required");
+        recordHttpRequest(method, pathForMetrics, 400, endTimer());
+        return;
+      }
+
+      const contact = await findContactByPhone(phoneNumber, config.supabase);
+      const orchestrator = getOrchestrator(config);
+      const result = await orchestrator.processMessage(
+        phoneNumber,
+        message,
+        channel,
+        contact ?? undefined
+      );
+
+      sendJsonResponse(res, 200, result);
+      recordHttpRequest(method, pathForMetrics, 200, endTimer());
       return;
     }
 
@@ -173,6 +228,7 @@ function startServer(): void {
   // Import webhook modules to register routes
   import("./webhooks/calendly.js").catch(() => {});
   import("./webhooks/heygen.js").catch(() => {});
+  import("./webhooks/calendly-oauth.js").catch(() => {});
 
   // Start video worker
   const videoWorker = createVideoWorker(config);
@@ -213,6 +269,7 @@ function startServer(): void {
     log(`    Admin:    http://${HOST}:${PORT}/admin`);
     log(`    Calendly: http://${HOST}:${PORT}${getCalendlyWebhookPath()}`);
     log(`    HeyGen:   http://${HOST}:${PORT}${getHeyGenWebhookPath()}`);
+    log(`    Calendly OAuth: http://${HOST}:${PORT}${getCalendlyOAuthPath()}/auth`);
     log("");
     log("  Config:");
     log(`    Event: ${config.eventName}`);

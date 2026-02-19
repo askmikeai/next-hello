@@ -1,0 +1,212 @@
+# NextHello CrewAI Task Definitions
+# Tasks define what agents should accomplish
+
+# Research Tasks
+research_contact:
+  description: >
+    Research the contact using available identifiers.
+
+    Contact Info:
+    - Phone: {phone_number}
+    - Email: {email}
+    - LinkedIn: {linkedin_url}
+    - Name: {first_name} {last_name}
+    - Company: {company_name}
+
+    Use People Data Labs to enrich this contact's profile.
+    Find their job title, company details, work history, skills, and education.
+  expected_output: >
+    A comprehensive contact profile containing:
+    - Full name
+    - Current job title
+    - Company name and details (industry, size)
+    - LinkedIn URL (if not provided)
+    - Work email (if available)
+    - Skills and experience
+    - Education background
+    - Location
+  agent: research
+
+# Qualification Tasks
+qualify_lead:
+  description: >
+    Evaluate and score this lead based on their profile and engagement.
+
+    Contact Data:
+    {contact_data}
+
+    Research Data:
+    {research_data}
+
+    Engagement Signals:
+    - Conversation turns: {conversation_turns}
+    - Has meeting scheduled: {has_meeting}
+    - Last activity: {last_activity}
+
+    Calculate a qualification score (0-100) using:
+    - Profile Completeness (0-25)
+    - Engagement (0-25)
+    - Fit (0-25)
+    - Timing (0-25)
+
+    Assign a tier: hot (75+), warm (50-74), cold (25-49), unqualified (<25)
+  expected_output: >
+    A qualification assessment containing:
+    - Overall score (0-100)
+    - Tier (hot/warm/cold/unqualified)
+    - Factor breakdown (profile, engagement, fit, timing)
+    - Key qualifiers and disqualifiers
+    - Recommended next action
+  agent: qualification
+
+# Personalization Tasks
+generate_welcome_message:
+  description: >
+    Create a personalized welcome message for {first_name}.
+
+    Context:
+    - Met at: {event_name}
+    - Company: {company_name}
+    - Role: {job_title}
+    - Owner: {owner_name}
+
+    Requirements:
+    - 2-3 sentences max
+    - Warm and genuine tone
+    - Reference where you met if known
+    - {include_calendly}
+  expected_output: >
+    A brief, personalized welcome message ready to send via WhatsApp.
+  agent: personalization
+
+generate_video_script:
+  description: >
+    Write a personalized video script for {first_name}.
+
+    Context:
+    - Met at: {event_name}
+    - Company: {company_name}
+    - Role: {job_title}
+    - Research insights: {research_summary}
+
+    Requirements:
+    - Maximum {max_seconds} seconds when spoken (~{max_words} words)
+    - Conversational tone - speaking directly to them
+    - End with call to action: {call_to_action}
+  expected_output: >
+    A video script containing:
+    - The full script text
+    - Estimated duration in seconds
+    - Key personalization points used
+  agent: personalization
+
+generate_follow_up_email:
+  description: >
+    Write a personalized follow-up email for {first_name} at {company_name}.
+
+    Purpose: {email_purpose}
+    Key points to include: {key_points}
+
+    Context:
+    - Previous conversation summary: {conversation_summary}
+    - Research insights: {research_summary}
+
+    Requirements:
+    - 3-4 short paragraphs
+    - Professional but warm
+    - Clear call to action
+  expected_output: >
+    A complete email containing:
+    - Subject line
+    - Email body
+    - Suggested call to action
+  agent: personalization
+
+# Video Tasks
+generate_heygen_video:
+  description: >
+    Generate a HeyGen video for {first_name}.
+
+    Script:
+    {video_script}
+
+    Phone: {phone_number}
+
+    Submit to HeyGen API and track the video generation.
+  expected_output: >
+    Video generation result containing:
+    - Video ID
+    - Status (processing/completed/failed)
+    - Video URL (if completed)
+    - Error message (if failed)
+  agent: video
+
+# Voice Tasks
+generate_voice_message:
+  description: >
+    Generate a voice message for {first_name} using ElevenLabs.
+
+    Script:
+    {voice_script}
+
+    Phone: {phone_number}
+
+    Generate the audio and save it for delivery.
+  expected_output: >
+    Voice generation result containing:
+    - Audio file path
+    - Duration in seconds
+    - Status (success/failed)
+  agent: voice
+
+# CRM Tasks
+sync_to_crm:
+  description: >
+    Sync this contact to HubSpot CRM.
+
+    Contact:
+    - Phone: {phone_number}
+    - Name: {first_name} {last_name}
+    - Email: {email}
+    - Company: {company_name}
+    - Title: {job_title}
+
+    Options:
+    - Create deal: {create_deal}
+    - Deal name: {deal_name}
+    - Note to add: {note}
+
+    Check if contact exists first. Create or update accordingly.
+  expected_output: >
+    CRM sync result containing:
+    - HubSpot contact ID
+    - Deal ID (if created)
+    - Sync status (created/updated/failed)
+  agent: crm
+
+# Orchestration Tasks
+handle_message:
+  description: >
+    Process this incoming message and coordinate the response.
+
+    From: {phone_number}
+    Message: {message}
+
+    Contact Context:
+    {contact_context}
+
+    Decide the best approach:
+    1. Direct response - simple conversational reply
+    2. Research needed - gather more info about the contact
+    3. Qualification needed - score this lead
+    4. Content generation - create personalized content
+    5. CRM sync needed - update HubSpot
+
+    Coordinate with appropriate agents and synthesize a final response.
+  expected_output: >
+    A response containing:
+    - Reply message for the contact
+    - Actions taken (research, qualification, etc.)
+    - Updated contact data
+    - Recommended follow-up actions
+  agent: orchestrator

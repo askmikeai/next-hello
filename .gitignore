@@ -36,3 +36,11 @@ coverage/
 
 # Data directory (auth, media, sessions)
 data/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Config with personal info
+nexthello.config.json

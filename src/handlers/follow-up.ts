@@ -26,6 +26,8 @@ export interface FollowUpParams {
   messageText: string;
   config: NetworkingEventConfig;
   sendMessage: (text: string) => Promise<void>;
+  /** Send a voice message (TTS) instead of text */
+  sendVoiceMessage?: (text: string) => Promise<void>;
   /** Whether the original message was a voice note */
   isVoiceMessage?: boolean;
 }
@@ -70,7 +72,7 @@ export async function handleFollowUp(
 async function handleFollowUpWithSwarm(
   params: FollowUpParams,
 ): Promise<FollowUpResult> {
-  const { phoneNumber, messageText, config, sendMessage, isVoiceMessage } = params;
+  const { phoneNumber, messageText, config, sendMessage, sendVoiceMessage, isVoiceMessage } = params;
 
   log(`Using AI swarm for ${phoneNumber}${isVoiceMessage ? ' (voice message)' : ''}`);
 
@@ -87,7 +89,13 @@ async function handleFollowUpWithSwarm(
     );
 
     if (result.success && result.response) {
-      await sendMessage(result.response);
+      // Reply with voice if the user sent a voice message and we have voice capability
+      if (isVoiceMessage && sendVoiceMessage) {
+        log(`Sending voice response to ${phoneNumber}`);
+        await sendVoiceMessage(result.response);
+      } else {
+        await sendMessage(result.response);
+      }
 
       return {
         handled: true,

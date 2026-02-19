@@ -3,6 +3,15 @@ import { defineTool } from "../llm/tool-executor.js";
 import type { AgentContext, ToolDefinition, AgentType } from "../types.js";
 import { updateContactByPhone } from "../../contacts/index.js";
 import { enrichContactQueued, type PDLEnrichmentResult } from "../../integrations/pdl/index.js";
+import {
+  login as lumaLogin,
+  hasValidSession as lumaHasSession,
+  scrapeEventGuests,
+  getUserEvents,
+  matchContactToEvent,
+  type LumaScrapedEvent,
+} from "../../integrations/luma/scraper.js";
+import { findEventByAttendee } from "../../integrations/luma/client.js";
 
 /**
  * Research Agent Configuration
@@ -132,6 +141,58 @@ Call pdl_enrich with the available information.`;
         },
         ["phoneNumber", "status"]
       ),
+      defineTool(
+        "luma_check_session",
+        "Check if Luma browser session is valid. Returns whether login is needed.",
+        {}
+      ),
+      defineTool(
+        "luma_login",
+        "Open browser for Luma login. User will manually log in, session is saved for future use.",
+        {}
+      ),
+      defineTool(
+        "luma_scrape_event",
+        "Scrape all guests from a Luma event page. Returns attendee names and social profiles.",
+        {
+          eventUrl: {
+            type: "string",
+            description: "Full Luma event URL (e.g., https://lu.ma/event-name)",
+          },
+        },
+        ["eventUrl"]
+      ),
+      defineTool(
+        "luma_get_user_events",
+        "Get list of events the user is attending or hosting on Luma.",
+        {}
+      ),
+      defineTool(
+        "luma_find_event_match",
+        "Find which event a contact attended by matching their name against scraped guest lists.",
+        {
+          contactName: {
+            type: "string",
+            description: "Full name of the contact to match",
+          },
+          phoneNumber: {
+            type: "string",
+            description: "Phone number to update if match found (optional)",
+          },
+        },
+        ["contactName"]
+      ),
+      defineTool(
+        "luma_api_lookup",
+        "Look up a contact in Luma events using the API (requires API key, limited to hosted events).",
+        {
+          contactName: {
+            type: "string",
+            description: "Full name of the contact to search for",
+          },
+        },
+        ["contactName"]
+      ),
     ];
   }
 
@@ -252,6 +313,198 @@ Call pdl_enrich with the available information.`;
         }
       }
     );
+
+    // Luma: Check session
+    this.toolExecutor.registerTool(
+      defineTool("luma_check_session", "Check Luma session", {}),
+      async () => {
+        const hasSession = await lumaHasSession();
+        return {
+          hasValidSession: hasSession,
+          needsLogin: !hasSession,
+          message: hasSession
+            ? "Luma session is valid"
+            : "No valid Luma session. Use luma_login to authenticate.",
+        };
+      }
+    );
+
+    // Luma: Login (opens browser)
+    this.toolExecutor.registerTool(
+      defineTool("luma_login", "Login to Luma", {}),
+      async (_input, context) => {
+        context.logger.info({ msg: "Opening browser for Luma login" });
+        const success = await lumaLogin();
+        return {
+          success,
+          message: success
+            ? "Successfully logged in to Luma. Session saved."
+            : "Login failed or was cancelled.",
+        };
+      }
+    );
+
+    // Luma: Scrape event guests
+    this.toolExecutor.registerTool(
+      defineTool("luma_scrape_event", "Scrape Luma event", {
+        eventUrl: { type: "string" },
+      }, ["eventUrl"]),
+      async (input, context) => {
+        const eventUrl = input.eventUrl as string;
+        context.logger.info({ msg: "Scraping Luma event", eventUrl });
+
+        const event = await scrapeEventGuests(eventUrl);
+        if (!event) {
+          return { success: false, error: "Failed to scrape event" };
+        }
+
+        // Store in cache for future matching
+        this.cacheScrapedEvent(event);
+
+        return {
+          success: true,
+          event: {
+            name: event.name,
+            date: event.date,
+            location: event.location,
+            guestCount: event.guestCount,
+            scrapedGuests: event.guests.length,
+            guests: event.guests.slice(0, 20).map(g => ({
+              name: g.name,
+              linkedin: g.linkedin,
+              twitter: g.twitter,
+              isFeatured: g.isFeatured,
+            })),
+          },
+        };
+      }
+    );
+
+    // Luma: Get user events
+    this.toolExecutor.registerTool(
+      defineTool("luma_get_user_events", "Get user's Luma events", {}),
+      async (_input, context) => {
+        context.logger.info({ msg: "Fetching user's Luma events" });
+        const events = await getUserEvents();
+
+        return {
+          success: true,
+          count: events.length,
+          events: events.map(e => ({
+            name: e.name,
+            date: e.date,
+            url: e.url,
+            role: e.role,
+          })),
+        };
+      }
+    );
+
+    // Luma: Find event match
+    this.toolExecutor.registerTool(
+      defineTool("luma_find_event_match", "Find event match", {
+        contactName: { type: "string" },
+        phoneNumber: { type: "string" },
+      }, ["contactName"]),
+      async (input, context) => {
+        const contactName = input.contactName as string;
+        const phoneNumber = input.phoneNumber as string | undefined;
+
+        // Get cached events
+        const cachedEvents = this.getCachedEvents();
+
+        if (cachedEvents.length === 0) {
+          return {
+            success: false,
+            error: "No scraped events in cache. Use luma_scrape_event first.",
+          };
+        }
+
+        const match = matchContactToEvent(contactName, cachedEvents);
+
+        if (match && phoneNumber) {
+          // Update contact with event info
+          try {
+            await updateContactByPhone(
+              phoneNumber,
+              { event_met_at: match.event.name },
+              context.config.supabase
+            );
+            context.logger.info({
+              msg: "Updated contact with event match",
+              phoneNumber,
+              eventName: match.event.name,
+            });
+          } catch (error) {
+            context.logger.error({
+              msg: "Failed to update contact with event",
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+
+        if (match) {
+          return {
+            success: true,
+            matched: true,
+            eventName: match.event.name,
+            eventDate: match.event.date,
+            guestName: match.guest.name,
+            similarity: match.similarity,
+            guestLinkedIn: match.guest.linkedin,
+            guestTwitter: match.guest.twitter,
+          };
+        }
+
+        return {
+          success: true,
+          matched: false,
+          message: `No match found for "${contactName}" in ${cachedEvents.length} cached events`,
+        };
+      }
+    );
+
+    // Luma: API lookup (for hosted events)
+    this.toolExecutor.registerTool(
+      defineTool("luma_api_lookup", "Luma API lookup", {
+        contactName: { type: "string" },
+      }, ["contactName"]),
+      async (input, context) => {
+        const contactName = input.contactName as string;
+
+        const match = await findEventByAttendee(contactName, context.config.luma);
+
+        if (match) {
+          return {
+            success: true,
+            matched: true,
+            eventName: match.event.name,
+            eventDate: match.event.start_at,
+            guestName: match.guest.name,
+            similarity: match.similarity,
+          };
+        }
+
+        return {
+          success: true,
+          matched: false,
+          message: `No match found via API for "${contactName}"`,
+        };
+      }
+    );
+  }
+
+  // Cache for scraped events (in-memory, could be Redis)
+  private scrapedEventsCache: LumaScrapedEvent[] = [];
+
+  private cacheScrapedEvent(event: LumaScrapedEvent): void {
+    // Remove old version if exists
+    this.scrapedEventsCache = this.scrapedEventsCache.filter(e => e.apiId !== event.apiId);
+    this.scrapedEventsCache.push(event);
+  }
+
+  private getCachedEvents(): LumaScrapedEvent[] {
+    return this.scrapedEventsCache;
   }
 
   /**

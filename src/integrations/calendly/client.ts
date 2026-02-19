@@ -1,6 +1,7 @@
 import type { CalendlyConfig } from "../../config/types.js";
 import crypto from "crypto";
 import { recordIntegrationCall, startTimer } from "../../observability/metrics.js";
+import { getValidAccessToken, getOrganizationUri, isAuthorized } from "./oauth.js";
 
 const CALENDLY_API_BASE = "https://api.calendly.com";
 
@@ -19,6 +20,19 @@ export interface CalendlyEventType {
   schedulingUrl: string;
   duration: number;
   active: boolean;
+}
+
+export interface CalendlyAvailableTime {
+  startTime: string;
+  endTime: string;
+  inviteesRemaining: number;
+  status: "available" | "unavailable";
+}
+
+export interface CalendlySchedulingLink {
+  bookingUrl: string;
+  owner: string;
+  ownerType: "EventType" | "User";
 }
 
 export interface CalendlyEvent {
@@ -80,7 +94,32 @@ function log(message: string): void {
 }
 
 /**
- * Get authenticated headers
+ * Get authenticated headers - supports both PAT and OAuth2
+ */
+async function getHeadersAsync(): Promise<Record<string, string>> {
+  // First try OAuth2 token
+  const oauthToken = await getValidAccessToken();
+  if (oauthToken) {
+    return {
+      Authorization: `Bearer ${oauthToken}`,
+      "Content-Type": "application/json",
+    };
+  }
+
+  // Fall back to PAT
+  const apiKey = getApiKey();
+  if (!apiKey) {
+    throw new Error("Calendly not configured - either authorize via OAuth2 or set CALENDLY_API_KEY");
+  }
+
+  return {
+    Authorization: `Bearer ${apiKey}`,
+    "Content-Type": "application/json",
+  };
+}
+
+/**
+ * Sync version for backwards compatibility (only uses PAT)
  */
 function getHeaders(): Record<string, string> {
   const apiKey = getApiKey();
@@ -95,14 +134,26 @@ function getHeaders(): Record<string, string> {
 }
 
 /**
+ * Check if Calendly is configured (either OAuth2 or PAT)
+ */
+export async function isCalendlyConfigured(): Promise<boolean> {
+  const authorized = await isAuthorized();
+  if (authorized) return true;
+
+  const apiKey = getApiKey();
+  return !!apiKey;
+}
+
+/**
  * Get current user info
  */
 export async function getCurrentUser(): Promise<CalendlyUser | null> {
   const endTimer = startTimer();
   try {
+    const headers = await getHeadersAsync();
     const response = await fetch(`${CALENDLY_API_BASE}/users/me`, {
       method: "GET",
-      headers: getHeaders(),
+      headers,
     });
 
     if (!response.ok) {
@@ -147,15 +198,22 @@ export async function getCurrentUser(): Promise<CalendlyUser | null> {
 export async function listEventTypes(
   config: CalendlyConfig,
 ): Promise<CalendlyEventType[]> {
-  if (!config.organizationUri) {
-    log("Organization URI not configured");
+  // Try OAuth organization first, then fall back to config
+  let organizationUri = await getOrganizationUri();
+  if (!organizationUri) {
+    organizationUri = config.organizationUri ?? null;
+  }
+
+  if (!organizationUri) {
+    log("Organization URI not configured - authorize via OAuth or set organizationUri in config");
     return [];
   }
 
   const endTimer = startTimer();
   try {
+    const headers = await getHeadersAsync();
     const params = new URLSearchParams({
-      organization: config.organizationUri,
+      organization: organizationUri,
       active: "true",
     });
 
@@ -163,7 +221,7 @@ export async function listEventTypes(
       `${CALENDLY_API_BASE}/event_types?${params.toString()}`,
       {
         method: "GET",
-        headers: getHeaders(),
+        headers,
       },
     );
 
@@ -206,9 +264,10 @@ export async function listEventTypes(
 export async function getEvent(eventUri: string): Promise<CalendlyEvent | null> {
   const endTimer = startTimer();
   try {
+    const headers = await getHeadersAsync();
     const response = await fetch(eventUri, {
       method: "GET",
-      headers: getHeaders(),
+      headers,
     });
 
     if (!response.ok) {
@@ -269,9 +328,10 @@ export async function getEventInvitees(
 ): Promise<Array<{ uri: string; email: string; name: string; status: string }>> {
   const endTimer = startTimer();
   try {
+    const headers = await getHeadersAsync();
     const response = await fetch(`${eventUri}/invitees`, {
       method: "GET",
-      headers: getHeaders(),
+      headers,
     });
 
     if (!response.ok) {
@@ -311,20 +371,27 @@ export async function createWebhookSubscription(
   callbackUrl: string,
   events: Array<"invitee.created" | "invitee.canceled"> = ["invitee.created"],
 ): Promise<string | null> {
-  if (!config.organizationUri) {
+  // Try OAuth organization first, then fall back to config
+  let organizationUri = await getOrganizationUri();
+  if (!organizationUri) {
+    organizationUri = config.organizationUri ?? null;
+  }
+
+  if (!organizationUri) {
     log("Organization URI not configured");
     return null;
   }
 
   const endTimer = startTimer();
   try {
+    const headers = await getHeadersAsync();
     const response = await fetch(`${CALENDLY_API_BASE}/webhook_subscriptions`, {
       method: "POST",
-      headers: getHeaders(),
+      headers,
       body: JSON.stringify({
         url: callbackUrl,
         events,
-        organization: config.organizationUri,
+        organization: organizationUri,
         scope: "organization",
       }),
     });
@@ -347,6 +414,149 @@ export async function createWebhookSubscription(
     recordIntegrationCall("calendly", "create_webhook_subscription", "failure", endTimer());
     return null;
   }
+}
+
+/**
+ * Get available times for an event type
+ */
+export async function getAvailableTimes(
+  eventTypeUri: string,
+  startTime: string,
+  endTime: string,
+): Promise<CalendlyAvailableTime[]> {
+  const endTimer = startTimer();
+  try {
+    const headers = await getHeadersAsync();
+    const params = new URLSearchParams({
+      event_type: eventTypeUri,
+      start_time: startTime,
+      end_time: endTime,
+    });
+
+    const response = await fetch(
+      `${CALENDLY_API_BASE}/event_type_available_times?${params.toString()}`,
+      {
+        method: "GET",
+        headers,
+      },
+    );
+
+    if (!response.ok) {
+      log(`Failed to get available times: ${response.status}`);
+      recordIntegrationCall("calendly", "get_available_times", "failure", endTimer());
+      return [];
+    }
+
+    const data = (await response.json()) as {
+      collection?: Array<{
+        start_time: string;
+        invitees_remaining: number;
+        status: "available" | "unavailable";
+      }>;
+    };
+
+    recordIntegrationCall("calendly", "get_available_times", "success", endTimer());
+    return (data.collection ?? []).map((slot) => ({
+      startTime: slot.start_time,
+      endTime: new Date(new Date(slot.start_time).getTime() + 30 * 60000).toISOString(), // Default 30 min
+      inviteesRemaining: slot.invitees_remaining,
+      status: slot.status,
+    }));
+  } catch (error) {
+    log(`Error getting available times: ${error instanceof Error ? error.message : String(error)}`);
+    recordIntegrationCall("calendly", "get_available_times", "failure", endTimer());
+    return [];
+  }
+}
+
+/**
+ * Create a single-use scheduling link for a specific invitee
+ * This allows programmatic booking by generating a pre-filled link
+ */
+export async function createSingleUseSchedulingLink(
+  eventTypeUri: string,
+  maxEventCount: number = 1,
+): Promise<CalendlySchedulingLink | null> {
+  const endTimer = startTimer();
+  try {
+    const headers = await getHeadersAsync();
+    const response = await fetch(`${CALENDLY_API_BASE}/scheduling_links`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        max_event_count: maxEventCount,
+        owner: eventTypeUri,
+        owner_type: "EventType",
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      log(`Failed to create scheduling link: ${response.status} - ${error}`);
+      recordIntegrationCall("calendly", "create_scheduling_link", "failure", endTimer());
+      return null;
+    }
+
+    const data = (await response.json()) as {
+      resource?: {
+        booking_url: string;
+        owner: string;
+        owner_type: "EventType" | "User";
+      };
+    };
+
+    if (!data.resource) {
+      recordIntegrationCall("calendly", "create_scheduling_link", "failure", endTimer());
+      return null;
+    }
+
+    recordIntegrationCall("calendly", "create_scheduling_link", "success", endTimer());
+    return {
+      bookingUrl: data.resource.booking_url,
+      owner: data.resource.owner,
+      ownerType: data.resource.owner_type,
+    };
+  } catch (error) {
+    log(`Error creating scheduling link: ${error instanceof Error ? error.message : String(error)}`);
+    recordIntegrationCall("calendly", "create_scheduling_link", "failure", endTimer());
+    return null;
+  }
+}
+
+/**
+ * Format available times for display in a message
+ */
+export function formatAvailableTimes(
+  times: CalendlyAvailableTime[],
+  timezone: string = "America/New_York",
+  maxSlots: number = 5,
+): string {
+  const availableTimes = times
+    .filter((t) => t.status === "available")
+    .slice(0, maxSlots);
+
+  if (availableTimes.length === 0) {
+    return "No available times found for the requested period.";
+  }
+
+  const formatted = availableTimes.map((slot, index) => {
+    const date = new Date(slot.startTime);
+    const formattedDate = date.toLocaleDateString("en-US", {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      timeZone: timezone,
+    });
+    const formattedTime = date.toLocaleTimeString("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+      timeZone: timezone,
+    });
+    return `${index + 1}. ${formattedDate} at ${formattedTime}`;
+  });
+
+  return formatted.join("\n");
 }
 
 /**

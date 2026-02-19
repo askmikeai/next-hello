@@ -40,6 +40,16 @@ export const crmConfigSchema = z.object({
   propertyMappings: z.record(z.string()).optional(),
 });
 
+export const elevenlabsConfigSchema = z.object({
+  voiceId: z.string().optional(),
+  modelId: z.string().optional().default("eleven_monolingual_v1"),
+  stability: z.number().min(0).max(1).optional().default(0.5),
+  similarityBoost: z.number().min(0).max(1).optional().default(0.75),
+  style: z.number().min(0).max(1).optional().default(0),
+  useSpeakerBoost: z.boolean().optional().default(true),
+  scriptTemplate: z.string().optional(),
+});
+
 export const agentConfigSchema = z.object({
   model: z.string().optional().default("claude-sonnet-4-20250514"),
   systemPromptAdditions: z.string().optional(),
@@ -108,6 +118,7 @@ export const networkingEventConfigSchema = z.object({
   linkedin: linkedinConfigSchema.optional(),
   email: emailConfigSchema.optional(),
   crm: crmConfigSchema.optional(),
+  elevenlabs: elevenlabsConfigSchema.optional(),
   agent: agentConfigSchema.optional(),
   channels: z
     .array(z.enum(["whatsapp", "telegram"]))

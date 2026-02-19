@@ -1,8 +1,14 @@
 import type { EmailConfig, NetworkingContact } from "../../config/types.js";
 import { recordIntegrationCall, startTimer } from "../../observability/metrics.js";
+import nodemailer from "nodemailer";
+import type { Transporter } from "nodemailer";
+import { google } from "googleapis";
 
 const SENDGRID_API_BASE = "https://api.sendgrid.com/v3";
 const RESEND_API_BASE = "https://api.resend.com";
+
+// Gmail OAuth2 cached transporter
+let gmailTransporter: Transporter | null = null;
 
 export interface SendEmailParams {
   to: string;
@@ -150,13 +156,127 @@ async function sendViaResend(
 }
 
 /**
+ * Get Gmail OAuth2 credentials from environment
+ */
+function getGmailOAuth2Config(): {
+  user: string;
+  clientId: string;
+  clientSecret: string;
+  refreshToken: string;
+} | null {
+  const user = process.env.GMAIL_USER;
+  const clientId = process.env.GMAIL_CLIENT_ID;
+  const clientSecret = process.env.GMAIL_CLIENT_SECRET;
+  const refreshToken = process.env.GMAIL_REFRESH_TOKEN;
+
+  if (user && clientId && clientSecret && refreshToken) {
+    return { user, clientId, clientSecret, refreshToken };
+  }
+  return null;
+}
+
+/**
+ * Create Gmail OAuth2 transporter
+ */
+async function getGmailTransporter(): Promise<Transporter | null> {
+  if (gmailTransporter) return gmailTransporter;
+
+  const gmailConfig = getGmailOAuth2Config();
+  if (!gmailConfig) return null;
+
+  const oauth2Client = new google.auth.OAuth2(
+    gmailConfig.clientId,
+    gmailConfig.clientSecret,
+    "https://developers.google.com/oauthplayground"
+  );
+
+  oauth2Client.setCredentials({
+    refresh_token: gmailConfig.refreshToken,
+  });
+
+  try {
+    const { token } = await oauth2Client.getAccessToken();
+    if (!token) {
+      log("Failed to get Gmail access token");
+      return null;
+    }
+
+    gmailTransporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        type: "OAuth2",
+        user: gmailConfig.user,
+        clientId: gmailConfig.clientId,
+        clientSecret: gmailConfig.clientSecret,
+        refreshToken: gmailConfig.refreshToken,
+        accessToken: token,
+      },
+    });
+
+    return gmailTransporter;
+  } catch (error) {
+    log(`Gmail OAuth2 error: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
+}
+
+/**
+ * Send email via Gmail OAuth2
+ */
+async function sendViaGmail(params: SendEmailParams): Promise<SendEmailResult> {
+  const gmailConfig = getGmailOAuth2Config();
+  if (!gmailConfig) {
+    return { success: false, error: "Gmail OAuth2 not configured. Set GMAIL_USER, GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN." };
+  }
+
+  const endTimer = startTimer();
+  try {
+    const transporter = await getGmailTransporter();
+    if (!transporter) {
+      return { success: false, error: "Failed to create Gmail transporter" };
+    }
+
+    const mailOptions = {
+      from: gmailConfig.user,
+      to: params.to,
+      subject: params.subject,
+      text: params.text,
+      html: params.html,
+      replyTo: params.replyTo,
+    };
+
+    const result = await transporter.sendMail(mailOptions);
+
+    recordIntegrationCall("gmail", "send_email", "success", endTimer());
+    log(`Email sent via Gmail to ${params.to}, messageId: ${result.messageId}`);
+    return { success: true, messageId: result.messageId };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    log(`Gmail error: ${message}`);
+    recordIntegrationCall("gmail", "send_email", "failure", endTimer());
+    // Reset transporter on error to force re-auth
+    gmailTransporter = null;
+    return { success: false, error: message };
+  }
+}
+
+/**
  * Send email using configured provider
  */
 export async function sendEmail(
   config: EmailConfig,
   params: SendEmailParams,
 ): Promise<SendEmailResult> {
-  const provider = config.provider ?? "sendgrid";
+  const provider = config.provider ?? "gmail";
+
+  if (provider === "gmail" || getGmailOAuth2Config()) {
+    // Prefer Gmail if configured
+    const gmailResult = await sendViaGmail(params);
+    if (gmailResult.success || !config.provider) {
+      return gmailResult;
+    }
+    // Fall through to other providers if Gmail fails and another is specified
+  }
 
   if (provider === "resend") {
     return sendViaResend(config, params);

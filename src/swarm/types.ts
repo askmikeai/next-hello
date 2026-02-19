@@ -7,8 +7,8 @@ import type { NetworkingContact, NetworkingEventConfig } from "../config/types.j
  * ORCHESTRATOR (CEO / AI Brain)
  * └── Handles ALL conversations, coordinates all agents
  *     │
- *     ├── RESEARCH Agent ──► PDL API
- *     │   └── Contact enrichment via People Data Labs
+ *     ├── RESEARCH Agent ──► PDL API, Luma Scraper
+ *     │   └── Contact enrichment & event attendee matching
  *     │
  *     ├── QUALIFICATION Agent (depends on Research)
  *     │   └── Lead scoring (0-100) & tier assignment
@@ -22,8 +22,11 @@ import type { NetworkingContact, NetworkingEventConfig } from "../config/types.j
  *     ├── VIDEO Agent ──► HeyGen API
  *     │   └── HeyGen video generation
  *     │
- *     └── VOICE Agent ──► ElevenLabs API
- *         └── ElevenLabs text-to-speech
+ *     ├── VOICE Agent ──► ElevenLabs API
+ *     │   └── ElevenLabs text-to-speech
+ *     │
+ *     └── EMAIL Agent ──► IMAP / SendGrid
+ *         └── Email reading (MFA codes) & sending
  *
  * All agents report directly to Orchestrator.
  * Only Qualification depends on Research completing first.
@@ -35,7 +38,8 @@ export type AgentType =
   | "personalization"
   | "video"
   | "voice"
-  | "crm";
+  | "crm"
+  | "email";
 
 /**
  * Task status tracking
@@ -164,6 +168,10 @@ export interface AgentContext {
   channel?: Channel;
   logger: Logger;
   messageHistory?: ConversationMessage[];
+  /** The most recent user message - used for parsing user selections */
+  lastUserMessage?: string;
+  /** Additional context for agent-specific operations */
+  additionalContext?: string;
 }
 
 /**
@@ -205,6 +213,34 @@ export interface AgentTask {
 }
 
 /**
+ * Strategy types for dynamic orchestration
+ */
+export type StrategyType = "direct_response" | "rule_based" | "agent_orchestration";
+
+/**
+ * Strategy decision recorded in state
+ */
+export interface StrategyDecision {
+  strategy: StrategyType;
+  reasoning: string;
+  suggestedAgents?: AgentType[];
+  priority: "immediate" | "background";
+  decidedAt: Date;
+}
+
+/**
+ * Recent agent result stored in state
+ */
+export interface RecentAgentResult {
+  agentType: AgentType;
+  success: boolean;
+  response?: string;
+  data?: Record<string, unknown>;
+  error?: string;
+  completedAt: Date;
+}
+
+/**
  * Swarm state stored in Redis
  */
 export interface SwarmState {
@@ -218,6 +254,10 @@ export interface SwarmState {
   conversationTurns: number;
   lastActivityAt: Date;
   metadata?: Record<string, unknown>;
+  /** Last strategy decision made by Claude */
+  lastStrategy?: StrategyDecision;
+  /** Recent results from agent invocations (keyed by agent type) */
+  recentAgentResults?: Record<AgentType, RecentAgentResult>;
 }
 
 /**

@@ -18,7 +18,8 @@
   },
 
   "calendly": {
-    "schedulingLink": "https://calendly.com/askmikeai"
+    "schedulingLink": "https://calendly.com/askmikeai",
+    "organizationUri": "https://api.calendly.com/organizations/cef1dc4d-0a13-4f99-8dba-2728b3efc484"
   },
 
   "crm": {

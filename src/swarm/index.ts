@@ -4,12 +4,13 @@
  * This module provides a multi-agent AI system using the Orchestrator Pattern.
  * The orchestrator handles all conversations and coordinates specialized agents:
  *
- * - Research Agent: Contact enrichment via People Data Labs API
+ * - Research Agent: Contact enrichment via PDL API + Luma event attendee matching
  * - Qualification Agent: Lead scoring and tier assignment (hot/warm/cold)
  * - Personalization Agent: Content generation (scripts, messages, emails)
  * - Video Agent: HeyGen video generation
  * - Voice Agent: ElevenLabs text-to-speech generation
  * - CRM Agent: HubSpot CRM synchronization
+ * - Email Agent: Email reading (IMAP) and sending (SendGrid/Resend)
  *
  * Agents run in parallel using the ParallelTaskRunner for non-blocking execution.
  */
@@ -29,6 +30,15 @@ export type { AgentConfig, AgentFactory } from "./base-agent.js";
 export { SwarmOrchestrator, getOrchestrator, resetOrchestrator } from "./orchestrator.js";
 export type { OrchestratorConfig } from "./orchestrator.js";
 
+// Agent Registry (Dynamic Orchestration)
+export * from "./registry/index.js";
+
+// Dynamic Orchestration Tools
+export * from "./tools/index.js";
+
+// Agent Reasoning Prompts
+export * from "./prompts/index.js";
+
 // Import agents to register their factories
 import "./agents/research.agent.js";
 import "./agents/qualification.agent.js";
@@ -36,6 +46,7 @@ import "./agents/crm.agent.js";
 import "./agents/personalization.agent.js";
 import "./agents/video.agent.js";
 import "./agents/voice.agent.js";
+import "./agents/email.agent.js";
 
 // Re-export agents for direct use if needed
 export { ResearchAgent } from "./agents/research.agent.js";
@@ -44,6 +55,7 @@ export { CRMAgent } from "./agents/crm.agent.js";
 export { PersonalizationAgent } from "./agents/personalization.agent.js";
 export { VideoAgent } from "./agents/video.agent.js";
 export { VoiceAgent } from "./agents/voice.agent.js";
+export { EmailAgent } from "./agents/email.agent.js";
 
 /**
  * Initialize the swarm system with configuration
@@ -64,9 +76,12 @@ export function initializeSwarm(config: NetworkingEventConfig): {
   messageStore: ReturnType<typeof getMessageStore>;
   contextBuilder: ReturnType<typeof getContextBuilder>;
 } {
+  const dynamicOrchConfig = config.swarm?.dynamicOrchestration;
+
   logEvent(logger, "swarm_initializing", {
     enabled: config.swarm?.enabled,
     rolloutPercentage: config.swarm?.rolloutPercentage,
+    dynamicOrchestration: dynamicOrchConfig?.enabled ?? true,
   });
 
   // Initialize message store
@@ -79,15 +94,22 @@ export function initializeSwarm(config: NetworkingEventConfig): {
     tokenBudget: config.swarm?.contextTokenBudget,
   });
 
-  // Initialize orchestrator
+  // Initialize orchestrator with dynamic orchestration config
   const orchestrator = getOrchestrator(config, {
     maxConversationTurns: config.swarm?.maxConversationTurns,
     fallbackToRules: config.swarm?.fallbackToRules,
+    dynamicOrchestration: {
+      enabled: dynamicOrchConfig?.enabled ?? true,
+      enableAgentSelection: dynamicOrchConfig?.enableAgentSelection ?? true,
+      enableDynamicDependencies: dynamicOrchConfig?.enableDynamicDependencies ?? true,
+      enableResultAwareness: dynamicOrchConfig?.enableResultAwareness ?? true,
+    },
   });
 
   logEvent(logger, "swarm_initialized", {
     availableAgents: orchestrator.getAvailableAgents(),
     isOperational: orchestrator.isOperational(),
+    dynamicOrchestrationEnabled: dynamicOrchConfig?.enabled ?? true,
   });
 
   return {

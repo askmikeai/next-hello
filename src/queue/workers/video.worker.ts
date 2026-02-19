@@ -16,9 +16,17 @@ function isMockMode(): boolean {
 }
 
 /**
- * Mock video URL for testing
+ * Get mock video URL from environment or use default
+ * If HEYGEN_MOCK_VIDEO_PATH is set, serve via local server
  */
-const MOCK_VIDEO_URL = "https://files.heygen.ai/mock/sample-video.mp4";
+function getMockVideoUrl(): string {
+  // If a local file path is configured, serve it via the server
+  if (process.env.HEYGEN_MOCK_VIDEO_PATH) {
+    const baseUrl = process.env.WEBHOOK_BASE_URL || `http://localhost:${process.env.PORT || 3000}`;
+    return `${baseUrl}/mock-video.mp4`;
+  }
+  return process.env.HEYGEN_MOCK_VIDEO_URL || "https://files.heygen.ai/mock/sample-video.mp4";
+}
 
 /**
  * Video worker result
@@ -218,7 +226,7 @@ async function processVideoJob(
       await new Promise((resolve) => setTimeout(resolve, mockDelay));
 
       const mockVideoId = `mock-video-${Date.now()}`;
-      const mockVideoUrl = MOCK_VIDEO_URL;
+      const mockVideoUrl = getMockVideoUrl();
 
       // Update contact with mock video URL
       await updateHeyGenVideo(phoneNumber, mockVideoId, mockVideoUrl, config.supabase);

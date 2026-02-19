@@ -465,6 +465,40 @@ export class MessageStore {
   }
 
   /**
+   * Clear all messages for a phone number (for testing)
+   */
+  async clearMessages(phoneNumber: string): Promise<number> {
+    if (!this.sql) {
+      return 0;
+    }
+
+    try {
+      const result = await this.sql<[{ count: string }]>`
+        WITH deleted AS (
+          DELETE FROM ${this.sql(this.tableName)}
+          WHERE phone_number = ${phoneNumber}
+          RETURNING *
+        )
+        SELECT COUNT(*) as count FROM deleted
+      `;
+
+      const deletedCount = parseInt(result[0].count, 10) || 0;
+
+      if (deletedCount > 0) {
+        logEvent(this.logger, "messages_cleared", {
+          phoneNumber,
+          deletedCount,
+        });
+      }
+
+      return deletedCount;
+    } catch (error) {
+      logError(this.logger, error as Error, "Error clearing messages");
+      return 0;
+    }
+  }
+
+  /**
    * Convert database row to ConversationMessage
    */
   private rowToMessage(row: MessageRow): ConversationMessage {

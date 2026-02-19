@@ -108,6 +108,15 @@ export interface CalendlyConfig {
   webhookSigningKey?: string;
 }
 
+export interface LumaConfig {
+  /** Luma API key (falls back to LUMA_API_KEY env) */
+  apiKey?: string;
+  /** Calendar ID to fetch events from */
+  calendarId?: string;
+  /** Minimum similarity score (0-1) for name matching (default: 0.7) */
+  nameMatchThreshold?: number;
+}
+
 export interface LinkedInConfig {
   /** Provider for LinkedIn research (ProxyCurl shut down - needs alternative) */
   provider?: "disabled";
@@ -205,6 +214,36 @@ export interface AgentToggleConfig {
 }
 
 /**
+ * Dynamic orchestration configuration
+ * Controls Claude's ability to reason about and invoke agents
+ */
+export interface DynamicOrchestrationConfig {
+  /** Enable dynamic orchestration (default: true when swarm enabled) */
+  enabled?: boolean;
+
+  /** Percentage of conversations to use dynamic orchestration (0-100) */
+  rolloutPercentage?: number;
+
+  /** Enable agent selection by Claude (default: true) */
+  enableAgentSelection?: boolean;
+
+  /** Enable Claude-specified dependencies (default: true) */
+  enableDynamicDependencies?: boolean;
+
+  /** Enable result awareness - Claude sees agent results (default: true) */
+  enableResultAwareness?: boolean;
+
+  /** Require decide_strategy before agent invocation (default: true) */
+  requireStrategyDecision?: boolean;
+
+  /** Default timeout for agent invocations in ms (default: 30000) */
+  defaultTimeoutMs?: number;
+
+  /** Maximum agents that can be invoked in a single call (default: 5) */
+  maxAgentsPerInvocation?: number;
+}
+
+/**
  * Swarm AI configuration
  */
 export interface SwarmConfig {
@@ -239,6 +278,9 @@ export interface SwarmConfig {
     voice?: AgentToggleConfig;
     crm?: AgentToggleConfig;
   };
+
+  /** Dynamic orchestration configuration */
+  dynamicOrchestration?: DynamicOrchestrationConfig;
 }
 
 export interface NetworkingEventConfig {
@@ -271,6 +313,9 @@ export interface NetworkingEventConfig {
 
   /** Calendly scheduling configuration */
   calendly?: CalendlyConfig;
+
+  /** Luma event platform configuration */
+  luma?: LumaConfig;
 
   /** LinkedIn research configuration */
   linkedin?: LinkedInConfig;

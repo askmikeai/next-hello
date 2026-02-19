@@ -32,6 +32,7 @@ import { startVideoPoller } from "../../workers/video-poller.js";
 import { createPDLWorker } from "../../queue/workers/pdl.worker.js";
 import { getMediaStore } from "../../storage/media-store.js";
 import type { MediaCategory } from "../../storage/types.js";
+import { generateVoiceMessage } from "../../integrations/elevenlabs/client.js";
 
 const AUTH_DIR = process.env.WHATSAPP_AUTH_DIR ?? "./data/auth/whatsapp";
 
@@ -333,6 +334,7 @@ export class WhatsAppClient {
             messageText: text,
             config: this.config,
             sendMessage: async (msg) => this.sendMessage(chatId, msg, { phoneNumber }),
+            sendVoiceMessage: async (msg) => this.sendVoiceMessageTTS(phoneNumber, msg),
             isVoiceMessage: messageInfo.isVoiceNote,
           });
           msgLogger.info({ msg: "Follow-up handled", result });
@@ -674,6 +676,132 @@ What's on your mind?`;
     });
 
     log(`Voice message sent to ${phoneNumber}`);
+  }
+
+  /**
+   * Send a voice message using TTS (text-to-speech)
+   * Converts text to voice using ElevenLabs and sends as voice note
+   * - Extracts URLs and sends them as separate text messages
+   * - Cleans text for natural speech
+   */
+  async sendVoiceMessageTTS(phoneNumber: string, text: string): Promise<void> {
+    if (!this.sock) {
+      throw new Error("WhatsApp not connected");
+    }
+
+    if (!this.config.elevenlabs?.voiceId) {
+      log(`ElevenLabs not configured, sending text instead`);
+      debug(`Config elevenlabs:`, { elevenlabs: this.config.elevenlabs });
+      await this.sendMessageByPhone(phoneNumber, text);
+      return;
+    }
+
+    // Extract URLs from the text
+    const urlRegex = /(https?:\/\/[^\s]+)/gi;
+    const urls = text.match(urlRegex) || [];
+
+    // Clean text for natural speech
+    let voiceText = text
+      // Replace URLs with natural speech
+      .replace(urlRegex, "I'll send you the link")
+      // Remove duplicate "I'll send you the link" phrases
+      .replace(/(I'll send you the link[,.]?\s*)+/gi, "I'll send you the link. ")
+      // Clean up markdown
+      .replace(/\*\*/g, "")
+      .replace(/\*/g, "")
+      .replace(/#{1,6}\s/g, "")
+      // Clean up extra whitespace
+      .replace(/\s+/g, " ")
+      .trim();
+
+    log(`Generating voice message for ${phoneNumber}: "${voiceText.substring(0, 50)}..."`);
+
+    // Get contact name for personalization
+    const contact = await findContactByPhone(phoneNumber, this.config.supabase);
+    const recipientName = contact?.first_name ?? undefined;
+
+    // Generate voice using ElevenLabs
+    const result = await generateVoiceMessage(this.config.elevenlabs, voiceText, recipientName);
+
+    if (result.status !== "completed" || !result.audioData) {
+      log(`Voice generation failed: ${result.error}, falling back to text`);
+      await this.sendMessageByPhone(phoneNumber, text);
+      return;
+    }
+
+    const normalized = phoneNumber.replace(/[^0-9]/g, "");
+    const chatId = `${normalized}@s.whatsapp.net`;
+
+    // Show recording indicator
+    await this.sock.sendPresenceUpdate("recording", chatId);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await this.sock.sendPresenceUpdate("paused", chatId);
+
+    // Generate waveform data (64 samples representing audio amplitude)
+    const waveform = this.generateWaveform(result.audioData);
+
+    // Send as voice note with waveform
+    // Note: waveform is supported by Baileys but not in TypeScript types
+    await this.sock.sendMessage(chatId, {
+      audio: result.audioData,
+      mimetype: result.contentType ?? "audio/ogg; codecs=opus",
+      ptt: true,
+      waveform,
+    } as Parameters<typeof this.sock.sendMessage>[1]);
+
+    log(`Voice message (TTS) sent to ${phoneNumber}`);
+
+    // Send any extracted URLs as follow-up text messages
+    if (urls.length > 0) {
+      // Brief pause before sending links
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+
+      for (const url of urls) {
+        await this.sendMessageByPhone(phoneNumber, url);
+        // Small delay between links
+        if (urls.length > 1) {
+          await new Promise((resolve) => setTimeout(resolve, 500));
+        }
+      }
+      log(`Sent ${urls.length} link(s) as follow-up to ${phoneNumber}`);
+    }
+  }
+
+  /**
+   * Generate waveform data from audio buffer
+   * WhatsApp expects 64 bytes representing amplitude samples (0-100)
+   */
+  private generateWaveform(audioBuffer: Buffer): Uint8Array {
+    const samples = 64;
+    const waveform = new Uint8Array(samples);
+
+    // Sample the audio buffer at regular intervals
+    const step = Math.floor(audioBuffer.length / samples);
+
+    for (let i = 0; i < samples; i++) {
+      const start = i * step;
+      const end = Math.min(start + step, audioBuffer.length);
+
+      // Calculate average amplitude for this segment
+      let sum = 0;
+      for (let j = start; j < end; j++) {
+        // Treat byte as signed and get absolute value
+        const byte = audioBuffer[j];
+        const signed = byte > 127 ? byte - 256 : byte;
+        sum += Math.abs(signed);
+      }
+
+      const avg = sum / (end - start);
+      // Scale to 0-100 range (WhatsApp waveform values)
+      waveform[i] = Math.min(100, Math.floor((avg / 128) * 100));
+    }
+
+    // Ensure some visual variation (smooth the waveform)
+    for (let i = 1; i < samples - 1; i++) {
+      waveform[i] = Math.floor((waveform[i - 1] + waveform[i] * 2 + waveform[i + 1]) / 4);
+    }
+
+    return waveform;
   }
 
   /**

@@ -88,16 +88,86 @@ async function main(): Promise<void> {
   log(`Owner: ${config.ownerName}`);
   console.log("");
 
-  // Start metrics server
+  // Start metrics server with test API
   const metricsPort = parseInt(process.env.METRICS_PORT ?? "3001", 10);
   const metricsServer = createServer(async (req, res) => {
-    if (req.url === "/metrics") {
+    const url = req.url ?? "/";
+    const method = req.method ?? "GET";
+
+    if (url === "/metrics") {
       const metrics = await getMetrics();
       res.writeHead(200, { "Content-Type": getMetricsContentType() });
       res.end(metrics);
-    } else if (req.url === "/health") {
+    } else if (url === "/health") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ status: "ok", service: "whatsapp" }));
+    } else if (url.startsWith("/api/test/clear/") && method === "DELETE") {
+      // Clear test data for a phone number
+      try {
+        const phoneNumber = url.split("/api/test/clear/")[1];
+        if (!phoneNumber) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Phone number required" }));
+          return;
+        }
+
+        const { getMessageStore } = await import("../../history/message-store.js");
+        const messageStore = getMessageStore();
+        await messageStore.clearMessages(phoneNumber);
+
+        // Also clear from Redis (scheduling context, voice mode)
+        const { getRedisConnection } = await import("../../queue/client.js");
+        const redis = getRedisConnection();
+        if (redis) {
+          await redis.del(`scheduling:${phoneNumber}`);
+          await redis.del(`voice_mode:${phoneNumber}`);
+          await redis.del(`swarm:state:${phoneNumber}`);
+        }
+
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ success: true, cleared: phoneNumber }));
+      } catch (error) {
+        log(`Clear test data error: ${error}`);
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: String(error) }));
+      }
+    } else if (url === "/api/test/process" && method === "POST") {
+      // Test API for conversation simulation
+      try {
+        const { getOrchestrator } = await import("../../swarm/orchestrator.js");
+        const { findContactByPhone } = await import("../../contacts/index.js");
+
+        // Read body
+        const body = await new Promise<string>((resolve) => {
+          let data = "";
+          req.on("data", (chunk: Buffer) => (data += chunk.toString()));
+          req.on("end", () => resolve(data));
+        });
+
+        const { phoneNumber, message, channel = "whatsapp" } = JSON.parse(body);
+
+        if (!phoneNumber || !message) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "phoneNumber and message required" }));
+          return;
+        }
+
+        const contact = await findContactByPhone(phoneNumber, config.supabase);
+        const orchestrator = getOrchestrator(config);
+        const result = await orchestrator.processMessage(
+          phoneNumber,
+          message,
+          channel,
+          contact ?? undefined
+        );
+
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        log(`Test API error: ${error}`);
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: String(error) }));
+      }
     } else {
       res.writeHead(404);
       res.end("Not found");

@@ -100,8 +100,18 @@ export function buildContactContext(
 ): string {
   if (!contact) {
     return `## Contact Status
-This is a NEW contact. No information on file yet.
-Start by greeting them warmly and asking for their email or company.`;
+This is a NEW contact. You have ZERO information about them.
+IMPORTANT: Do NOT claim to have their name, company, or any details - you don't have any yet!
+Start fresh by greeting them and asking who they are.`;
+  }
+
+  // Check if contact has any meaningful info beyond phone number
+  const hasInfo = contact.first_name || contact.email || contact.company_name || contact.job_title;
+  if (!hasInfo) {
+    return `## Contact Status
+Contact exists but you have NO information about them except their phone number.
+IMPORTANT: Do NOT claim to know their name, company, or role - you need to ask!
+Start by greeting them and asking who they are.`;
   }
 
   const missingFields = getMissingFields(contact, requiredFields);

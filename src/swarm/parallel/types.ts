@@ -132,11 +132,18 @@ export const AGENT_PARALLEL_CONFIGS: Record<AgentType, AgentParallelConfig> = {
     timeoutMs: 300000, // 5 minutes for video generation
   },
   voice: {
-    canRunParallelWith: ["video", "crm", "research"],
+    canRunParallelWith: ["video", "crm", "research", "email"],
     dependsOn: [],
     isBackground: true,
     defaultPriority: 25,
     timeoutMs: 60000,
+  },
+  email: {
+    canRunParallelWith: ["video", "voice", "crm", "research"],
+    dependsOn: [],
+    isBackground: true,
+    defaultPriority: 20,
+    timeoutMs: 120000, // 2 minutes for email operations
   },
 };
 

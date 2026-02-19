@@ -1,5 +1,5 @@
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  NextHello - AI-Powered Networking Assistant
+#  NextHello - AI-Powered Networking Assistant (CrewAI Edition)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #
 #  QUICK START:
@@ -7,20 +7,19 @@
 #    1. Copy .env.example to .env and fill in your values
 #       cp .env.example .env
 #
-#    2. Or run interactive setup (creates .env for you):
-#       docker compose run --rm setup
+#    2. Connect WhatsApp (scan QR code):
+#       docker compose run --rm whatsapp-connect
 #
-#    3. Connect WhatsApp (scan QR code):
-#       docker compose run --rm connect
-#
-#    4. Start the server:
+#    3. Start all services:
 #       docker compose up -d
 #
 #  OTHER COMMANDS:
 #  ───────────────
-#    View logs:       docker compose logs -f nexthello
-#    Check status:    docker compose run --rm cli status
+#    View logs:       docker compose logs -f api
+#    View all logs:   docker compose logs -f
+#    Check status:    docker compose ps
 #    Stop server:     docker compose down
+#    Dashboard:       http://localhost:8001/admin/
 #
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -250,13 +249,116 @@ services:
       retries: 3
 
   # ──────────────────────────────────────────────────────────────────────────
-  # NEXTHELLO - Main server (webhooks + message handling)
-  # Usage: docker compose up -d
+  # API - Python FastAPI + CrewAI server
+  # Dashboard: http://localhost:8001/admin/
+  # API: http://localhost:8001/
   # ──────────────────────────────────────────────────────────────────────────
-  nexthello:
+  api:
+    build: ./crewai
+    image: nexthello-api:local
+    container_name: nexthello-api
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      FRONTEND_DIR: /app/frontend
+    volumes:
+      - nexthello-media:/app/data/media
+      - ./dist/src/admin:/app/frontend:ro
+    ports:
+      - "8001:8001"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # WORKER - ARQ background job processor
+  # Handles async tasks like AI processing, enrichment, etc.
+  # ──────────────────────────────────────────────────────────────────────────
+  worker:
+    build: ./crewai
+    image: nexthello-api:local
+    container_name: nexthello-worker
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - nexthello-media:/app/data/media
+    command: ["python", "-m", "arq", "src.queue.worker.WorkerSettings"]
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # WHATSAPP-BRIDGE - Node.js Baileys WhatsApp connector
+  # Forwards messages to Python API
+  # ──────────────────────────────────────────────────────────────────────────
+  whatsapp-bridge:
+    build: ./crewai/whatsapp-bridge
+    image: nexthello-whatsapp:local
+    container_name: nexthello-whatsapp-bridge
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      PYTHON_API_URL: http://api:8001
+    volumes:
+      - nexthello-whatsapp-auth:/app/auth_state
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # WHATSAPP-CONNECT - Interactive QR code scanner
+  # Usage: docker compose run --rm whatsapp-connect
+  # ──────────────────────────────────────────────────────────────────────────
+  whatsapp-connect:
+    build: ./crewai/whatsapp-bridge
+    image: nexthello-whatsapp:local
+    container_name: nexthello-whatsapp-connect
+    stdin_open: true
+    tty: true
+    environment:
+      PYTHON_API_URL: http://api:8001
+    volumes:
+      - nexthello-whatsapp-auth:/app/auth_state
+    profiles:
+      - tools
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # NEXTHELLO-LEGACY - TypeScript server (legacy, use 'ts' profile)
+  # Usage: docker compose --profile ts up nexthello-legacy
+  # ──────────────────────────────────────────────────────────────────────────
+  nexthello-legacy:
     build: .
     image: nexthello:local
-    container_name: nexthello
+    container_name: nexthello-legacy
     depends_on:
       postgres:
         condition: service_healthy
@@ -268,44 +370,26 @@ services:
       <<: *common-env
       NODE_ENV: production
       PORT: 3000
-      # Override for Docker networking (env file may have localhost)
       REDIS_HOST: redis
       POSTGRES_HOST: postgres
       DATABASE_URL: postgresql://${POSTGRES_USER:-nexthello}:${POSTGRES_PASSWORD:-nexthello_dev}@postgres:5432/${POSTGRES_DB:-nexthello}
-
     volumes:
       - nexthello-auth:/app/data/auth
       - nexthello-media:/app/data/media
       - ./nexthello.config.json:/app/nexthello.config.json:ro
-
     ports:
       - "${PORT:-3000}:3000"
-
     restart: unless-stopped
-
-    healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
-
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+    profiles:
+      - ts
 
   # ──────────────────────────────────────────────────────────────────────────
-  # WHATSAPP - WhatsApp connection handler
-  # This container maintains the WhatsApp connection and processes messages
-  # First-time setup: docker compose run --rm connect (to scan QR code)
-  # Metrics: http://localhost:3002/metrics
+  # WHATSAPP-LEGACY - TypeScript WhatsApp handler (legacy, use 'ts' profile)
   # ──────────────────────────────────────────────────────────────────────────
-  whatsapp:
+  whatsapp-legacy:
     build: .
     image: nexthello:local
-    container_name: nexthello-whatsapp
+    container_name: nexthello-whatsapp-legacy
     depends_on:
       postgres:
         condition: service_healthy
@@ -315,22 +399,20 @@ services:
       - .env
     environment:
       <<: *common-env
-      # Override for Docker networking
       REDIS_HOST: redis
       POSTGRES_HOST: postgres
       DATABASE_URL: postgresql://${POSTGRES_USER:-nexthello}:${POSTGRES_PASSWORD:-nexthello_dev}@postgres:5432/${POSTGRES_DB:-nexthello}
       METRICS_PORT: "3001"
-
     volumes:
       - nexthello-auth:/app/data/auth
       - nexthello-media:/app/data/media
       - ./nexthello.config.json:/app/nexthello.config.json:ro
-
     ports:
       - "3002:3001"
-
     entrypoint: ["node", "dist/src/channels/whatsapp/connect.js"]
     restart: unless-stopped
+    profiles:
+      - ts
 
   # ──────────────────────────────────────────────────────────────────────────
   # MINIO - S3-compatible object storage
@@ -431,6 +513,8 @@ services:
 volumes:
   nexthello-auth:
     name: nexthello-auth
+  nexthello-whatsapp-auth:
+    name: nexthello-whatsapp-auth
   nexthello-media:
     name: nexthello-media
   nexthello-postgres:

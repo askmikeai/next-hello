@@ -1,0 +1,39 @@
+#!/bin/bash
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  NextHello CLI - Run from anywhere
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# Resolve the actual script location (follows symlinks)
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+while [ -L "$SCRIPT_PATH" ]; do
+    SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd)"
+    SCRIPT_PATH="$(readlink "$SCRIPT_PATH")"
+    [[ $SCRIPT_PATH != /* ]] && SCRIPT_PATH="$SCRIPT_DIR/$SCRIPT_PATH"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd)"
+
+# Project root is one level up from bin/
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
+# Change to project directory for docker compose
+cd "$PROJECT_DIR" || {
+    echo "Error: Could not find NextHello project at $PROJECT_DIR"
+    exit 1
+}
+
+# Ensure .env exists
+if [ ! -f .env ]; then
+    if [ -f .env.example ]; then
+        cp .env.example .env
+        echo "Created .env from .env.example - please configure it"
+    fi
+fi
+
+# Build image if needed (only on first run)
+if ! docker image inspect nexthello:local &>/dev/null; then
+    echo "Building NextHello image (first run)..."
+    docker compose build cli
+fi
+
+# Run the CLI with all arguments passed through
+exec docker compose run --rm cli "$@"
