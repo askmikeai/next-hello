@@ -32,6 +32,29 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Miami Vice colors (ANSI escape codes)
+PINK = "\033[38;2;255;110;199m"
+CYAN = "\033[38;2;0;255;255m"
+ORANGE = "\033[38;2;255;107;53m"
+YELLOW = "\033[38;2;255;217;61m"
+RESET = "\033[0m"
+
+
+def print_banner() -> None:
+    """Print the NextHello CLI banner with Miami Vice colors"""
+    print()
+    print(f"{PINK}  _   _           _   _   _      _ _        {CYAN}⣿⣿⣿⣿⣿⣿⣿⣿⠿⠿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿{RESET}")
+    print(f"{PINK} | \\ | | _____  _| |_| | | | ___| | | ___   {CYAN}⣿⣿⣿⣿⣿⣿⠏⠀⠀⠀⠀⠙⠿⠿⠿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿{RESET}")
+    print(f"{PINK} |  \\| |/ _ \\ \\/ / __| |_| |/ _ \\ | |/ _ \\  {CYAN}⣿⣿⣿⣿⣿⣿⡀⠀⣠⣴⣶⣿⣿⣿⣿⣶⣮⣝⠻⢿⣿⣿⣿⣿⣿{RESET}")
+    print(f"{PINK} | |\\  |  __/>  <| |_|  _  |  __/ | | (_) | {CYAN}⣿⣿⣿⣿⣿⡟⣡⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦⡀⠀⠀⠙⢿{RESET}")
+    print(f"{PINK} |_| \\_|\\___/_/\\_\\\\__|_| |_|\\___|_|_|\\___/  {CYAN}⣿⠿⣿⣿⡿⢰⣿⡿⠋⠉⠉⢻⣿⣿⣿⣿⣿⣿⣿⣿⣿⡄⠀⠀⣸{RESET}")
+    print(f"                                            {CYAN}⠁⠀⠀⠙⠃⢿⣿⡅⠀⠀⢀⣼⣿⣿⣿⣿⠟⠛⠻⣿⣿⣷⢀⣴⣿{RESET}")
+    print(f"{ORANGE}  NextHello{RESET}                                 {CYAN}⡀⠀⠀⠀⠀⠸⣿⣛⣳⣾⣿⢿⡍⢉⣻⡇⠰⠀⠀⣿⣿⣿⢸⣿⣿{RESET}")
+    print(f"{CYAN}  AI Networking Swarm{RESET}                       {CYAN}⣷⡀⠀⠀⠀⠀⠈⠻⢿⣿⣿⣷⣶⣬⣽⣿⣦⣤⣤⣟⣿⢇⣾⣿⣿{RESET}")
+    print(f"    {YELLOW}🌴{RESET} {PINK}Made in Miami{RESET}                         {CYAN}⣿⣿⣄⠀⠀⠀⠀⠀⠀⠈⠙⠻⠿⣿⣿⣿⣿⣮⣿⠟⣡⣾⣿⣿⣿{RESET}")
+    print(f"                                            {CYAN}⣿⣿⣿⡇⢰⣶⣤⣤⣤⣀⣀⠀⠀⠀⠀⠀⠀⠀⠀⢻⣿⣿⣿⣿⣿{RESET}")
+    print()
+
 
 class SwarmRunner:
     """
@@ -137,6 +160,8 @@ class SwarmRunner:
 
 async def run_swarm():
     """Main entry point for running the swarm"""
+    print_banner()
+
     runner = SwarmRunner()
 
     # Setup signal handlers
