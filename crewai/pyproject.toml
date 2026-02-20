@@ -23,6 +23,7 @@ dependencies = [
 
     # Database
     "supabase>=2.0.0",
+    "asyncpg>=0.29.0",
 
     # External APIs (optional, for tools)
     "openai>=1.0.0",  # For Whisper transcription
