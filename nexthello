@@ -1,0 +1,199 @@
+#!/usr/bin/env bash
+#
+# NextHello CLI - AI-powered networking assistant
+#
+# Usage:
+#   ./nexthello <command>
+#
+# Commands:
+#   start       Start all services (API + Worker + WhatsApp)
+#   stop        Stop all services
+#   status      Check health of all services
+#   logs        View service logs
+#   whatsapp    Connect WhatsApp (scan QR code)
+#   migrate     Run database migrations
+#   build       Rebuild Docker images
+#   shell       Open shell in API container
+#   help        Show this help message
+#
+
+set -e
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+# Print colored output
+info() { echo -e "${CYAN}▸${NC} $1"; }
+success() { echo -e "${GREEN}✓${NC} $1"; }
+warn() { echo -e "${YELLOW}⚠${NC} $1"; }
+error() { echo -e "${RED}✗${NC} $1"; }
+
+# Check if Docker is running
+check_docker() {
+    if ! docker info &> /dev/null; then
+        error "Docker is not running. Please start Docker first."
+        exit 1
+    fi
+}
+
+# Main command handler
+case "${1:-help}" in
+    start)
+        check_docker
+        info "Starting NextHello..."
+        docker compose up -d
+        sleep 2
+        docker compose exec api python cli.py status 2>/dev/null || true
+        echo ""
+        success "NextHello is running"
+        echo ""
+        echo "  Dashboard: http://localhost:8001/admin/"
+        echo "  API Docs:  http://localhost:8001/docs"
+        echo ""
+        ;;
+
+    stop)
+        check_docker
+        info "Stopping NextHello..."
+        docker compose down
+        success "NextHello stopped"
+        ;;
+
+    restart)
+        check_docker
+        info "Restarting NextHello..."
+        docker compose restart
+        success "NextHello restarted"
+        ;;
+
+    status)
+        check_docker
+        docker compose exec api python cli.py status
+        ;;
+
+    logs)
+        check_docker
+        shift || true
+        case "${1:-all}" in
+            api)
+                docker compose logs -f api
+                ;;
+            worker)
+                docker compose logs -f worker
+                ;;
+            whatsapp|bridge)
+                docker compose logs -f whatsapp-bridge
+                ;;
+            *)
+                docker compose logs -f api worker whatsapp-bridge
+                ;;
+        esac
+        ;;
+
+    whatsapp|connect)
+        check_docker
+        info "Starting WhatsApp connection..."
+        echo "Scan the QR code with your phone to connect."
+        echo ""
+        docker compose exec -it api python cli.py whatsapp
+        ;;
+
+    migrate|db:migrate)
+        check_docker
+        info "Running database migrations..."
+        docker compose up -d postgres
+        sleep 2
+        docker compose --profile migrations run --rm liquibase
+        success "Migrations complete"
+        ;;
+
+    build)
+        check_docker
+        info "Building Docker images..."
+        docker compose build
+        success "Build complete"
+        ;;
+
+    rebuild)
+        check_docker
+        info "Rebuilding and restarting..."
+        docker compose build
+        docker compose up -d
+        success "Rebuild complete"
+        ;;
+
+    shell)
+        check_docker
+        docker compose exec -it api bash
+        ;;
+
+    ps)
+        check_docker
+        docker compose ps
+        ;;
+
+    cli)
+        check_docker
+        shift || true
+        docker compose exec api python cli.py "$@"
+        ;;
+
+    exec)
+        check_docker
+        shift || true
+        docker compose exec api "$@"
+        ;;
+
+    help|--help|-h|"")
+        cat << 'EOF'
+
+  _   _           _   _          _ _
+ | \ | | _____  _| |_| |__   ___| | | ___
+ |  \| |/ _ \ \/ / __| '_ \ / _ \ | |/ _ \
+ | |\  |  __/>  <| |_| | | |  __/ | | (_) |
+ |_| \_|\___/_/\_\\__|_| |_|\___|_|_|\___/
+
+  AI-powered networking assistant
+
+USAGE:
+  ./nexthello <command>
+
+COMMANDS:
+  start       Start all services
+  stop        Stop all services
+  restart     Restart all services
+  status      Check service health
+  logs        View logs (all, api, worker, whatsapp)
+  whatsapp    Connect WhatsApp (scan QR code)
+  migrate     Run database migrations
+  build       Build Docker images
+  rebuild     Build and restart
+  shell       Open shell in API container
+  ps          Show running containers
+  cli <cmd>   Run CLI command directly
+  help        Show this help
+
+EXAMPLES:
+  ./nexthello start              # Start everything
+  ./nexthello whatsapp           # Connect WhatsApp
+  ./nexthello logs api           # View API logs
+  ./nexthello status             # Check health
+  ./nexthello cli research       # Run CLI command
+
+URLS:
+  Dashboard: http://localhost:8001/admin/
+  API Docs:  http://localhost:8001/docs
+
+EOF
+        ;;
+
+    *)
+        error "Unknown command: $1"
+        echo "Run './nexthello help' for usage."
+        exit 1
+        ;;
+esac

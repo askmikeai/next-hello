@@ -23,4 +23,7 @@
     <!-- Luma events and guest matching -->
     <include file="changesets/006-luma-events.xml" relativeToChangelogFile="true"/>
 
+    <!-- Telegram channel support -->
+    <include file="changesets/007-telegram-support.xml" relativeToChangelogFile="true"/>
+
 </databaseChangeLog>

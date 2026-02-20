@@ -1,5 +1,5 @@
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  NextHello - AI-Powered Networking Assistant (CrewAI Edition)
+#  NextHello - AI-Powered Networking Assistant
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #
 #  QUICK START:
@@ -7,145 +7,30 @@
 #    1. Copy .env.example to .env and fill in your values
 #       cp .env.example .env
 #
-#    2. Connect WhatsApp (scan QR code):
+#    2. Start database and run migrations:
+#       docker compose up -d postgres redis
+#       npm run db:migrate
+#
+#    3. Connect WhatsApp (scan QR code):
 #       docker compose run --rm whatsapp-connect
 #
-#    3. Start all services:
+#    4. Start all services:
 #       docker compose up -d
 #
-#  OTHER COMMANDS:
-#  ───────────────
+#  COMMANDS:
+#  ─────────
 #    View logs:       docker compose logs -f api
 #    View all logs:   docker compose logs -f
 #    Check status:    docker compose ps
-#    Stop server:     docker compose down
+#    Stop services:   docker compose down
 #    Dashboard:       http://localhost:8001/admin/
+#    API Docs:        http://localhost:8001/docs
 #
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-# Common environment variables (inherited by all services)
-x-common-env: &common-env
-  # Database (PostgreSQL)
-  DATABASE_URL: ${DATABASE_URL:-postgresql://nexthello:nexthello_dev@postgres:5432/nexthello}
-  POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
-  POSTGRES_PORT: ${POSTGRES_PORT:-5432}
-  POSTGRES_DB: ${POSTGRES_DB:-nexthello}
-  POSTGRES_USER: ${POSTGRES_USER:-nexthello}
-  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nexthello_dev}
-  # AI
-  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-  # App
-  NEXTHELLO_EVENT_NAME: ${NEXTHELLO_EVENT_NAME:-}
-  NEXTHELLO_OWNER_NAME: ${NEXTHELLO_OWNER_NAME:-}
-  NEXTHELLO_CALENDLY_LINK: ${NEXTHELLO_CALENDLY_LINK:-}
-  # Integrations
-  HEYGEN_API_KEY: ${HEYGEN_API_KEY:-}
-  ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
-  HUBSPOT_API_KEY: ${HUBSPOT_API_KEY:-}
-  SENDGRID_API_KEY: ${SENDGRID_API_KEY:-}
-  CALENDLY_API_KEY: ${CALENDLY_API_KEY:-}
-  # WhatsApp
-  WHATSAPP_AUTH_DIR: /app/data/auth/whatsapp
-  # Redis (for swarm state and job queues)
-  REDIS_HOST: ${REDIS_HOST:-redis}
-  REDIS_PORT: ${REDIS_PORT:-6379}
-  REDIS_PASSWORD: ${REDIS_PASSWORD:-}
-  # Storage (S3-compatible via MinIO)
-  STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
-  MEDIA_DIR: /app/data/media
-  S3_BUCKET: ${S3_BUCKET:-nexthello-media}
-  S3_REGION: ${S3_REGION:-us-east-1}
-  S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
-  AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
-  AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
-  S3_FORCE_PATH_STYLE: "true"
-  # Swarm
-  SWARM_ENABLED: ${SWARM_ENABLED:-false}
-  SWARM_ROLLOUT_PERCENTAGE: ${SWARM_ROLLOUT_PERCENTAGE:-0}
-  # Logging
-  LOG_LEVEL: ${LOG_LEVEL:-info}
-  NODE_ENV: ${NODE_ENV:-development}
-
 services:
   # ──────────────────────────────────────────────────────────────────────────
-  # SETUP - Interactive configuration wizard
-  # Usage: docker compose run --rm setup
-  # Only asks for values not already in .env
-  # ──────────────────────────────────────────────────────────────────────────
-  setup:
-    build: .
-    image: nexthello:local
-    container_name: nexthello-setup
-    stdin_open: true
-    tty: true
-    env_file:
-      - .env
-    environment:
-      <<: *common-env
-    volumes:
-      - .:/host
-      - nexthello-auth:/app/data/auth
-    working_dir: /host
-    entrypoint: ["node", "/app/dist/src/cli/index.js", "setup"]
-    profiles:
-      - tools
-
-  # ──────────────────────────────────────────────────────────────────────────
-  # CONNECT - WhatsApp pairing (shows QR code)
-  # Usage: docker compose run --rm connect
-  # ──────────────────────────────────────────────────────────────────────────
-  connect:
-    build: .
-    image: nexthello:local
-    container_name: nexthello-connect
-    stdin_open: true
-    tty: true
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    env_file:
-      - .env
-    environment:
-      <<: *common-env
-      # Override for Docker networking
-      REDIS_HOST: redis
-      POSTGRES_HOST: postgres
-      DATABASE_URL: postgresql://${POSTGRES_USER:-nexthello}:${POSTGRES_PASSWORD:-nexthello_dev}@postgres:5432/${POSTGRES_DB:-nexthello}
-    volumes:
-      - nexthello-auth:/app/data/auth
-      - ./nexthello.config.json:/app/nexthello.config.json:ro
-    entrypoint: ["node", "dist/src/channels/whatsapp/connect.js"]
-    profiles:
-      - tools
-
-  # ──────────────────────────────────────────────────────────────────────────
-  # CLI - Run any nexthello command
-  # Usage: docker compose run --rm cli <command>
-  # ──────────────────────────────────────────────────────────────────────────
-  cli:
-    build: .
-    image: nexthello:local
-    container_name: nexthello-cli
-    stdin_open: true
-    tty: true
-    env_file:
-      - .env
-    environment:
-      <<: *common-env
-    volumes:
-      - .:/host
-      - nexthello-auth:/app/data/auth
-    working_dir: /host
-    entrypoint: ["node", "/app/dist/src/cli/index.js"]
-    profiles:
-      - tools
-
-  # ──────────────────────────────────────────────────────────────────────────
   # POSTGRESQL - Primary database
-  # Usage: docker compose up postgres -d
   # ──────────────────────────────────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
@@ -164,6 +49,24 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # REDIS - State management and job queues
+  # ──────────────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: nexthello-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - nexthello-redis:/data
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
   # ──────────────────────────────────────────────────────────────────────────
   # LIQUIBASE - Database migrations
@@ -187,85 +90,25 @@ services:
       - migrations
 
   # ──────────────────────────────────────────────────────────────────────────
-  # LIQUIBASE-TEST - Database migrations for test database
-  # Usage: docker compose --profile test run --rm liquibase-test
-  # Creates nexthello_test database with same schema as production
-  # ──────────────────────────────────────────────────────────────────────────
-  liquibase-test:
-    image: liquibase/liquibase:4.25
-    container_name: nexthello-liquibase-test
-    depends_on:
-      postgres:
-        condition: service_healthy
-    volumes:
-      - ./migrations/liquibase:/liquibase/changelog
-    command: >
-      --url=jdbc:postgresql://postgres:5432/nexthello_test
-      --username=${POSTGRES_USER:-nexthello}
-      --password=${POSTGRES_PASSWORD:-nexthello_dev}
-      --changelog-file=changelog.xml
-      update
-    profiles:
-      - test
-
-  # ──────────────────────────────────────────────────────────────────────────
-  # TEST-DB-INIT - Creates test database if it doesn't exist
-  # Usage: docker compose --profile test run --rm test-db-init
-  # ──────────────────────────────────────────────────────────────────────────
-  test-db-init:
-    image: postgres:16-alpine
-    container_name: nexthello-test-db-init
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      PGPASSWORD: ${POSTGRES_PASSWORD:-nexthello_dev}
-    entrypoint: >
-      /bin/sh -c "
-      psql -h postgres -U ${POSTGRES_USER:-nexthello} -d postgres -tc \"SELECT 1 FROM pg_database WHERE datname = 'nexthello_test'\" | grep -q 1 ||
-      psql -h postgres -U ${POSTGRES_USER:-nexthello} -d postgres -c 'CREATE DATABASE nexthello_test OWNER nexthello';
-      echo 'Test database ready';
-      "
-    profiles:
-      - test
-
-  # ──────────────────────────────────────────────────────────────────────────
-  # REDIS - State management and job queues (for AI swarm)
-  # Automatically starts with nexthello if swarm is enabled
-  # ──────────────────────────────────────────────────────────────────────────
-  redis:
-    image: redis:7-alpine
-    container_name: nexthello-redis
-    command: redis-server --appendonly yes
-    volumes:
-      - nexthello-redis:/data
-    ports:
-      - "${REDIS_PORT:-6379}:6379"
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-
-  # ──────────────────────────────────────────────────────────────────────────
   # API - Python FastAPI + CrewAI server
   # Dashboard: http://localhost:8001/admin/
-  # API: http://localhost:8001/
+  # API Docs:  http://localhost:8001/docs
   # ──────────────────────────────────────────────────────────────────────────
   api:
     build: ./crewai
     image: nexthello-api:local
     container_name: nexthello-api
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
     env_file:
       - .env
     environment:
       REDIS_URL: redis://redis:6379/0
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-nexthello}:${POSTGRES_PASSWORD:-nexthello_dev}@postgres:5432/${POSTGRES_DB:-nexthello}
+      SUPABASE_URL: postgresql://${POSTGRES_USER:-nexthello}:${POSTGRES_PASSWORD:-nexthello_dev}@postgres:5432/${POSTGRES_DB:-nexthello}
       FRONTEND_DIR: /app/frontend
     volumes:
       - nexthello-media:/app/data/media
@@ -287,7 +130,7 @@ services:
 
   # ──────────────────────────────────────────────────────────────────────────
   # WORKER - ARQ background job processor
-  # Handles async tasks like AI processing, enrichment, etc.
+  # Handles async tasks: AI processing, enrichment, video/voice generation
   # ──────────────────────────────────────────────────────────────────────────
   worker:
     build: ./crewai
@@ -300,8 +143,7 @@ services:
       - .env
     environment:
       REDIS_URL: redis://redis:6379/0
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-nexthello}:${POSTGRES_PASSWORD:-nexthello_dev}@postgres:5432/${POSTGRES_DB:-nexthello}
     volumes:
       - nexthello-media:/app/data/media
     command: ["python", "-m", "arq", "src.queue.worker.WorkerSettings"]
@@ -351,182 +193,18 @@ services:
     profiles:
       - tools
 
-  # ──────────────────────────────────────────────────────────────────────────
-  # NEXTHELLO-LEGACY - TypeScript server (legacy, use 'ts' profile)
-  # Usage: docker compose --profile ts up nexthello-legacy
-  # ──────────────────────────────────────────────────────────────────────────
-  nexthello-legacy:
-    build: .
-    image: nexthello:local
-    container_name: nexthello-legacy
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    env_file:
-      - .env
-    environment:
-      <<: *common-env
-      NODE_ENV: production
-      PORT: 3000
-      REDIS_HOST: redis
-      POSTGRES_HOST: postgres
-      DATABASE_URL: postgresql://${POSTGRES_USER:-nexthello}:${POSTGRES_PASSWORD:-nexthello_dev}@postgres:5432/${POSTGRES_DB:-nexthello}
-    volumes:
-      - nexthello-auth:/app/data/auth
-      - nexthello-media:/app/data/media
-      - ./nexthello.config.json:/app/nexthello.config.json:ro
-    ports:
-      - "${PORT:-3000}:3000"
-    restart: unless-stopped
-    profiles:
-      - ts
-
-  # ──────────────────────────────────────────────────────────────────────────
-  # WHATSAPP-LEGACY - TypeScript WhatsApp handler (legacy, use 'ts' profile)
-  # ──────────────────────────────────────────────────────────────────────────
-  whatsapp-legacy:
-    build: .
-    image: nexthello:local
-    container_name: nexthello-whatsapp-legacy
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    env_file:
-      - .env
-    environment:
-      <<: *common-env
-      REDIS_HOST: redis
-      POSTGRES_HOST: postgres
-      DATABASE_URL: postgresql://${POSTGRES_USER:-nexthello}:${POSTGRES_PASSWORD:-nexthello_dev}@postgres:5432/${POSTGRES_DB:-nexthello}
-      METRICS_PORT: "3001"
-    volumes:
-      - nexthello-auth:/app/data/auth
-      - nexthello-media:/app/data/media
-      - ./nexthello.config.json:/app/nexthello.config.json:ro
-    ports:
-      - "3002:3001"
-    entrypoint: ["node", "dist/src/channels/whatsapp/connect.js"]
-    restart: unless-stopped
-    profiles:
-      - ts
-
-  # ──────────────────────────────────────────────────────────────────────────
-  # MINIO - S3-compatible object storage
-  # API: http://localhost:9000
-  # Console: http://localhost:9001 (minioadmin/minioadmin)
-  # Use STORAGE_BACKEND=s3 to enable S3 storage mode
-  # ──────────────────────────────────────────────────────────────────────────
-  minio:
-    image: minio/minio:latest
-    container_name: nexthello-minio
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
-    volumes:
-      - nexthello-minio:/data
-    ports:
-      - "${MINIO_API_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
-    command: server /data --console-address ":9001"
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  # ──────────────────────────────────────────────────────────────────────────
-  # MINIO-INIT - Creates default bucket on startup
-  # Usage: Runs automatically with minio
-  # ──────────────────────────────────────────────────────────────────────────
-  minio-init:
-    image: minio/mc:latest
-    container_name: nexthello-minio-init
-    depends_on:
-      minio:
-        condition: service_healthy
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
-      S3_BUCKET: ${S3_BUCKET:-nexthello-media}
-    entrypoint: >
-      /bin/sh -c "
-      mc alias set myminio http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD};
-      mc mb --ignore-existing myminio/$${S3_BUCKET};
-      mc anonymous set download myminio/$${S3_BUCKET};
-      echo 'Bucket $${S3_BUCKET} created successfully';
-      exit 0;
-      "
-    profiles:
-      - storage
-
-  # ──────────────────────────────────────────────────────────────────────────
-  # PROMETHEUS - Metrics collection
-  # UI: http://localhost:9090
-  # ──────────────────────────────────────────────────────────────────────────
-  prometheus:
-    image: prom/prometheus:v2.48.0
-    container_name: nexthello-prometheus
-    volumes:
-      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - nexthello-prometheus:/prometheus
-    ports:
-      - "${PROMETHEUS_PORT:-9090}:9090"
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--web.console.libraries=/etc/prometheus/console_libraries'
-      - '--web.console.templates=/etc/prometheus/consoles'
-      - '--storage.tsdb.retention.time=15d'
-      - '--web.enable-lifecycle'
-    restart: unless-stopped
-
-  # ──────────────────────────────────────────────────────────────────────────
-  # GRAFANA - Metrics visualization
-  # UI: http://localhost:3001 (admin/admin)
-  # ──────────────────────────────────────────────────────────────────────────
-  grafana:
-    image: grafana/grafana:10.2.2
-    container_name: nexthello-grafana
-    depends_on:
-      - prometheus
-    environment:
-      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
-      GF_USERS_ALLOW_SIGN_UP: "false"
-      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-http://localhost:3001}
-    volumes:
-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
-      - nexthello-grafana:/var/lib/grafana
-    ports:
-      - "${GRAFANA_PORT:-3001}:3000"
-    restart: unless-stopped
-
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # VOLUMES
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 volumes:
-  nexthello-auth:
-    name: nexthello-auth
-  nexthello-whatsapp-auth:
-    name: nexthello-whatsapp-auth
-  nexthello-media:
-    name: nexthello-media
   nexthello-postgres:
     name: nexthello-postgres
   nexthello-redis:
     name: nexthello-redis
-  nexthello-minio:
-    name: nexthello-minio
-  nexthello-prometheus:
-    name: nexthello-prometheus
-  nexthello-grafana:
-    name: nexthello-grafana
+  nexthello-media:
+    name: nexthello-media
+  nexthello-whatsapp-auth:
+    name: nexthello-whatsapp-auth
 
 networks:
   default:
