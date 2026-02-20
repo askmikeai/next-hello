@@ -348,22 +348,6 @@ tr:hover {
   border: 2px solid var(--text-muted);
 }
 
-/* Demo Button */
-.demo-btn {
-  padding: 0.25rem 0.75rem;
-  background: var(--accent);
-  color: var(--bg);
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 0.75rem;
-  font-family: inherit;
-}
-
-.demo-btn.active {
-  background: var(--danger);
-}
-
 /* Select */
 .filter-select {
   background: var(--bg);
@@ -400,4 +384,14 @@ tr:hover {
   background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: 4px;
+}
+
+/* Live indicator pulse animation */
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
 }

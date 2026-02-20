@@ -13,13 +13,34 @@ export {
 
 export {
   login,
+  loginWithOtp,
   hasValidSession,
   scrapeEventGuests,
   getUserEvents,
-  scrapeAllUserEventGuests,
-  matchContactToEvent,
+  matchContactToGuests,
+  findContactInEvents,
   closeBrowser,
   type LumaScrapedEvent,
   type LumaScrapedGuest,
   type LumaUserEvent,
 } from "./scraper.js";
+
+export {
+  upsertEvent,
+  getEventBySlug,
+  getUserEvents as getDbUserEvents,
+  upsertGuest,
+  getGuestByLumaId,
+  searchGuestsByName,
+  linkGuestToEvent,
+  getDbEventGuests,
+  linkContactToGuest,
+  getContactLumaAssociations,
+  findGuestMatchesForContact,
+  saveScrapedEvent,
+  autoMatchContacts,
+  type DbLumaEvent,
+  type DbLumaGuest,
+  type DbContactLumaAssociation,
+  type GuestMatch,
+} from "./repo.js";

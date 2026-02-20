@@ -1,9 +1,11 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect } from 'react';
 import {
   ReactFlow,
   Background,
   useNodesState,
   useEdgesState,
+  Handle,
+  Position,
   type Node,
   type Edge,
   type NodeTypes,
@@ -16,7 +18,7 @@ interface TopologyFlowProps {
   onNodeClick?: (nodeId: string) => void;
 }
 
-// Simple node component that changes appearance based on active state
+// Node component with handles for proper edge connections
 function SimpleNode({ data }: { data: { label: string; isActive: boolean; type: string } }) {
   const colors: Record<string, { active: string; border: string }> = {
     orchestrator: { active: '#58a6ff', border: '#58a6ff' },
@@ -33,17 +35,22 @@ function SimpleNode({ data }: { data: { label: string; isActive: boolean; type: 
         width: size,
         height: size,
         borderRadius: data.type === 'orchestrator' ? '50%' : '12px',
-        background: data.isActive ? color.active : 'transparent',
+        background: data.isActive ? color.active : 'var(--bg)',
         border: `2px solid ${data.isActive ? color.active : 'var(--border)'}`,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
         cursor: 'pointer',
         transition: 'all 0.3s ease',
-        opacity: data.isActive ? 1 : 0.4,
+        opacity: data.isActive ? 1 : 0.5,
         boxShadow: data.isActive ? `0 0 20px ${color.active}50` : 'none',
+        position: 'relative',
       }}
     >
+      <Handle type="target" position={Position.Top} style={{ opacity: 0 }} />
+      <Handle type="target" position={Position.Left} style={{ opacity: 0 }} />
+      <Handle type="source" position={Position.Bottom} style={{ opacity: 0 }} />
+      <Handle type="source" position={Position.Right} style={{ opacity: 0 }} />
       <span
         style={{
           fontSize: data.type === 'orchestrator' ? '11px' : '10px',
@@ -64,88 +71,117 @@ const nodeTypes: NodeTypes = {
   simple: SimpleNode,
 };
 
-// Node layout - all agents radiate from orchestrator
+// Center position for radial layout
+const CENTER = { x: 300, y: 180 };
+const AGENT_RADIUS = 130;
+const WORKER_RADIUS = 200;
+
+// Helper to calculate position on a circle
+function radialPosition(angle: number, radius: number) {
+  return {
+    x: CENTER.x + radius * Math.cos(angle) - 30,
+    y: CENTER.y + radius * Math.sin(angle) - 30,
+  };
+}
+
+// Agents positioned radially around orchestrator
+const AGENT_ANGLES = {
+  research: -Math.PI / 2,          // Top
+  qualification: -Math.PI / 6,     // Top-right (depends on research)
+  crm: Math.PI / 6,                // Right
+  voice: Math.PI / 2 + Math.PI / 6, // Bottom-right
+  video: Math.PI - Math.PI / 6,    // Bottom-left
+};
+
+// Node layout - radial organization
 const INITIAL_NODES: Node[] = [
   // Center: Orchestrator
   {
     id: 'orchestrator',
     type: 'simple',
-    position: { x: 300, y: 200 },
+    position: { x: CENTER.x - 40, y: CENTER.y - 40 },
     data: { label: 'Orchestrator', isActive: false, type: 'orchestrator' },
   },
   // Agents radiating from orchestrator
   {
     id: 'research',
     type: 'simple',
-    position: { x: 300, y: 50 },
+    position: radialPosition(AGENT_ANGLES.research, AGENT_RADIUS),
     data: { label: 'Research', isActive: false, type: 'agent' },
   },
   {
     id: 'qualification',
     type: 'simple',
-    position: { x: 500, y: 120 },
+    position: radialPosition(AGENT_ANGLES.qualification, AGENT_RADIUS),
     data: { label: 'Qualify', isActive: false, type: 'agent' },
-  },
-  {
-    id: 'video',
-    type: 'simple',
-    position: { x: 500, y: 280 },
-    data: { label: 'Video', isActive: false, type: 'agent' },
-  },
-  {
-    id: 'voice',
-    type: 'simple',
-    position: { x: 300, y: 350 },
-    data: { label: 'Voice', isActive: false, type: 'agent' },
   },
   {
     id: 'crm',
     type: 'simple',
-    position: { x: 100, y: 200 },
+    position: radialPosition(AGENT_ANGLES.crm, AGENT_RADIUS),
     data: { label: 'CRM', isActive: false, type: 'agent' },
   },
-  // External API workers
+  {
+    id: 'voice',
+    type: 'simple',
+    position: radialPosition(AGENT_ANGLES.voice, AGENT_RADIUS),
+    data: { label: 'Voice', isActive: false, type: 'agent' },
+  },
+  {
+    id: 'video',
+    type: 'simple',
+    position: radialPosition(AGENT_ANGLES.video, AGENT_RADIUS),
+    data: { label: 'Video', isActive: false, type: 'agent' },
+  },
+  // External API workers (outer ring)
   {
     id: 'research_worker',
     type: 'simple',
-    position: { x: 170, y: 50 },
+    position: radialPosition(AGENT_ANGLES.research, WORKER_RADIUS),
     data: { label: 'PDL', isActive: false, type: 'worker' },
-  },
-  {
-    id: 'video_worker',
-    type: 'simple',
-    position: { x: 620, y: 280 },
-    data: { label: 'HeyGen', isActive: false, type: 'worker' },
-  },
-  {
-    id: 'voice_worker',
-    type: 'simple',
-    position: { x: 430, y: 350 },
-    data: { label: 'ElevenLabs', isActive: false, type: 'worker' },
   },
   {
     id: 'crm_worker',
     type: 'simple',
-    position: { x: 0, y: 200 },
+    position: radialPosition(AGENT_ANGLES.crm, WORKER_RADIUS),
     data: { label: 'HubSpot', isActive: false, type: 'worker' },
+  },
+  {
+    id: 'voice_worker',
+    type: 'simple',
+    position: radialPosition(AGENT_ANGLES.voice, WORKER_RADIUS),
+    data: { label: 'ElevenLabs', isActive: false, type: 'worker' },
+  },
+  {
+    id: 'video_worker',
+    type: 'simple',
+    position: radialPosition(AGENT_ANGLES.video, WORKER_RADIUS),
+    data: { label: 'HeyGen', isActive: false, type: 'worker' },
   },
 ];
 
-// Edges - only visible when active
+// Base edge style - always visible
+const baseEdgeStyle = {
+  stroke: 'var(--border)',
+  strokeWidth: 1,
+  opacity: 0.4,
+};
+
+// Edges connecting orchestrator to agents, and agents to workers
 const INITIAL_EDGES: Edge[] = [
-  // Orchestrator to agents
-  { id: 'e-o-research', source: 'orchestrator', target: 'research' },
-  { id: 'e-o-qualify', source: 'orchestrator', target: 'qualification' },
-  { id: 'e-o-video', source: 'orchestrator', target: 'video' },
-  { id: 'e-o-voice', source: 'orchestrator', target: 'voice' },
-  { id: 'e-o-crm', source: 'orchestrator', target: 'crm' },
-  // Research to qualification dependency
-  { id: 'e-research-qualify', source: 'research', target: 'qualification' },
-  // Agents to workers
-  { id: 'e-research-worker', source: 'research', target: 'research_worker' },
-  { id: 'e-video-worker', source: 'video', target: 'video_worker' },
-  { id: 'e-voice-worker', source: 'voice', target: 'voice_worker' },
-  { id: 'e-crm-worker', source: 'crm', target: 'crm_worker' },
+  // Orchestrator to agents (5 edges)
+  { id: 'e-o-research', source: 'orchestrator', target: 'research', style: baseEdgeStyle },
+  { id: 'e-o-qualification', source: 'orchestrator', target: 'qualification', style: baseEdgeStyle },
+  { id: 'e-o-crm', source: 'orchestrator', target: 'crm', style: baseEdgeStyle },
+  { id: 'e-o-voice', source: 'orchestrator', target: 'voice', style: baseEdgeStyle },
+  { id: 'e-o-video', source: 'orchestrator', target: 'video', style: baseEdgeStyle },
+  // Research to qualification (1 edge - qualification depends on research)
+  { id: 'e-research-qualification', source: 'research', target: 'qualification', style: baseEdgeStyle },
+  // Agents to external workers (4 edges)
+  { id: 'e-research-worker', source: 'research', target: 'research_worker', style: baseEdgeStyle },
+  { id: 'e-crm-worker', source: 'crm', target: 'crm_worker', style: baseEdgeStyle },
+  { id: 'e-voice-worker', source: 'voice', target: 'voice_worker', style: baseEdgeStyle },
+  { id: 'e-video-worker', source: 'video', target: 'video_worker', style: baseEdgeStyle },
 ];
 
 export default function TopologyFlow({ activeComponents, onNodeClick }: TopologyFlowProps) {
@@ -153,7 +189,7 @@ export default function TopologyFlow({ activeComponents, onNodeClick }: Topology
   const [edges, setEdges, onEdgesChange] = useEdgesState(INITIAL_EDGES);
 
   // Update nodes and edges based on active components
-  useMemo(() => {
+  useEffect(() => {
     setNodes((nds) =>
       nds.map((node) => ({
         ...node,
@@ -164,16 +200,17 @@ export default function TopologyFlow({ activeComponents, onNodeClick }: Topology
       }))
     );
 
-    // Only show edges when source or target is active
+    // Update edge styles - edge is active only when BOTH source and target are active
     setEdges((eds) =>
       eds.map((edge) => {
-        const isActive = activeComponents.has(edge.source) || activeComponents.has(edge.target);
+        const isActive = activeComponents.has(edge.source) && activeComponents.has(edge.target);
         return {
           ...edge,
           animated: isActive,
           style: {
-            stroke: isActive ? 'var(--accent)' : 'transparent',
+            stroke: isActive ? 'var(--accent)' : 'var(--border)',
             strokeWidth: isActive ? 2 : 1,
+            opacity: isActive ? 1 : 0.4,
             transition: 'all 0.3s ease',
           },
         };

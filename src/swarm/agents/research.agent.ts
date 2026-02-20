@@ -5,11 +5,14 @@ import { updateContactByPhone } from "../../contacts/index.js";
 import { enrichContactQueued, type PDLEnrichmentResult } from "../../integrations/pdl/index.js";
 import {
   login as lumaLogin,
+  loginWithOtp as lumaLoginWithOtp,
   hasValidSession as lumaHasSession,
   scrapeEventGuests,
   getUserEvents,
-  matchContactToEvent,
+  matchContactToGuests,
+  findContactInEvents,
   type LumaScrapedEvent,
+  type LumaScrapedGuest,
 } from "../../integrations/luma/scraper.js";
 import { findEventByAttendee } from "../../integrations/luma/client.js";
 
@@ -329,11 +332,11 @@ Call pdl_enrich with the available information.`;
       }
     );
 
-    // Luma: Login (opens browser)
+    // Luma: Login (opens browser for manual OTP entry)
     this.toolExecutor.registerTool(
-      defineTool("luma_login", "Login to Luma", {}),
+      defineTool("luma_login", "Login to Luma (opens browser for email OTP)", {}),
       async (_input, context) => {
-        context.logger.info({ msg: "Opening browser for Luma login" });
+        context.logger.info({ msg: "Opening browser for Luma login (email OTP)" });
         const success = await lumaLogin();
         return {
           success,
@@ -344,18 +347,38 @@ Call pdl_enrich with the available information.`;
       }
     );
 
-    // Luma: Scrape event guests
+    // Luma: Login with OTP (automated flow)
     this.toolExecutor.registerTool(
-      defineTool("luma_scrape_event", "Scrape Luma event", {
-        eventUrl: { type: "string" },
-      }, ["eventUrl"]),
+      defineTool("luma_login_otp", "Login to Luma with OTP code from email", {
+        email: { type: "string" },
+        otpCode: { type: "string" },
+      }, ["email", "otpCode"]),
       async (input, context) => {
-        const eventUrl = input.eventUrl as string;
-        context.logger.info({ msg: "Scraping Luma event", eventUrl });
+        const email = input.email as string;
+        const otpCode = input.otpCode as string;
+        context.logger.info({ msg: "Logging in to Luma with OTP", email });
+        const success = await lumaLoginWithOtp(email, otpCode);
+        return {
+          success,
+          message: success
+            ? "Successfully logged in to Luma with OTP. Session saved."
+            : "OTP login failed. Code may be expired or invalid.",
+        };
+      }
+    );
 
-        const event = await scrapeEventGuests(eventUrl);
+    // Luma: Scrape event guests (click modal, scroll, extract)
+    this.toolExecutor.registerTool(
+      defineTool("luma_scrape_event", "Scrape Luma event guests by clicking attendee modal", {
+        eventUrlOrSlug: { type: "string" },
+      }, ["eventUrlOrSlug"]),
+      async (input, context) => {
+        const eventUrlOrSlug = input.eventUrlOrSlug as string;
+        context.logger.info({ msg: "Scraping Luma event", eventUrlOrSlug });
+
+        const event = await scrapeEventGuests(eventUrlOrSlug);
         if (!event) {
-          return { success: false, error: "Failed to scrape event" };
+          return { success: false, error: "Failed to scrape event. May need to login first." };
         }
 
         // Store in cache for future matching
@@ -364,45 +387,55 @@ Call pdl_enrich with the available information.`;
         return {
           success: true,
           event: {
+            slug: event.slug,
             name: event.name,
+            url: event.url,
             date: event.date,
-            location: event.location,
             guestCount: event.guestCount,
             scrapedGuests: event.guests.length,
             guests: event.guests.slice(0, 20).map(g => ({
               name: g.name,
-              linkedin: g.linkedin,
+              lumaProfile: g.lumaProfile,
+              instagram: g.instagram,
               twitter: g.twitter,
-              isFeatured: g.isFeatured,
             })),
           },
         };
       }
     );
 
-    // Luma: Get user events
+    // Luma: Get user events from /home page
     this.toolExecutor.registerTool(
-      defineTool("luma_get_user_events", "Get user's Luma events", {}),
+      defineTool("luma_get_user_events", "Get user's upcoming and past Luma events", {}),
       async (_input, context) => {
-        context.logger.info({ msg: "Fetching user's Luma events" });
+        context.logger.info({ msg: "Fetching user's Luma events from /home" });
         const events = await getUserEvents();
+
+        if (events.length === 0) {
+          return {
+            success: false,
+            error: "No events found. May need to login first.",
+            needsLogin: true,
+          };
+        }
 
         return {
           success: true,
           count: events.length,
           events: events.map(e => ({
+            slug: e.slug,
             name: e.name,
-            date: e.date,
             url: e.url,
-            role: e.role,
+            date: e.date,
+            tab: e.tab, // "upcoming" or "past"
           })),
         };
       }
     );
 
-    // Luma: Find event match
+    // Luma: Find event match for a contact name
     this.toolExecutor.registerTool(
-      defineTool("luma_find_event_match", "Find event match", {
+      defineTool("luma_find_event_match", "Match contact name against scraped event guests", {
         contactName: { type: "string" },
         phoneNumber: { type: "string" },
       }, ["contactName"]),
@@ -420,7 +453,8 @@ Call pdl_enrich with the available information.`;
           };
         }
 
-        const match = matchContactToEvent(contactName, cachedEvents);
+        // Find match across all cached events
+        const match = await findContactInEvents(contactName, cachedEvents);
 
         if (match && phoneNumber) {
           // Update contact with event info
@@ -447,11 +481,14 @@ Call pdl_enrich with the available information.`;
           return {
             success: true,
             matched: true,
+            eventSlug: match.event.slug,
             eventName: match.event.name,
+            eventUrl: match.event.url,
             eventDate: match.event.date,
             guestName: match.guest.name,
-            similarity: match.similarity,
-            guestLinkedIn: match.guest.linkedin,
+            matchScore: match.score,
+            guestLumaProfile: match.guest.lumaProfile,
+            guestInstagram: match.guest.instagram,
             guestTwitter: match.guest.twitter,
           };
         }
@@ -498,8 +535,8 @@ Call pdl_enrich with the available information.`;
   private scrapedEventsCache: LumaScrapedEvent[] = [];
 
   private cacheScrapedEvent(event: LumaScrapedEvent): void {
-    // Remove old version if exists
-    this.scrapedEventsCache = this.scrapedEventsCache.filter(e => e.apiId !== event.apiId);
+    // Remove old version if exists (by slug)
+    this.scrapedEventsCache = this.scrapedEventsCache.filter(e => e.slug !== event.slug);
     this.scrapedEventsCache.push(event);
   }
 

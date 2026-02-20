@@ -203,6 +203,14 @@ const queueDefaults: Record<QueueName, QueueOptions> = {
       removeOnFail: 500,
     },
   },
+  "luma-sync": {
+    defaultJobOptions: {
+      attempts: 2,
+      backoff: { type: "exponential", delay: 10000 },
+      removeOnComplete: 100,
+      removeOnFail: 200,
+    },
+  },
 };
 
 // Queue instances cache
@@ -567,4 +575,131 @@ export function resetRedisState(): void {
     redisConnection.disconnect();
     redisConnection = null;
   }
+}
+
+// ============================================================================
+// Redis Pub/Sub for Real-Time Events
+// ============================================================================
+
+const SWARM_EVENTS_CHANNEL = "swarm:events";
+
+// Separate connection for pub/sub (Redis requires separate connections for pub/sub)
+let pubSubConnection: RedisType | null = null;
+const eventSubscribers: Set<(event: SwarmEvent) => void> = new Set();
+
+/**
+ * Swarm event types for real-time updates
+ */
+export type SwarmEventType = "activity:started" | "activity:completed" | "state:updated";
+
+export interface SwarmEvent {
+  type: SwarmEventType;
+  timestamp: string;
+  data: {
+    agentType?: string;
+    action?: string;
+    status?: string;
+    correlationId?: string;
+    contactId?: string;
+    durationMs?: number;
+    phoneNumber?: string;
+  };
+}
+
+/**
+ * Get or create the pub/sub Redis connection
+ */
+function getPubSubConnection(): RedisType | null {
+  if (redisAvailable === false) {
+    return null;
+  }
+
+  if (!pubSubConnection) {
+    const config = getDefaultRedisConfig();
+    pubSubConnection = new Redis({
+      host: config.host,
+      port: config.port,
+      password: config.password,
+      db: config.db,
+      lazyConnect: true,
+      maxRetriesPerRequest: null,
+      enableReadyCheck: false,
+    });
+
+    pubSubConnection.on("error", (error: Error) => {
+      logger.error({ error: error.message }, "Pub/sub Redis connection error");
+    });
+  }
+
+  return pubSubConnection;
+}
+
+/**
+ * Publish a swarm event to Redis pub/sub
+ */
+export async function publishSwarmEvent(event: SwarmEvent): Promise<boolean> {
+  const redis = getRedisConnection();
+  if (!redis) {
+    return false;
+  }
+
+  try {
+    await redis.publish(SWARM_EVENTS_CHANNEL, JSON.stringify(event));
+    return true;
+  } catch (error) {
+    logger.error({ error }, "Failed to publish swarm event");
+    return false;
+  }
+}
+
+/**
+ * Subscribe to swarm events
+ * Returns an unsubscribe function
+ */
+export async function subscribeToSwarmEvents(
+  callback: (event: SwarmEvent) => void
+): Promise<() => void> {
+  const pubsub = getPubSubConnection();
+  if (!pubsub) {
+    logger.warn("Cannot subscribe to swarm events - Redis unavailable");
+    return () => {};
+  }
+
+  // Add callback to subscribers
+  eventSubscribers.add(callback);
+
+  // Only subscribe to channel once (first subscriber)
+  if (eventSubscribers.size === 1) {
+    try {
+      await pubsub.subscribe(SWARM_EVENTS_CHANNEL);
+
+      pubsub.on("message", (channel: string, message: string) => {
+        if (channel === SWARM_EVENTS_CHANNEL) {
+          try {
+            const event = JSON.parse(message) as SwarmEvent;
+            // Notify all subscribers
+            for (const subscriber of eventSubscribers) {
+              subscriber(event);
+            }
+          } catch (error) {
+            logger.error({ error }, "Failed to parse swarm event");
+          }
+        }
+      });
+
+      logEvent(logger, "swarm_events_subscribed");
+    } catch (error) {
+      logger.error({ error }, "Failed to subscribe to swarm events");
+    }
+  }
+
+  // Return unsubscribe function
+  return () => {
+    eventSubscribers.delete(callback);
+
+    // Unsubscribe from channel when no more subscribers
+    if (eventSubscribers.size === 0 && pubsub) {
+      pubsub.unsubscribe(SWARM_EVENTS_CHANNEL).catch(() => {});
+    }
+  };
 }

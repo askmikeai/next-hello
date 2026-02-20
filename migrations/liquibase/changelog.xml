@@ -20,4 +20,7 @@
     <!-- People Data Labs enrichment for research agent -->
     <include file="changesets/005-pdl-enrichment.xml" relativeToChangelogFile="true"/>
 
+    <!-- Luma events and guest matching -->
+    <include file="changesets/006-luma-events.xml" relativeToChangelogFile="true"/>
+
 </databaseChangeLog>

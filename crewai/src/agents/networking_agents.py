@@ -13,15 +13,23 @@ import yaml
 from crewai import Agent, LLM
 
 from ..tools import (
+    # Web Search (Serper primary, Perplexity fallback)
+    web_search,
+    deep_research,
+    # PDL
     pdl_enrich_contact,
     pdl_search_company,
+    # HeyGen
     heygen_generate_video,
     heygen_check_status,
+    # ElevenLabs
     elevenlabs_generate_voice,
     elevenlabs_list_voices,
+    # HubSpot
     hubspot_sync_contact,
     hubspot_create_deal,
     hubspot_add_note,
+    # Supabase
     get_contact_by_phone,
     update_contact,
     save_research_data,
@@ -107,7 +115,17 @@ class NetworkingAgents:
             goal=config["goal"],
             backstory=config["backstory"],
             llm=self.llm,
-            tools=[pdl_enrich_contact, pdl_search_company, get_contact_by_phone, save_research_data],
+            tools=[
+                # Primary: PDL for contact enrichment
+                pdl_enrich_contact,
+                pdl_search_company,
+                # Web search: Serper (cheap) with Perplexity fallback
+                web_search,
+                deep_research,
+                # Database
+                get_contact_by_phone,
+                save_research_data,
+            ],
             allow_delegation=config.get("allow_delegation", False),
             verbose=config.get("verbose", True),
         )
@@ -120,7 +138,13 @@ class NetworkingAgents:
             goal=config["goal"],
             backstory=config["backstory"],
             llm=self.llm,
-            tools=[get_contact_by_phone, save_qualification],
+            tools=[
+                # Web search for company research
+                web_search,
+                # Database
+                get_contact_by_phone,
+                save_qualification,
+            ],
             allow_delegation=config.get("allow_delegation", False),
             verbose=config.get("verbose", True),
         )

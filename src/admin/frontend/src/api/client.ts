@@ -7,6 +7,10 @@ import type {
   AgentActivity,
   SwarmState,
   AgentStats,
+  GreetingVideoInfo,
+  PDLEnrichment,
+  LumaAssociations,
+  MediaFile,
 } from '../types';
 
 const BASE_URL = '/admin/api';
@@ -77,4 +81,64 @@ export async function sendVoice(contactId: string): Promise<{ success: boolean; 
 
 export async function sendVideo(contactId: string): Promise<{ success: boolean; jobId?: string; error?: string }> {
   return postJson(`${BASE_URL}/send-video/${contactId}`);
+}
+
+export async function getGreetingVideo(): Promise<GreetingVideoInfo> {
+  return fetchJson<GreetingVideoInfo>(`${BASE_URL}/settings/greeting-video`);
+}
+
+export async function uploadGreetingVideo(file: File): Promise<{ success: boolean; error?: string }> {
+  const formData = new FormData();
+  formData.append('video', file);
+
+  const res = await fetch(`${BASE_URL}/settings/greeting-video`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `HTTP ${res.status}: ${res.statusText}`);
+  }
+
+  return res.json();
+}
+
+export async function deleteGreetingVideo(): Promise<{ success: boolean; error?: string }> {
+  const res = await fetch(`${BASE_URL}/settings/greeting-video`, {
+    method: 'DELETE',
+  });
+
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `HTTP ${res.status}: ${res.statusText}`);
+  }
+
+  return res.json();
+}
+
+// Contact Detail APIs
+
+export async function getContactById(contactId: string): Promise<Contact | null> {
+  return fetchJson<Contact | null>(`${BASE_URL}/contacts/${contactId}`);
+}
+
+export async function getContactEnrichment(contactId: string): Promise<PDLEnrichment | null> {
+  return fetchJson<PDLEnrichment | null>(`${BASE_URL}/contacts/${contactId}/enrichment`);
+}
+
+export async function getContactLumaAssociations(contactId: string): Promise<LumaAssociations> {
+  return fetchJson<LumaAssociations>(`${BASE_URL}/contacts/${contactId}/luma`);
+}
+
+export async function getContactMedia(contactId: string): Promise<MediaFile[]> {
+  return fetchJson<MediaFile[]>(`${BASE_URL}/contacts/${contactId}/media`);
+}
+
+export async function getContactActivities(contactId: string): Promise<AgentActivity[]> {
+  return fetchJson<AgentActivity[]>(`${BASE_URL}/contacts/${contactId}/activities`);
+}
+
+export async function getContactMessages(contactId: string, limit = 50): Promise<ConversationMessage[]> {
+  return fetchJson<ConversationMessage[]>(`${BASE_URL}/contacts/${contactId}/messages?limit=${limit}`);
 }

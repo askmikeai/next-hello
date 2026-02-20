@@ -17,7 +17,9 @@ import { getMetrics, getMetricsContentType, recordHttpRequest, startTimer } from
 import fs from "fs";
 import path from "path";
 import { createVideoWorker } from "./queue/workers/video.worker.js";
+import { createVoiceWorker } from "./queue/workers/voice.worker.js";
 import { createAgentTaskWorker } from "./queue/workers/agent-task.worker.js";
+import { createLumaWorker } from "./queue/workers/luma.worker.js";
 import type { Worker } from "bullmq";
 
 const PORT = parseInt(process.env.PORT ?? "3000", 10);
@@ -239,6 +241,15 @@ function startServer(): void {
     log("Video worker not started (Redis unavailable)");
   }
 
+  // Start voice worker
+  const voiceWorker = createVoiceWorker(config);
+  if (voiceWorker) {
+    workers.push(voiceWorker);
+    log("Voice worker started");
+  } else {
+    log("Voice worker not started (Redis unavailable)");
+  }
+
   // Start agent-task worker for parallel execution
   const agentTaskWorker = createAgentTaskWorker(config);
   if (agentTaskWorker) {
@@ -246,6 +257,15 @@ function startServer(): void {
     log("Agent task worker started");
   } else {
     log("Agent task worker not started (Redis unavailable)");
+  }
+
+  // Start Luma sync worker for event scraping
+  const lumaWorker = createLumaWorker();
+  if (lumaWorker) {
+    workers.push(lumaWorker);
+    log("Luma sync worker started");
+  } else {
+    log("Luma sync worker not started (Redis unavailable)");
   }
 
   const server = http.createServer((req, res) => {

@@ -34,6 +34,15 @@ vi.mock("../../history/message-store.js", () => ({
   }),
 }));
 
+vi.mock("../../storage/media-store.js", () => ({
+  getMediaStore: vi.fn().mockReturnValue({
+    store: vi.fn().mockResolvedValue({ success: true, storageKey: "video/SYSTEM/123.mp4" }),
+    get: vi.fn().mockResolvedValue(Buffer.from("video data")),
+    getUrl: vi.fn().mockResolvedValue("/admin/media/video/SYSTEM/123.mp4"),
+    getMetadata: vi.fn().mockResolvedValue({ mimeType: "video/mp4" }),
+  }),
+}));
+
 import {
   getStats,
   getContacts,
@@ -46,10 +55,14 @@ import {
   sendVideo,
   getSwarmStates,
   getAgentStats,
+  getGreetingVideo,
+  storeGreetingVideo,
+  deleteGreetingVideo,
 } from "../../admin/api.js";
 import { getDatabase, checkDatabaseHealth } from "../../database/client.js";
 import { checkRedisHealth, getQueueStats, addJob, getRedisConnection } from "../../queue/client.js";
 import { getActivityStore } from "../../observability/activity-store.js";
+import { getMediaStore } from "../../storage/media-store.js";
 
 describe("Admin API", () => {
   beforeEach(() => {
@@ -421,6 +434,130 @@ describe("Admin API", () => {
       const result = await getAgentStats();
 
       expect(result).toEqual([]);
+    });
+  });
+
+  describe("getGreetingVideo", () => {
+    it("should return exists: false when database unavailable", async () => {
+      vi.mocked(getDatabase).mockReturnValue(null);
+
+      const result = await getGreetingVideo();
+
+      expect(result).toEqual({ exists: false });
+    });
+
+    it("should return exists: false when no video found", async () => {
+      const mockSql = vi.fn().mockResolvedValue([]);
+      vi.mocked(getDatabase).mockReturnValue(mockSql as any);
+
+      const result = await getGreetingVideo();
+
+      expect(result.exists).toBe(false);
+    });
+
+    it("should return video info when video exists", async () => {
+      const mockVideoRow = {
+        storage_key: "video/SYSTEM/123456_abc.mp4",
+        size_bytes: "1048576",
+        created_at: new Date("2026-02-19T12:00:00Z"),
+        mime_type: "video/mp4",
+      };
+      const mockSql = vi.fn().mockResolvedValue([mockVideoRow]);
+      vi.mocked(getDatabase).mockReturnValue(mockSql as any);
+
+      const result = await getGreetingVideo();
+
+      expect(result.exists).toBe(true);
+      expect(result.storageKey).toBe("video/SYSTEM/123456_abc.mp4");
+      expect(result.filename).toBe("123456_abc.mp4");
+      expect(result.sizeBytes).toBe(1048576);
+      expect(result.url).toBe("/admin/media/video/SYSTEM/123456_abc.mp4");
+    });
+
+    it("should handle database errors gracefully", async () => {
+      const mockSql = vi.fn().mockRejectedValue(new Error("DB Error"));
+      vi.mocked(getDatabase).mockReturnValue(mockSql as any);
+
+      const result = await getGreetingVideo();
+
+      expect(result).toEqual({ exists: false });
+    });
+  });
+
+  describe("storeGreetingVideo", () => {
+    it("should store video successfully", async () => {
+      const mockSql = vi.fn().mockResolvedValue([]);
+      vi.mocked(getDatabase).mockReturnValue(mockSql as any);
+
+      const mockStore = {
+        store: vi.fn().mockResolvedValue({ success: true, storageKey: "video/SYSTEM/new.mp4" }),
+      };
+      vi.mocked(getMediaStore).mockReturnValue(mockStore as any);
+
+      const videoData = Buffer.from("fake video data");
+      const result = await storeGreetingVideo(videoData, "video/mp4", "greeting.mp4");
+
+      expect(result.success).toBe(true);
+      expect(result.storageKey).toBe("video/SYSTEM/new.mp4");
+      expect(mockStore.store).toHaveBeenCalledWith(expect.objectContaining({
+        phoneNumber: "SYSTEM",
+        mediaType: "video",
+        mimeType: "video/mp4",
+        source: "uploaded",
+        retentionPolicy: "permanent",
+      }));
+    });
+
+    it("should delete existing video before storing new one", async () => {
+      const mockSql = vi.fn().mockResolvedValue([]);
+      vi.mocked(getDatabase).mockReturnValue(mockSql as any);
+
+      const mockStore = {
+        store: vi.fn().mockResolvedValue({ success: true, storageKey: "video/SYSTEM/new.mp4" }),
+      };
+      vi.mocked(getMediaStore).mockReturnValue(mockStore as any);
+
+      const videoData = Buffer.from("fake video data");
+      await storeGreetingVideo(videoData, "video/mp4");
+
+      // Should have called SQL to soft delete existing videos
+      expect(mockSql).toHaveBeenCalled();
+    });
+
+    it("should return error on store failure", async () => {
+      const mockSql = vi.fn().mockResolvedValue([]);
+      vi.mocked(getDatabase).mockReturnValue(mockSql as any);
+
+      const mockStore = {
+        store: vi.fn().mockResolvedValue({ success: false, error: "Storage full" }),
+      };
+      vi.mocked(getMediaStore).mockReturnValue(mockStore as any);
+
+      const videoData = Buffer.from("fake video data");
+      const result = await storeGreetingVideo(videoData, "video/mp4");
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe("Storage full");
+    });
+  });
+
+  describe("deleteGreetingVideo", () => {
+    it("should delete greeting video successfully", async () => {
+      const mockSql = vi.fn().mockResolvedValue([]);
+      vi.mocked(getDatabase).mockReturnValue(mockSql as any);
+
+      const result = await deleteGreetingVideo();
+
+      expect(result.success).toBe(true);
+      expect(mockSql).toHaveBeenCalled();
+    });
+
+    it("should succeed even when database unavailable", async () => {
+      vi.mocked(getDatabase).mockReturnValue(null);
+
+      const result = await deleteGreetingVideo();
+
+      expect(result.success).toBe(true);
     });
   });
 });

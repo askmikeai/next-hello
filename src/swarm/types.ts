@@ -320,7 +320,8 @@ export type QueueName =
   | "voice-generation"
   | "crm-sync"
   | "lead-qualification"
-  | "pdl-enrichment";
+  | "pdl-enrichment"
+  | "luma-sync";
 
 /**
  * Queue job data for incoming messages
@@ -391,7 +392,9 @@ export interface VoiceGenerationJob {
   contactId: string;
   phoneNumber: string;
   firstName: string;
-  scriptText: string;
+  lastName?: string;
+  companyName?: string;
+  scriptText?: string;
   variables?: Record<string, string>;
 }
 

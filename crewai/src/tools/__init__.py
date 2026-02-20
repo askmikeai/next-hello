@@ -2,12 +2,19 @@
 NextHello CrewAI Tools
 
 Custom tools for integrating with external services:
+- Web Search (Serper + Perplexity)
 - People Data Labs (PDL) for contact enrichment
 - HeyGen for video generation
 - ElevenLabs for voice synthesis
 - HubSpot for CRM operations
 """
 
+from .search_tools import (
+    serper_search,
+    perplexity_search,
+    web_search,
+    deep_research,
+)
 from .pdl_tools import pdl_enrich_contact, pdl_search_company
 from .heygen_tools import heygen_generate_video, heygen_check_status
 from .elevenlabs_tools import elevenlabs_generate_voice, elevenlabs_list_voices
@@ -20,6 +27,11 @@ from .supabase_tools import (
 )
 
 __all__ = [
+    # Web Search (Serper primary, Perplexity fallback)
+    "serper_search",
+    "perplexity_search",
+    "web_search",
+    "deep_research",
     # PDL
     "pdl_enrich_contact",
     "pdl_search_company",

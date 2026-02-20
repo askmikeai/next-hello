@@ -1,6 +1,7 @@
 import type { Sql } from "postgres";
 import { getDatabase, isDatabaseConfigured } from "../database/client.js";
 import { createLogger, logEvent, logError } from "./logger.js";
+import { publishSwarmEvent } from "../queue/client.js";
 import type { AgentType } from "../swarm/types.js";
 
 /**
@@ -98,6 +99,19 @@ export class ActivityStore {
         action: input.action,
       });
 
+      // Emit real-time event
+      publishSwarmEvent({
+        type: "activity:started",
+        timestamp: new Date().toISOString(),
+        data: {
+          agentType: input.agentType,
+          action: input.action,
+          status: "started",
+          correlationId: input.correlationId,
+          contactId: input.contactId,
+        },
+      }).catch(() => {}); // Fire and forget
+
       return activityId;
     } catch (error) {
       logError(logger, error as Error, "Error starting activity");
@@ -134,6 +148,16 @@ export class ActivityStore {
         status: input.status,
         durationMs: input.durationMs,
       });
+
+      // Emit real-time event
+      publishSwarmEvent({
+        type: "activity:completed",
+        timestamp: new Date().toISOString(),
+        data: {
+          status: input.status,
+          durationMs: input.durationMs,
+        },
+      }).catch(() => {}); // Fire and forget
 
       return true;
     } catch (error) {
@@ -191,6 +215,20 @@ export class ActivityStore {
         status: input.status,
         durationMs: input.durationMs,
       });
+
+      // Emit real-time event (for single-call activities, emit completed)
+      publishSwarmEvent({
+        type: "activity:completed",
+        timestamp: new Date().toISOString(),
+        data: {
+          agentType: input.agentType,
+          action: input.action,
+          status: input.status,
+          correlationId: input.correlationId,
+          contactId: input.contactId,
+          durationMs: input.durationMs,
+        },
+      }).catch(() => {}); // Fire and forget
 
       return activityId;
     } catch (error) {

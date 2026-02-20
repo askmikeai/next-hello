@@ -1,11 +1,20 @@
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect } from 'vitest';
+import { render, screen } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import Layout from './Layout';
+
+const renderWithRouter = (ui: React.ReactElement, { route = '/' } = {}) => {
+  return render(
+    <MemoryRouter initialEntries={[route]}>
+      {ui}
+    </MemoryRouter>
+  );
+};
 
 describe('Layout', () => {
   it('should render header with title', () => {
-    render(
-      <Layout activeTab="overview" onTabChange={() => {}}>
+    renderWithRouter(
+      <Layout>
         <div>Content</div>
       </Layout>
     );
@@ -14,8 +23,8 @@ describe('Layout', () => {
   });
 
   it('should render children content', () => {
-    render(
-      <Layout activeTab="overview" onTabChange={() => {}}>
+    renderWithRouter(
+      <Layout>
         <div data-testid="test-content">Test Content</div>
       </Layout>
     );
@@ -23,34 +32,22 @@ describe('Layout', () => {
     expect(screen.getByTestId('test-content')).toBeInTheDocument();
   });
 
-  it('should render tab buttons', () => {
-    render(
-      <Layout activeTab="overview" onTabChange={() => {}}>
+  it('should render navigation links', () => {
+    renderWithRouter(
+      <Layout>
         <div>Content</div>
       </Layout>
     );
 
     expect(screen.getByText('Overview')).toBeInTheDocument();
     expect(screen.getByText('Swarm')).toBeInTheDocument();
-  });
-
-  it('should call onTabChange when tab clicked', () => {
-    const onTabChange = vi.fn();
-
-    render(
-      <Layout activeTab="overview" onTabChange={onTabChange}>
-        <div>Content</div>
-      </Layout>
-    );
-
-    fireEvent.click(screen.getByText('Swarm'));
-
-    expect(onTabChange).toHaveBeenCalledWith('swarm');
+    expect(screen.getByText('Contacts')).toBeInTheDocument();
+    expect(screen.getByText('Settings')).toBeInTheDocument();
   });
 
   it('should show countdown timer initially', () => {
-    render(
-      <Layout activeTab="overview" onTabChange={() => {}}>
+    renderWithRouter(
+      <Layout>
         <div>Content</div>
       </Layout>
     );
@@ -60,8 +57,8 @@ describe('Layout', () => {
   });
 
   it('should render refresh button', () => {
-    render(
-      <Layout activeTab="overview" onTabChange={() => {}}>
+    renderWithRouter(
+      <Layout>
         <div>Content</div>
       </Layout>
     );
@@ -70,12 +67,25 @@ describe('Layout', () => {
   });
 
   it('should render footer', () => {
-    render(
-      <Layout activeTab="overview" onTabChange={() => {}}>
+    renderWithRouter(
+      <Layout>
         <div>Content</div>
       </Layout>
     );
 
     expect(screen.getByText('NextHello Admin Dashboard')).toBeInTheDocument();
+  });
+
+  it('should have correct links for each tab', () => {
+    renderWithRouter(
+      <Layout>
+        <div>Content</div>
+      </Layout>
+    );
+
+    expect(screen.getByRole('link', { name: 'Overview' })).toHaveAttribute('href', '/');
+    expect(screen.getByRole('link', { name: 'Swarm' })).toHaveAttribute('href', '/swarm');
+    expect(screen.getByRole('link', { name: 'Contacts' })).toHaveAttribute('href', '/contacts');
+    expect(screen.getByRole('link', { name: 'Settings' })).toHaveAttribute('href', '/settings');
   });
 });

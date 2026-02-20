@@ -29,6 +29,16 @@ vi.mock("../../admin/api.js", () => ({
   getHandoffs: vi.fn().mockResolvedValue([]),
   getAgentStats: vi.fn().mockResolvedValue([]),
   getSwarmConversation: vi.fn().mockResolvedValue({ state: null, activities: [], messages: [] }),
+  getGreetingVideo: vi.fn().mockResolvedValue({ exists: false }),
+  storeGreetingVideo: vi.fn().mockResolvedValue({ success: true, storageKey: "video/SYSTEM/123.mp4" }),
+  deleteGreetingVideo: vi.fn().mockResolvedValue({ success: true }),
+}));
+
+vi.mock("../../storage/media-store.js", () => ({
+  getMediaStore: vi.fn().mockReturnValue({
+    get: vi.fn().mockResolvedValue(Buffer.from("video data")),
+    getMetadata: vi.fn().mockResolvedValue({ mimeType: "video/mp4" }),
+  }),
 }));
 
 vi.mock("../../webhooks/registry.js", () => ({
@@ -300,6 +310,44 @@ describe("Admin Routes", () => {
 
       expect(api.getAgentStats).toHaveBeenCalled();
       expect(sendJsonResponse).toHaveBeenCalledWith(res, 200, mockStats);
+    });
+
+    it("should handle GET /admin/api/settings/greeting-video", async () => {
+      const mockVideo = { exists: true, storageKey: "video/SYSTEM/123.mp4", filename: "123.mp4" };
+      vi.mocked(api.getGreetingVideo).mockResolvedValue(mockVideo);
+
+      const req = createMockRequest("GET", "/admin/api/settings/greeting-video");
+      const res = createMockResponse();
+
+      await handleAdminRequest(req, res, mockConfig as any);
+
+      expect(api.getGreetingVideo).toHaveBeenCalled();
+      expect(sendJsonResponse).toHaveBeenCalledWith(res, 200, mockVideo);
+    });
+
+    it("should handle DELETE /admin/api/settings/greeting-video", async () => {
+      const mockResult = { success: true };
+      vi.mocked(api.deleteGreetingVideo).mockResolvedValue(mockResult);
+
+      const req = createMockRequest("DELETE", "/admin/api/settings/greeting-video");
+      const res = createMockResponse();
+
+      await handleAdminRequest(req, res, mockConfig as any);
+
+      expect(api.deleteGreetingVideo).toHaveBeenCalled();
+      expect(sendJsonResponse).toHaveBeenCalledWith(res, 200, mockResult);
+    });
+
+    it("should return 400 for failed greeting video delete", async () => {
+      const mockResult = { success: false, error: "Not found" };
+      vi.mocked(api.deleteGreetingVideo).mockResolvedValue(mockResult);
+
+      const req = createMockRequest("DELETE", "/admin/api/settings/greeting-video");
+      const res = createMockResponse();
+
+      await handleAdminRequest(req, res, mockConfig as any);
+
+      expect(sendJsonResponse).toHaveBeenCalledWith(res, 400, mockResult);
     });
 
     it("should return 404 for unknown API endpoints", async () => {

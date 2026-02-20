@@ -1,13 +1,11 @@
 import { useState, useEffect, type ReactNode } from 'react';
-import type { Tab } from '../types';
+import { NavLink } from 'react-router-dom';
 
 interface LayoutProps {
   children: ReactNode;
-  activeTab: Tab;
-  onTabChange: (tab: Tab) => void;
 }
 
-export default function Layout({ children, activeTab, onTabChange }: LayoutProps) {
+export default function Layout({ children }: LayoutProps) {
   const [countdown, setCountdown] = useState(30);
 
   useEffect(() => {
@@ -37,20 +35,12 @@ export default function Layout({ children, activeTab, onTabChange }: LayoutProps
         </div>
       </header>
 
-      <div style={tabsStyle}>
-        <TabButton
-          active={activeTab === 'overview'}
-          onClick={() => onTabChange('overview')}
-        >
-          Overview
-        </TabButton>
-        <TabButton
-          active={activeTab === 'swarm'}
-          onClick={() => onTabChange('swarm')}
-        >
-          Swarm
-        </TabButton>
-      </div>
+      <nav style={tabsStyle}>
+        <TabLink to="/">Overview</TabLink>
+        <TabLink to="/swarm">Swarm</TabLink>
+        <TabLink to="/contacts">Contacts</TabLink>
+        <TabLink to="/settings">Settings</TabLink>
+      </nav>
 
       <main style={{ flex: 1, padding: '0 1rem 1rem' }}>{children}</main>
 
@@ -59,33 +49,34 @@ export default function Layout({ children, activeTab, onTabChange }: LayoutProps
   );
 }
 
-interface TabButtonProps {
+interface TabLinkProps {
+  to: string;
   children: ReactNode;
-  active: boolean;
-  onClick: () => void;
 }
 
-function TabButton({ children, active, onClick }: TabButtonProps) {
+function TabLink({ to, children }: TabLinkProps) {
   return (
-    <button
-      onClick={onClick}
-      style={{
-        background: active ? 'var(--bg-secondary)' : 'transparent',
+    <NavLink
+      to={to}
+      end={to === '/'}
+      style={({ isActive }) => ({
+        background: isActive ? 'var(--bg-secondary)' : 'transparent',
         border: '1px solid',
-        borderColor: active ? 'var(--border)' : 'transparent',
-        borderBottomColor: active ? 'var(--bg-secondary)' : 'transparent',
-        color: active ? 'var(--accent)' : 'var(--text-muted)',
+        borderColor: isActive ? 'var(--border)' : 'transparent',
+        borderBottomColor: isActive ? 'var(--bg-secondary)' : 'transparent',
+        color: isActive ? 'var(--accent)' : 'var(--text-muted)',
         padding: '0.5rem 1rem',
         borderRadius: '6px 6px 0 0',
         cursor: 'pointer',
         fontFamily: 'inherit',
         fontSize: '0.875rem',
-        marginBottom: active ? '-1px' : '0',
+        marginBottom: isActive ? '-1px' : '0',
         transition: 'all 0.2s',
-      }}
+        textDecoration: 'none',
+      })}
     >
       {children}
-    </button>
+    </NavLink>
   );
 }
 

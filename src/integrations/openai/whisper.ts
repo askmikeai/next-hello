@@ -96,9 +96,9 @@ export async function transcribeAudio(
     const formData = new FormData();
 
     // Create a Blob from the buffer with the correct MIME type
-    // Convert Buffer to Uint8Array for Blob compatibility
-    const uint8Array = new Uint8Array(audioBuffer.buffer, audioBuffer.byteOffset, audioBuffer.length);
-    const blob = new Blob([uint8Array], { type: mimeType });
+    // Convert Buffer to ArrayBuffer for Blob compatibility
+    const arrayBuffer = audioBuffer.buffer.slice(audioBuffer.byteOffset, audioBuffer.byteOffset + audioBuffer.length) as ArrayBuffer;
+    const blob = new Blob([arrayBuffer], { type: mimeType });
     formData.append("file", blob, `audio.${extension}`);
     formData.append("model", DEFAULT_MODEL);
 

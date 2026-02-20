@@ -2,7 +2,13 @@
  * Luma Browser Scraper
  *
  * Uses Playwright to scrape event attendees from Luma with authenticated session.
- * Persists session to avoid repeated logins.
+ * Validated against live events on 2026-02-19.
+ *
+ * Key findings:
+ * - __NEXT_DATA__ does NOT contain guest list (loaded client-side)
+ * - Must click "X others" to open guest modal
+ * - Social handles are inline in list rows
+ * - Login is email OTP only (no password/OAuth)
  */
 
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
@@ -15,32 +21,44 @@ const SESSION_FILE = path.join(process.cwd(), "data", "luma-session.json");
 
 export interface LumaScrapedGuest {
   name: string;
-  avatarUrl?: string;
-  bio?: string;
-  linkedin?: string;
-  twitter?: string;
+  lumaProfile: string;
   instagram?: string;
-  website?: string;
-  isFeatured: boolean;
+  twitter?: string;
+  eventSlug?: string;
+  eventName?: string;
+}
+
+export interface LumaEventHost {
+  name: string;
+  lumaProfile?: string;
+  avatarUrl?: string;
 }
 
 export interface LumaScrapedEvent {
-  apiId: string;
+  slug: string;
   name: string;
   url: string;
-  date: string;
+  date?: string;
+  endDate?: string;
+  timezone?: string;
   location?: string;
+  locationAddress?: string;
+  isOnline?: boolean;
+  description?: string;
+  coverImageUrl?: string;
+  hosts: LumaEventHost[];
   guestCount: number;
   guests: LumaScrapedGuest[];
   scrapedAt: string;
 }
 
 export interface LumaUserEvent {
-  apiId: string;
+  slug: string;
   name: string;
   url: string;
-  date: string;
-  role: "attending" | "hosting";
+  date?: string;
+  guestCount?: number;
+  tab: "upcoming" | "past";
 }
 
 let browser: Browser | null = null;
@@ -111,27 +129,27 @@ async function saveSession(): Promise<void> {
 }
 
 /**
- * Check if currently logged in
+ * Check if currently logged in by visiting home page
  */
 async function isLoggedIn(page: Page): Promise<boolean> {
   try {
-    // Check for user menu or profile indicator
-    const userMenu = await page.$('[data-testid="user-menu"], [class*="avatar"], [class*="profile"]');
-    if (userMenu) return true;
-
-    // Check cookies for auth token
-    const cookies = await context?.cookies();
-    const hasAuthCookie = cookies?.some(
-      (c) => c.name.includes("session") || c.name.includes("token") || c.name.includes("auth")
-    );
-    return !!hasAuthCookie;
+    await page.goto(`${LUMA_BASE_URL}/home`, { waitUntil: "networkidle" });
+    // If we're redirected to signin, we're not logged in
+    const url = page.url();
+    if (url.includes("signin")) {
+      return false;
+    }
+    // Check for user-specific content on home page
+    const hasEvents = await page.locator('text="Upcoming"').count() > 0;
+    return hasEvents;
   } catch {
     return false;
   }
 }
 
 /**
- * Login to Luma - opens browser for manual login
+ * Login to Luma via email OTP
+ * Opens visible browser for user to enter email and OTP code
  * Returns true when login is complete
  */
 export async function login(): Promise<boolean> {
@@ -153,12 +171,14 @@ export async function login(): Promise<boolean> {
     log("Opening Luma login page...");
     await page.goto(`${LUMA_BASE_URL}/signin`, { waitUntil: "networkidle" });
 
-    log("Please login in the browser window...");
-    log("Waiting for login to complete (checking for redirect to home/dashboard)...");
+    log("Please enter your email in the browser window...");
+    log("Luma will send a 6-digit OTP to your email.");
+    log("Enter the OTP code to complete login.");
+    log("Waiting for login to complete (redirect to /home)...");
 
-    // Wait for successful login (redirect away from signin page)
-    await page.waitForURL((url) => !url.pathname.includes("signin"), {
-      timeout: 300000, // 5 minute timeout for manual login
+    // Wait for successful login (redirect to home page)
+    await page.waitForURL((url) => url.pathname === "/home" || url.pathname.startsWith("/home"), {
+      timeout: 300000, // 5 minute timeout for manual login + OTP
     });
 
     log("Login detected! Saving session...");
@@ -182,6 +202,64 @@ export async function login(): Promise<boolean> {
 }
 
 /**
+ * Login with OTP code (for automated flow with email agent)
+ */
+export async function loginWithOtp(email: string, otpCode: string): Promise<boolean> {
+  const endTimer = startTimer();
+
+  const ctx = await initBrowser();
+  const page = await ctx.newPage();
+
+  try {
+    log(`Logging in with email: ${email}`);
+    await page.goto(`${LUMA_BASE_URL}/signin`, { waitUntil: "networkidle" });
+
+    // Enter email
+    const emailInput = page.locator('input[type="email"], input[name="email"], input[placeholder*="email" i]');
+    await emailInput.fill(email);
+
+    // Submit email
+    const submitButton = page.locator('button[type="submit"], button:has-text("Continue"), button:has-text("Sign in")');
+    await submitButton.click();
+
+    // Wait for OTP input to appear
+    await page.waitForSelector('input[inputmode="numeric"], input[autocomplete="one-time-code"]', { timeout: 10000 });
+
+    // Enter OTP code
+    log(`Entering OTP code: ${otpCode}`);
+    const otpInputs = page.locator('input[inputmode="numeric"], input[autocomplete="one-time-code"]');
+    const inputCount = await otpInputs.count();
+
+    if (inputCount === 1) {
+      // Single input field
+      await otpInputs.fill(otpCode);
+    } else if (inputCount === 6) {
+      // Six separate digit inputs
+      for (let i = 0; i < 6; i++) {
+        await otpInputs.nth(i).fill(otpCode[i]);
+      }
+    }
+
+    // Wait for redirect to home
+    await page.waitForURL((url) => url.pathname === "/home" || url.pathname.startsWith("/home"), {
+      timeout: 30000,
+    });
+
+    await saveSession();
+    await page.close();
+
+    recordIntegrationCall("luma", "login_otp", "success", endTimer());
+    log("Login with OTP successful");
+    return true;
+  } catch (error) {
+    log(`Login with OTP failed: ${error instanceof Error ? error.message : String(error)}`);
+    recordIntegrationCall("luma", "login_otp", "failure", endTimer());
+    await page.close();
+    return false;
+  }
+}
+
+/**
  * Check if we have a valid session
  */
 export async function hasValidSession(): Promise<boolean> {
@@ -190,7 +268,6 @@ export async function hasValidSession(): Promise<boolean> {
   try {
     const ctx = await initBrowser();
     const page = await ctx.newPage();
-    await page.goto(`${LUMA_BASE_URL}/discover`, { waitUntil: "networkidle" });
     const loggedIn = await isLoggedIn(page);
     await page.close();
     return loggedIn;
@@ -200,7 +277,7 @@ export async function hasValidSession(): Promise<boolean> {
 }
 
 /**
- * Get events the user is attending or hosting
+ * Get user's events from /home page
  */
 export async function getUserEvents(): Promise<LumaUserEvent[]> {
   const endTimer = startTimer();
@@ -210,54 +287,42 @@ export async function getUserEvents(): Promise<LumaUserEvent[]> {
     const ctx = await initBrowser();
     const page = await ctx.newPage();
 
-    // Go to user's event page
+    // Extract events from Upcoming tab
+    log("Getting upcoming events from /home...");
     await page.goto(`${LUMA_BASE_URL}/home`, { waitUntil: "networkidle" });
 
-    // Wait for events to load
-    await page.waitForSelector('[class*="event"]', { timeout: 10000 }).catch(() => {});
-
-    // Extract events from __NEXT_DATA__
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const nextData = await page.evaluate(() => {
-      // Access document through globalThis for browser context
-      const doc = (globalThis as { document?: { querySelector: (s: string) => { textContent?: string } | null } }).document;
-      const script = doc?.querySelector("#__NEXT_DATA__");
-      if (script) {
-        return JSON.parse(script.textContent || "{}");
-      }
-      return null;
-    });
-
-    if (nextData?.props?.pageProps?.initialData?.data) {
-      const data = nextData.props.pageProps.initialData.data;
-
-      // Look for upcoming/past events
-      const eventLists = [
-        ...(data.upcoming_events || []).map((e: Record<string, unknown>) => ({ ...e, role: "attending" })),
-        ...(data.hosted_events || []).map((e: Record<string, unknown>) => ({ ...e, role: "hosting" })),
-        ...(data.events || []).map((e: Record<string, unknown>) => ({ ...e, role: "attending" })),
-      ];
-
-      for (const event of eventLists) {
-        const eventData = event.event || event;
-        if (eventData.api_id) {
-          events.push({
-            apiId: eventData.api_id,
-            name: eventData.name || "Unknown Event",
-            url: `${LUMA_BASE_URL}/${eventData.url || eventData.slug || eventData.api_id}`,
-            date: eventData.start_at || "",
-            role: event.role as "attending" | "hosting",
-          });
-        }
-      }
+    // Check if logged in
+    if (page.url().includes("signin")) {
+      log("Not logged in - cannot get events");
+      await page.close();
+      return events;
     }
+
+    await page.waitForTimeout(1000); // Let JS render cards
+    const upcomingEvents = await extractEventsFromTab(page, "upcoming");
+    events.push(...upcomingEvents);
+
+    // Navigate to Past tab via URL (more reliable than clicking)
+    log("Getting past events...");
+    await page.goto(`${LUMA_BASE_URL}/home?period=past`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(1000);
+    const pastEvents = await extractEventsFromTab(page, "past");
+    events.push(...pastEvents);
 
     await page.close();
     await saveSession();
 
+    // Deduplicate by slug
+    const seen = new Set<string>();
+    const unique = events.filter(e => {
+      if (seen.has(e.slug)) return false;
+      seen.add(e.slug);
+      return true;
+    });
+
     recordIntegrationCall("luma", "get_user_events", "success", endTimer());
-    log(`Found ${events.length} events`);
-    return events;
+    log(`Found ${unique.length} events`);
+    return unique;
   } catch (error) {
     log(`Failed to get user events: ${error instanceof Error ? error.message : String(error)}`);
     recordIntegrationCall("luma", "get_user_events", "failure", endTimer());
@@ -266,10 +331,359 @@ export async function getUserEvents(): Promise<LumaUserEvent[]> {
 }
 
 /**
- * Scrape all guests from an event page
+ * Extract events from current tab on /home page
+ *
+ * Event cards contain <a href="/{slug}"> links. We find all links
+ * and filter to only include valid event slugs (single path segment,
+ * not a navigation path).
  */
-export async function scrapeEventGuests(eventUrl: string): Promise<LumaScrapedEvent | null> {
+async function extractEventsFromTab(page: Page, tab: "upcoming" | "past"): Promise<LumaUserEvent[]> {
+  const events: LumaUserEvent[] = [];
+
+  // Navigation paths that are NOT event slugs
+  const NAV_PATHS = new Set([
+    "/home", "/discover", "/create", "/pricing",
+    "/home/calendars", "/ios", "/android", "/", ""
+  ]);
+  const NAV_PREFIXES = ["/user/", "/ai", "/claw", "/maps", "/settings", "/help"];
+
+  // Find all links that might be event cards
+  const allLinks = page.locator('a[href^="/"]');
+  const count = await allLinks.count();
+
+  for (let i = 0; i < count; i++) {
+    try {
+      const link = allLinks.nth(i);
+      const href = await link.getAttribute("href");
+      if (!href) continue;
+
+      // Strip query params
+      const cleanHref = href.split("?")[0];
+
+      // Skip navigation links
+      if (NAV_PATHS.has(cleanHref)) continue;
+      if (NAV_PREFIXES.some(prefix => cleanHref.startsWith(prefix))) continue;
+
+      // Event slugs are a single path segment: /slug (no sub-paths)
+      // Count slashes - should be exactly 1 (the leading slash)
+      if ((cleanHref.match(/\//g) || []).length !== 1) continue;
+
+      const slug = cleanHref.replace("/", "");
+
+      // Event slugs are typically 8 alphanumeric characters
+      if (!slug || slug.length < 6 || slug.length > 20) continue;
+      // Skip if it doesn't look like an event slug (alphanumeric only)
+      if (!/^[a-z0-9]+$/i.test(slug)) continue;
+
+      // Check if we already have this event
+      if (events.some(e => e.slug === slug)) continue;
+
+      // Get event name - look for heading or text content
+      let name = "";
+      const heading = link.locator("h1, h2, h3, h4").first();
+      if (await heading.count() > 0) {
+        name = (await heading.textContent() || "").trim();
+      }
+      if (!name) {
+        const text = await link.textContent() || "";
+        // First meaningful line (skip empty lines)
+        const lines = text.split("\n").map(l => l.trim()).filter(l => l.length > 3);
+        name = lines[0] || slug;
+      }
+
+      // Try to extract guest count
+      let guestCount: number | undefined;
+      try {
+        const parent = link.locator("xpath=..");
+        const fullText = await parent.textContent() || "";
+        // Look for patterns like "42 Going" or "Going" followed by count
+        const countMatch = fullText.match(/(\d+)\s*(?:Going|going|guests?)/i);
+        if (countMatch) {
+          guestCount = parseInt(countMatch[1], 10);
+        }
+      } catch {
+        // Guest count extraction is optional
+      }
+
+      events.push({
+        slug,
+        name,
+        url: `${LUMA_BASE_URL}/${slug}`,
+        guestCount,
+        tab,
+      });
+
+      log(`Found event: ${name} (${slug})`);
+    } catch {
+      // Skip this link
+    }
+  }
+
+  return events;
+}
+
+/**
+ * Extract plain text from ProseMirror document structure
+ */
+function extractTextFromProseMirror(doc: unknown): string {
+  if (!doc || typeof doc !== "object") return "";
+
+  const docObj = doc as { type?: string; content?: unknown[]; text?: string };
+  const parts: string[] = [];
+
+  function extractText(node: unknown): void {
+    if (!node || typeof node !== "object") return;
+
+    const n = node as { type?: string; content?: unknown[]; text?: string };
+    if (n.type === "text" && n.text) {
+      parts.push(n.text);
+    }
+    if (Array.isArray(n.content)) {
+      for (const child of n.content) {
+        extractText(child);
+      }
+      // Add paragraph breaks
+      if (n.type === "paragraph" || n.type === "heading") {
+        parts.push("\n\n");
+      }
+    }
+  }
+
+  extractText(docObj);
+  return parts.join("").trim();
+}
+
+/**
+ * Extract event details from __NEXT_DATA__ (available without modal)
+ */
+async function extractEventDetails(page: Page): Promise<{
+  date?: string;
+  endDate?: string;
+  timezone?: string;
+  location?: string;
+  locationAddress?: string;
+  isOnline?: boolean;
+  description?: string;
+  coverImageUrl?: string;
+  hosts: LumaEventHost[];
+}> {
+  const details: {
+    date?: string;
+    endDate?: string;
+    timezone?: string;
+    location?: string;
+    locationAddress?: string;
+    isOnline?: boolean;
+    description?: string;
+    coverImageUrl?: string;
+    hosts: LumaEventHost[];
+  } = { hosts: [] };
+
+  try {
+    // Try to extract from __NEXT_DATA__ script
+    const nextDataScript = await page.locator('script#__NEXT_DATA__').textContent();
+    if (nextDataScript) {
+      const nextData = JSON.parse(nextDataScript);
+      // Luma structure: props.pageProps.initialData.data contains the event info
+      const pageData = nextData?.props?.pageProps?.initialData?.data;
+      const event = pageData?.event;
+
+      if (event) {
+        // Date/time info
+        details.date = event.start_at;
+        details.endDate = event.end_at;
+        details.timezone = event.timezone;
+
+        // Cover image
+        details.coverImageUrl = event.cover_url;
+
+        // Location
+        if (event.geo_address_info) {
+          const loc = event.geo_address_info;
+          details.location = loc.address || loc.city;
+          details.locationAddress = loc.full_address;
+        }
+        details.isOnline = event.location_type === "online" || event.event_type === "online";
+      }
+
+      // Description is in description_mirror at pageData level (ProseMirror format)
+      if (pageData?.description_mirror) {
+        details.description = extractTextFromProseMirror(pageData.description_mirror);
+      }
+
+      // Hosts are at pageData level
+      const hosts = pageData?.hosts || [];
+      for (const host of hosts) {
+        const username = host.username || host.api_id;
+        details.hosts.push({
+          name: host.name,
+          lumaProfile: username ? `${LUMA_BASE_URL}/user/${username}` : undefined,
+          avatarUrl: host.avatar_url,
+        });
+      }
+    }
+  } catch (e) {
+    log(`Could not extract from __NEXT_DATA__: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  // Fallback: scrape from visible page elements if __NEXT_DATA__ didn't have it
+  if (!details.description) {
+    try {
+      // Description is usually in a specific container
+      const descEl = page.locator('[class*="description"], [class*="about"], .event-description, p.text-gray-600').first();
+      if (await descEl.count() > 0) {
+        details.description = (await descEl.textContent())?.trim();
+      }
+    } catch { /* ignore */ }
+  }
+
+  if (details.hosts.length === 0) {
+    try {
+      // Try to extract hosts from the page
+      const hostLinks = page.locator('a[href^="/user/"]').filter({
+        has: page.locator('[class*="host"], [class*="organizer"]'),
+      });
+      const hostCount = await hostLinks.count();
+      for (let i = 0; i < Math.min(hostCount, 5); i++) {
+        const link = hostLinks.nth(i);
+        const href = await link.getAttribute("href");
+        const img = link.locator("img").first();
+        let name = "";
+        let avatarUrl: string | undefined;
+
+        if (await img.count() > 0) {
+          const alt = await img.getAttribute("alt");
+          avatarUrl = (await img.getAttribute("src")) || undefined;
+          if (alt) name = alt.replace(/^Profile picture for /i, "").trim();
+        }
+        if (!name) name = (await link.textContent() || "").trim();
+
+        if (name) {
+          details.hosts.push({
+            name,
+            lumaProfile: href ? `${LUMA_BASE_URL}${href}` : undefined,
+            avatarUrl,
+          });
+        }
+      }
+    } catch { /* ignore */ }
+  }
+
+  if (!details.date) {
+    try {
+      // Try to find date from page elements
+      const dateEl = page.locator('[class*="date"], time, [datetime]').first();
+      if (await dateEl.count() > 0) {
+        details.date = (await dateEl.getAttribute("datetime")) || (await dateEl.textContent())?.trim();
+      }
+    } catch { /* ignore */ }
+  }
+
+  if (!details.location) {
+    try {
+      const locEl = page.locator('[class*="location"], [class*="venue"], [class*="address"]').first();
+      if (await locEl.count() > 0) {
+        details.location = (await locEl.textContent())?.trim();
+      }
+    } catch { /* ignore */ }
+  }
+
+  if (!details.coverImageUrl) {
+    try {
+      const coverImg = page.locator('img[class*="cover"], img[class*="banner"], img[class*="hero"]').first();
+      if (await coverImg.count() > 0) {
+        details.coverImageUrl = (await coverImg.getAttribute("src")) || undefined;
+      }
+    } catch { /* ignore */ }
+  }
+
+  return details;
+}
+
+/**
+ * Extract a person's info from a user profile link element
+ */
+async function extractPersonFromLink(
+  link: ReturnType<Page["locator"]>,
+  page: Page,
+  eventSlug: string,
+  eventName: string
+): Promise<LumaScrapedGuest | null> {
+  try {
+    const href = await link.getAttribute("href");
+    if (!href || !href.startsWith("/user/")) return null;
+
+    // Get name from img alt or aria-label or text content
+    let name = "";
+    const ariaLabel = await link.getAttribute("aria-label");
+    if (ariaLabel) {
+      name = ariaLabel.replace(/^Profile picture for /i, "").trim();
+    }
+
+    if (!name) {
+      const img = link.locator("img").first();
+      if (await img.count() > 0) {
+        const alt = await img.getAttribute("alt");
+        if (alt) {
+          name = alt.replace(/^Profile picture for /i, "").trim();
+        }
+      }
+    }
+
+    if (!name) {
+      // Try span or div text
+      const textEl = link.locator("span, div").first();
+      if (await textEl.count() > 0) {
+        name = (await textEl.textContent() || "").trim();
+      }
+    }
+
+    if (!name) {
+      name = (await link.textContent() || "").trim();
+    }
+
+    if (!name) return null;
+
+    // Look for social links in the parent row
+    const parent = link.locator("..").first();
+    let instagram: string | undefined;
+    let twitter: string | undefined;
+
+    const instaLink = parent.locator('a[href*="instagram.com"]');
+    if (await instaLink.count() > 0) {
+      instagram = await instaLink.getAttribute("href") || undefined;
+    }
+
+    const twitterLink = parent.locator('a[href*="x.com"], a[href*="twitter.com"]');
+    if (await twitterLink.count() > 0) {
+      twitter = await twitterLink.getAttribute("href") || undefined;
+    }
+
+    return {
+      name,
+      lumaProfile: `${LUMA_BASE_URL}${href}`,
+      instagram,
+      twitter,
+      eventSlug,
+      eventName,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Scrape all guests from an event page
+ * Separates hosts (from sidebar) from guests (from modal)
+ */
+export async function scrapeEventGuests(eventUrlOrSlug: string): Promise<LumaScrapedEvent | null> {
   const endTimer = startTimer();
+
+  // Handle both full URL and slug
+  const eventUrl = eventUrlOrSlug.startsWith("http")
+    ? eventUrlOrSlug
+    : `${LUMA_BASE_URL}/${eventUrlOrSlug}`;
+  const slug = eventUrl.replace(LUMA_BASE_URL + "/", "").split("/")[0].split("?")[0];
 
   try {
     const ctx = await initBrowser();
@@ -278,134 +692,371 @@ export async function scrapeEventGuests(eventUrl: string): Promise<LumaScrapedEv
     log(`Scraping event: ${eventUrl}`);
     await page.goto(eventUrl, { waitUntil: "networkidle" });
 
-    // Extract initial data from __NEXT_DATA__
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const nextData = await page.evaluate(() => {
-      // Access document through globalThis for browser context
-      const doc = (globalThis as { document?: { querySelector: (s: string) => { textContent?: string } | null } }).document;
-      const script = doc?.querySelector("#__NEXT_DATA__");
-      if (script) {
-        return JSON.parse(script.textContent || "{}");
+    // Get event name from page title or h1
+    const eventName = await page.locator("h1").first().textContent() || slug;
+
+    // Extract event details from __NEXT_DATA__ (description, date, location, etc.)
+    const eventDetails = await extractEventDetails(page);
+
+    // =========================================================================
+    // STEP 1: Scrape hosts from "Hosted By" sidebar BEFORE opening modal
+    // =========================================================================
+    log("Scraping hosts from sidebar...");
+    const hostProfiles = new Set<string>();
+
+    // Hosts come from eventDetails (extracted from __NEXT_DATA__)
+    // Mark their profiles so we can deduplicate later
+    for (const host of eventDetails.hosts) {
+      if (host.lumaProfile) {
+        hostProfiles.add(host.lumaProfile);
       }
-      return null;
+    }
+    log(`Found ${eventDetails.hosts.length} hosts`);
+
+    // =========================================================================
+    // STEP 2: Click attendee button to open guest modal
+    // =========================================================================
+    log("Looking for guest list trigger...");
+
+    // Try different selectors for the attendee button
+    // The clickable element is usually the row of avatar circles or "See all guests" link
+    // First, let's find the "Going" section and look for clickable elements within it
+
+    // Look for avatar stack/row - this is often what you click to see all guests
+    const avatarStack = page.locator('[class*="avatar-stack"], [class*="AvatarStack"], [class*="avatars"]').first();
+    const avatarStackExists = await avatarStack.count() > 0;
+
+    // Also look for "See all" or similar links
+    const seeAllLink = page.getByText(/see all|view all|show all/i).first();
+    const seeAllExists = await seeAllLink.count() > 0;
+
+    // Try various selectors for the clickable guest list opener
+    const othersButton = page.getByText(/and \d+ others/i).or(
+      page.getByText(/\+\d+/i) // "+297" style
+    ).or(
+      page.locator('[class*="guest-count"], [class*="attendee-count"]')
+    );
+
+    let buttonCount = await othersButton.count();
+
+    // If no "and X others" style button, try avatar stack
+    let clickTarget = othersButton.first();
+    if (buttonCount === 0 && avatarStackExists) {
+      log("Trying avatar stack as click target");
+      clickTarget = avatarStack;
+      buttonCount = 1;
+    }
+    if (buttonCount === 0 && seeAllExists) {
+      log("Trying 'See all' link as click target");
+      clickTarget = seeAllLink;
+      buttonCount = 1;
+    }
+
+    // Log what button we're clicking
+    if (buttonCount > 0) {
+      const buttonText = await clickTarget.textContent();
+      log(`Clicking guest button: "${buttonText?.substring(0, 50)}"`);
+    }
+
+    if (buttonCount === 0) {
+      log("No guest list button found - event may be private or have no visible guests");
+      await page.close();
+      return {
+        slug,
+        name: eventName.trim(),
+        url: eventUrl,
+        date: eventDetails.date,
+        endDate: eventDetails.endDate,
+        timezone: eventDetails.timezone,
+        location: eventDetails.location,
+        locationAddress: eventDetails.locationAddress,
+        isOnline: eventDetails.isOnline,
+        description: eventDetails.description,
+        coverImageUrl: eventDetails.coverImageUrl,
+        hosts: eventDetails.hosts,
+        guestCount: 0,
+        guests: [],
+        scrapedAt: new Date().toISOString(),
+      };
+    }
+
+    // Click to open guest modal - use dispatchEvent for more reliable click
+    const urlBefore = page.url();
+
+    // Try to click using JavaScript for more reliable results
+    await clickTarget.evaluate((el) => {
+      // Scroll element into view first
+      el.scrollIntoView({ block: 'center' });
+    });
+    await page.waitForTimeout(500);
+
+    // Click using Playwright
+    await clickTarget.click({ force: true });
+    log("Waiting for guest modal...");
+
+    // Wait for modal to appear
+    await page.waitForTimeout(3000);
+
+    // Check how many user links are now visible (modal should have loaded)
+    const initialUserLinks = await page.$$eval('a[href^="/user/"]', links => links.length);
+    log(`Modal opened with ${initialUserLinks} user links visible`);
+
+    // Wait for guest list to load - try to find them within a dialog or overlay
+    await page.waitForSelector('[role="dialog"] a[href^="/user/"], [class*="drawer"] a[href^="/user/"], [class*="overlay"] a[href^="/user/"]', { timeout: 10000 }).catch(() => {
+      log("No guest links found in modal/drawer/overlay");
     });
 
-    const initialData = nextData?.props?.pageProps?.initialData?.data;
-    if (!initialData) {
-      log("No event data found");
-      await page.close();
-      return null;
-    }
-
-    const eventInfo = initialData.event || {};
+    // =========================================================================
+    // STEP 3: Scroll modal to load ALL virtualized guests
+    // =========================================================================
     const guests: LumaScrapedGuest[] = [];
+    const seenProfiles = new Set<string>();
 
-    // Get featured guests from initial data
-    const featuredGuests = initialData.featured_guests || [];
-    for (const guest of featuredGuests) {
-      guests.push({
-        name: guest.name || "Unknown",
-        avatarUrl: guest.avatar_url,
-        bio: guest.bio_short,
-        linkedin: guest.linkedin_handle,
-        twitter: guest.twitter_handle,
-        instagram: guest.instagram_handle,
-        website: guest.website,
-        isFeatured: true,
-      });
-    }
+    // Wait for modal content to fully load
+    await page.waitForTimeout(1000);
 
-    // Try to click "View all guests" or similar to load more
-    const viewAllButton = await page.$('button:has-text("View all"), button:has-text("See all"), [class*="guest"] button');
-    if (viewAllButton) {
-      await viewAllButton.click();
-      await page.waitForTimeout(2000); // Wait for modal/list to load
-
-      // Scrape guests from the expanded list
-      const guestElements = await page.$$('[class*="guest-item"], [class*="attendee"], [data-testid*="guest"]');
-      for (const el of guestElements) {
-        const name = await el.$eval('[class*="name"], h3, h4, span', (n) => n.textContent?.trim()).catch(() => null);
-        if (name && !guests.some((g) => g.name === name)) {
-          const avatarUrl = await el.$eval("img", (img) => img.src).catch(() => undefined);
-          guests.push({
-            name,
-            avatarUrl,
-            isFeatured: false,
-          });
+    // Find and scroll the modal container using JavaScript
+    // Luma uses a virtualized list - find the scrollable container
+    const scrolled = await page.evaluate(() => {
+      // Find ANY scrollable element with reasonable height
+      const allElements = Array.from(document.querySelectorAll('*'));
+      for (const el of allElements) {
+        const style = window.getComputedStyle(el);
+        const htmlEl = el as HTMLElement;
+        if ((style.overflowY === 'auto' || style.overflowY === 'scroll') &&
+            htmlEl.scrollHeight > htmlEl.clientHeight + 100) {
+          // Found scrollable element - reset scroll
+          htmlEl.scrollTop = 0;
+          return { found: true, height: el.scrollHeight, className: (el as HTMLElement).className };
         }
       }
+      return { found: false };
+    });
 
-      // Scroll to load more if virtualized
-      const guestList = await page.$('[class*="guest-list"], [class*="attendee-list"], [role="list"]');
-      if (guestList) {
-        let prevCount = 0;
-        let attempts = 0;
-        while (attempts < 10) {
-          await guestList.evaluate((el) => (el.scrollTop = el.scrollHeight));
-          await page.waitForTimeout(500);
+    if (scrolled.found) {
+      log(`Found scrollable container: height=${scrolled.height}`);
+    } else {
+      log("No scrollable container found, trying page scroll");
+    }
 
-          const currentGuests = await page.$$('[class*="guest-item"], [class*="attendee"]');
-          if (currentGuests.length === prevCount) break;
-          prevCount = currentGuests.length;
-          attempts++;
+    log("Scrolling to load all guests...");
 
-          // Extract new guests
-          for (const el of currentGuests.slice(guests.length)) {
-            const name = await el.$eval('[class*="name"], h3, h4, span', (n) => n.textContent?.trim()).catch(() => null);
-            if (name && !guests.some((g) => g.name === name)) {
-              const avatarUrl = await el.$eval("img", (img) => img.src).catch(() => undefined);
-              guests.push({
-                name,
-                avatarUrl,
-                isFeatured: false,
-              });
+    // Scroll to the bottom to load all virtualized content
+    // Keep scrolling until we reach the bottom, regardless of link count
+    let scrollAttempts = 0;
+    const maxScrollAttempts = 50;
+
+    while (scrollAttempts < maxScrollAttempts) {
+      scrollAttempts++;
+
+      // Scroll
+      const scrollResult = await page.evaluate(() => {
+        const allElements = Array.from(document.querySelectorAll('*'));
+        let bestCandidate: HTMLElement | null = null;
+        let bestDiff = 0;
+
+        for (const el of allElements) {
+          const htmlEl = el as HTMLElement;
+          const style = window.getComputedStyle(el);
+          const diff = htmlEl.scrollHeight - htmlEl.clientHeight;
+          const classNameStr = typeof htmlEl.className === 'string' ? htmlEl.className : '';
+
+          if ((style.overflowY === 'auto' || style.overflowY === 'scroll' ||
+               classNameStr.includes('overflow-auto')) &&
+              diff > 100 && diff > bestDiff) {
+            bestCandidate = htmlEl;
+            bestDiff = diff;
+          }
+        }
+
+        if (bestCandidate) {
+          const prevTop = bestCandidate.scrollTop;
+          const maxScroll = bestCandidate.scrollHeight - bestCandidate.clientHeight;
+          bestCandidate.scrollTop += 500; // Smaller increments for better virtualization
+          return {
+            scrolled: bestCandidate.scrollTop !== prevTop,
+            scrollTop: bestCandidate.scrollTop,
+            scrollHeight: bestCandidate.scrollHeight,
+            maxScroll,
+            atBottom: bestCandidate.scrollTop >= maxScroll - 10
+          };
+        }
+        return { scrolled: false, atBottom: true };
+      });
+
+      // Log progress every 10 scrolls
+      if (scrollAttempts % 10 === 0) {
+        log(`Scrolling... (attempt ${scrollAttempts})`);
+      }
+
+      // Stop if we've reached the bottom
+      if (scrollResult.atBottom) {
+        log(`Reached bottom after ${scrollAttempts} scrolls (scrollTop: ${scrollResult.scrollTop})`);
+        break;
+      }
+
+      // Wait for virtualized list to render
+      await page.waitForTimeout(600);
+    }
+
+    // Final count after all scrolling
+    const finalLinkCount = await page.$$eval('a[href^="/user/"]', links => links.length);
+    log(`Scroll complete. Final link count: ${finalLinkCount}`);
+
+    // Scroll back to top and extract while scrolling through
+    // This ensures we catch all elements in the virtualized list
+    await page.evaluate(() => {
+      const allElements = Array.from(document.querySelectorAll('*'));
+      for (const el of allElements) {
+        const htmlEl = el as HTMLElement;
+        const style = window.getComputedStyle(el);
+        const classNameStr = typeof htmlEl.className === 'string' ? htmlEl.className : '';
+        if ((style.overflowY === 'auto' || classNameStr.includes('overflow-auto')) &&
+            htmlEl.scrollHeight > htmlEl.clientHeight + 100) {
+          htmlEl.scrollTop = 0;
+          break;
+        }
+      }
+    });
+    await page.waitForTimeout(500);
+
+    // Extract profiles while scrolling through
+    let extractionScrolls = 0;
+    const maxExtractionScrolls = 50;
+
+    while (extractionScrolls < maxExtractionScrolls) {
+      extractionScrolls++;
+
+      // Extract current visible links
+      const guestLinks = await page.$$('a[href^="/user/"]');
+
+      for (const link of guestLinks) {
+      try {
+        const href = await link.getAttribute("href");
+        if (!href || seenProfiles.has(href)) continue;
+
+        seenProfiles.add(href);
+
+        // Get name from aria-label, img alt, or text content
+        let name = "";
+        const ariaLabel = await link.getAttribute("aria-label");
+        if (ariaLabel) {
+          name = ariaLabel.replace(/^Profile picture for /i, "").trim();
+        }
+
+        if (!name) {
+          const img = await link.$("img");
+          if (img) {
+            const alt = await img.getAttribute("alt");
+            if (alt) {
+              name = alt.replace(/^Profile picture for /i, "").trim();
             }
           }
         }
+
+        if (!name) {
+          name = (await link.textContent() || "").trim();
+        }
+
+        if (!name) continue;
+
+        // Look for social links in parent row
+        const parent = await link.$("xpath=..");
+        let instagram: string | undefined;
+        let twitter: string | undefined;
+
+        if (parent) {
+          const instaLink = await parent.$('a[href*="instagram.com"]');
+          if (instaLink) {
+            instagram = await instaLink.getAttribute("href") || undefined;
+          }
+
+          const twitterLink = await parent.$('a[href*="x.com"], a[href*="twitter.com"]');
+          if (twitterLink) {
+            twitter = await twitterLink.getAttribute("href") || undefined;
+          }
+        }
+
+        guests.push({
+          name,
+          lumaProfile: `${LUMA_BASE_URL}${href}`,
+          instagram,
+          twitter,
+          eventSlug: slug,
+          eventName: eventName.trim(),
+        });
+      } catch {
+        // Skip this link
       }
+      }
+
+      // Log extraction progress every 10 scrolls
+      if (extractionScrolls % 10 === 0 && extractionScrolls > 0) {
+        log(`Extracting... ${seenProfiles.size} profiles found`);
+      }
+
+      // Scroll down for next batch
+      const scrollResult = await page.evaluate(() => {
+        const allElements = Array.from(document.querySelectorAll('*'));
+        for (const el of allElements) {
+          const htmlEl = el as HTMLElement;
+          const style = window.getComputedStyle(el);
+          const classNameStr = typeof htmlEl.className === 'string' ? htmlEl.className : '';
+          if ((style.overflowY === 'auto' || classNameStr.includes('overflow-auto')) &&
+              htmlEl.scrollHeight > htmlEl.clientHeight + 100) {
+            const maxScroll = htmlEl.scrollHeight - htmlEl.clientHeight;
+            htmlEl.scrollTop += 400;
+            return { atBottom: htmlEl.scrollTop >= maxScroll - 10 };
+          }
+        }
+        return { atBottom: true };
+      });
+
+      if (scrollResult.atBottom) {
+        log(`Extraction complete - reached bottom after ${extractionScrolls} scrolls`);
+        break;
+      }
+
+      await page.waitForTimeout(400);
     }
+
+    log(`Extracted ${guests.length} profiles, ${seenProfiles.size} unique`);
+
+    // =========================================================================
+    // STEP 4: Deduplicate - remove hosts from guest list
+    // =========================================================================
+    const guestsOnly = guests.filter(g => !hostProfiles.has(g.lumaProfile));
+    log(`Total profiles: ${guests.length}, After removing hosts: ${guestsOnly.length}`);
 
     await page.close();
     await saveSession();
 
     const result: LumaScrapedEvent = {
-      apiId: eventInfo.api_id || initialData.api_id || "",
-      name: eventInfo.name || "Unknown Event",
+      slug,
+      name: eventName.trim(),
       url: eventUrl,
-      date: eventInfo.start_at || initialData.start_at || "",
-      location: eventInfo.geo_address_json?.full_address,
-      guestCount: initialData.guest_count || guests.length,
-      guests,
+      date: eventDetails.date,
+      endDate: eventDetails.endDate,
+      timezone: eventDetails.timezone,
+      location: eventDetails.location,
+      locationAddress: eventDetails.locationAddress,
+      isOnline: eventDetails.isOnline,
+      description: eventDetails.description,
+      coverImageUrl: eventDetails.coverImageUrl,
+      hosts: eventDetails.hosts,
+      guestCount: guestsOnly.length,
+      guests: guestsOnly,
       scrapedAt: new Date().toISOString(),
     };
 
     recordIntegrationCall("luma", "scrape_event_guests", "success", endTimer());
-    log(`Scraped ${guests.length} guests from "${result.name}"`);
+    log(`Scraped ${eventDetails.hosts.length} hosts and ${guestsOnly.length} guests from "${result.name}"`);
     return result;
   } catch (error) {
     log(`Failed to scrape event: ${error instanceof Error ? error.message : String(error)}`);
     recordIntegrationCall("luma", "scrape_event_guests", "failure", endTimer());
     return null;
   }
-}
-
-/**
- * Scrape all events the user is attending and their guests
- */
-export async function scrapeAllUserEventGuests(): Promise<LumaScrapedEvent[]> {
-  const events = await getUserEvents();
-  const results: LumaScrapedEvent[] = [];
-
-  for (const event of events) {
-    const scraped = await scrapeEventGuests(event.url);
-    if (scraped) {
-      results.push(scraped);
-    }
-    // Rate limiting - wait between requests
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-  }
-
-  return results;
 }
 
 /**
@@ -425,46 +1076,61 @@ export async function closeBrowser(): Promise<void> {
 
 /**
  * Match a contact name against scraped event guests
+ * Returns best match above threshold
  */
-export function matchContactToEvent(
+export function matchContactToGuests(
   contactName: string,
-  scrapedEvents: LumaScrapedEvent[],
+  guests: LumaScrapedGuest[],
   threshold: number = 0.7
-): { event: LumaScrapedEvent; guest: LumaScrapedGuest; similarity: number } | null {
+): { guest: LumaScrapedGuest; score: number } | null {
   const normalize = (s: string) => s.toLowerCase().trim();
   const contactNorm = normalize(contactName);
+  const contactFirst = contactNorm.split(" ")[0];
 
-  let bestMatch: { event: LumaScrapedEvent; guest: LumaScrapedGuest; similarity: number } | null = null;
+  let bestMatch: { guest: LumaScrapedGuest; score: number } | null = null;
 
-  for (const event of scrapedEvents) {
-    for (const guest of event.guests) {
-      const guestNorm = normalize(guest.name);
+  for (const guest of guests) {
+    const guestNorm = normalize(guest.name);
+    const guestWords = guestNorm.split(" ");
 
-      // Calculate similarity (simple approach - can use Jaro-Winkler from client.ts)
-      let similarity = 0;
+    let score = 0;
 
-      // Exact match
-      if (contactNorm === guestNorm) {
-        similarity = 1;
-      }
-      // Contains match
-      else if (contactNorm.includes(guestNorm) || guestNorm.includes(contactNorm)) {
-        similarity = 0.85;
-      }
-      // First name match
-      else {
-        const contactFirst = contactNorm.split(" ")[0];
-        const guestFirst = guestNorm.split(" ")[0];
-        if (contactFirst === guestFirst && contactFirst.length > 2) {
-          similarity = 0.7;
-        }
-      }
+    // Exact match (either direction contains the other)
+    if (contactNorm === guestNorm) {
+      score = 1.0;
+    } else if (contactNorm.includes(guestNorm) || guestNorm.includes(contactNorm)) {
+      score = 0.9;
+    }
+    // First name matches any word in guest name
+    else if (guestWords.includes(contactFirst) || guestWords[0] === contactFirst) {
+      score = 0.8;
+    }
+    // Partial first name match (for nicknames)
+    else if (contactFirst.length >= 3 && guestWords.some((w) => w.startsWith(contactFirst) || contactFirst.startsWith(w))) {
+      score = 0.7;
+    }
 
-      if (similarity >= threshold && (!bestMatch || similarity > bestMatch.similarity)) {
-        bestMatch = { event, guest, similarity };
-      }
+    if (score >= threshold && (!bestMatch || score > bestMatch.score)) {
+      bestMatch = { guest, score };
     }
   }
 
   return bestMatch;
+}
+
+/**
+ * Match a contact against events and return the event where they were found
+ */
+export async function findContactInEvents(
+  contactName: string,
+  events: LumaScrapedEvent[],
+  threshold: number = 0.7
+): Promise<{ event: LumaScrapedEvent; guest: LumaScrapedGuest; score: number } | null> {
+  for (const event of events) {
+    const match = matchContactToGuests(contactName, event.guests, threshold);
+    if (match) {
+      return { event, ...match };
+    }
+  }
+  return null;
 }

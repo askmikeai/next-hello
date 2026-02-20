@@ -6,7 +6,7 @@ export default defineConfig({
   base: '/admin/',
   build: {
     outDir: '../../../dist/src/admin',
-    emptyOutDir: true,
+    emptyOutDir: false,
   },
   server: {
     proxy: {
