@@ -32,6 +32,7 @@ from .queue.jobs import (
     enqueue_crm_sync,
     enqueue_send_message,
 )
+from .swarm import SwarmCoordinator, EventBus, Blackboard
 
 # Load environment variables
 load_dotenv()
@@ -45,12 +46,16 @@ _crew: Optional[NetworkingCrew] = None
 _whatsapp_client: Optional[WhatsAppClient] = None
 _whatsapp_webhook: Optional[WhatsAppWebhook] = None
 _state_manager: Optional[RedisStateManager] = None
+_swarm_coordinator: Optional[SwarmCoordinator] = None
+_eventbus: Optional[EventBus] = None
+_blackboard: Optional[Blackboard] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
     global _state_manager, _whatsapp_client, _whatsapp_webhook
+    global _swarm_coordinator, _eventbus, _blackboard
 
     # Startup
     logger.info("Starting NextHello CrewAI API...")
@@ -66,12 +71,29 @@ async def lifespan(app: FastAPI):
     except ValueError as e:
         logger.warning(f"WhatsApp client not configured: {e}")
 
+    # Initialize swarm components
+    _eventbus = EventBus()
+    await _eventbus.connect()
+
+    _blackboard = Blackboard()
+    await _blackboard.connect()
+
+    _swarm_coordinator = SwarmCoordinator(
+        eventbus=_eventbus,
+        blackboard=_blackboard,
+    )
+    logger.info("Swarm coordinator initialized")
+
     logger.info("Startup complete")
 
     yield
 
     # Shutdown
     logger.info("Shutting down...")
+    if _eventbus:
+        await _eventbus.close()
+    if _blackboard:
+        await _blackboard.close()
     if _state_manager:
         await _state_manager.close()
     if _whatsapp_client:
@@ -895,16 +917,94 @@ async def admin_get_swarm_states():
 
 @app.get("/admin/api/swarm/agents")
 async def admin_get_agent_stats():
-    """Get agent execution statistics"""
-    # Placeholder - would track agent performance over time
-    return [
-        {"agentType": "research", "executions": 0, "avgDurationMs": 0, "successRate": 1.0},
-        {"agentType": "qualification", "executions": 0, "avgDurationMs": 0, "successRate": 1.0},
-        {"agentType": "personalization", "executions": 0, "avgDurationMs": 0, "successRate": 1.0},
-        {"agentType": "video", "executions": 0, "avgDurationMs": 0, "successRate": 1.0},
-        {"agentType": "voice", "executions": 0, "avgDurationMs": 0, "successRate": 1.0},
-        {"agentType": "crm", "executions": 0, "avgDurationMs": 0, "successRate": 1.0},
-    ]
+    """Get agent execution statistics from event log"""
+    if not _blackboard or not _blackboard._pool:
+        return [
+            {"agentType": "research", "executions": 0, "avgDurationMs": 0, "successRate": 1.0},
+            {"agentType": "qualification", "executions": 0, "avgDurationMs": 0, "successRate": 1.0},
+            {"agentType": "personalization", "executions": 0, "avgDurationMs": 0, "successRate": 1.0},
+            {"agentType": "video", "executions": 0, "avgDurationMs": 0, "successRate": 1.0},
+            {"agentType": "voice", "executions": 0, "avgDurationMs": 0, "successRate": 1.0},
+            {"agentType": "crm", "executions": 0, "avgDurationMs": 0, "successRate": 1.0},
+        ]
+
+    try:
+        async with _blackboard._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT source_agent, COUNT(*) as count
+                FROM swarm_event_log
+                WHERE created_at > NOW() - INTERVAL '24 hours'
+                GROUP BY source_agent
+                """
+            )
+            stats = {row["source_agent"]: row["count"] for row in rows}
+
+        return [
+            {"agentType": agent, "executions": stats.get(agent, 0), "avgDurationMs": 0, "successRate": 1.0}
+            for agent in ["research", "qualification", "personalization", "video", "voice", "crm"]
+        ]
+    except Exception as e:
+        logger.error(f"Error getting agent stats: {e}")
+        return []
+
+
+@app.get("/admin/api/swarm/events")
+async def admin_get_recent_events(limit: int = Query(50, ge=1, le=200)):
+    """Get recent swarm events"""
+    if not _blackboard or not _blackboard._pool:
+        return []
+
+    try:
+        async with _blackboard._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT event_id, event_type, source_agent, contact_id, created_at
+                FROM swarm_event_log
+                ORDER BY created_at DESC
+                LIMIT $1
+                """,
+                limit,
+            )
+            return [
+                {
+                    "eventId": row["event_id"],
+                    "eventType": row["event_type"],
+                    "sourceAgent": row["source_agent"],
+                    "contactId": row["contact_id"],
+                    "createdAt": str(row["created_at"]),
+                }
+                for row in rows
+            ]
+    except Exception as e:
+        logger.error(f"Error getting events: {e}")
+        return []
+
+
+@app.post("/admin/api/swarm/trigger/{event_type}/{contact_id}")
+async def admin_trigger_event(event_type: str, contact_id: str):
+    """Manually trigger a swarm event"""
+    if not _swarm_coordinator:
+        return {"success": False, "error": "Swarm coordinator not initialized"}
+
+    try:
+        if event_type == "research":
+            await _swarm_coordinator.request_research(contact_id)
+        elif event_type == "qualification":
+            await _swarm_coordinator.request_qualification(contact_id)
+        elif event_type == "video":
+            await _swarm_coordinator.request_video(contact_id)
+        elif event_type == "voice":
+            await _swarm_coordinator.request_voice(contact_id)
+        elif event_type == "crm":
+            await _swarm_coordinator.request_crm_sync(contact_id)
+        else:
+            return {"success": False, "error": f"Unknown event type: {event_type}"}
+
+        return {"success": True, "eventType": event_type, "contactId": contact_id}
+    except Exception as e:
+        logger.error(f"Error triggering event: {e}")
+        return {"success": False, "error": str(e)}
 
 
 @app.post("/admin/api/send-voice/{contact_id}")
@@ -974,21 +1074,18 @@ async def bridge_receive_message(request: BridgeMessageRequest):
     """
     Receive a message from the WhatsApp bridge and return a response.
 
-    This endpoint processes messages synchronously and returns the response
-    for the bridge to send back immediately.
+    Uses the swarm coordinator to publish events and generate immediate responses.
+    Agents process events asynchronously via Redis Streams.
     """
     logger.info(f"Bridge received message from {request.phone_number}: {request.content[:50]}...")
 
     try:
-        from .orchestrator import ConversationOrchestrator
+        if not _swarm_coordinator:
+            raise ValueError("Swarm coordinator not initialized")
 
-        # Initialize orchestrator
-        orchestrator = ConversationOrchestrator(
-            state_manager=_state_manager,
-        )
-
-        # Process the message
-        response = await orchestrator.process_message(
+        # Process message through swarm coordinator
+        # This publishes events for agents and returns immediate response for new contacts
+        response = await _swarm_coordinator.handle_incoming_message(
             phone_number=request.phone_number,
             message_text=request.content,
             message_type=request.message_type,

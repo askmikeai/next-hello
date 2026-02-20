@@ -155,6 +155,34 @@ services:
         max-file: "3"
 
   # ──────────────────────────────────────────────────────────────────────────
+  # SWARM - Autonomous agent swarm
+  # True swarm architecture with peer-to-peer agent coordination
+  # ──────────────────────────────────────────────────────────────────────────
+  swarm:
+    build: ./crewai
+    image: nexthello-api:local
+    container_name: nexthello-swarm
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql://${POSTGRES_USER:-nexthello}:${POSTGRES_PASSWORD:-nexthello_dev}@postgres:5432/${POSTGRES_DB:-nexthello}
+    volumes:
+      - nexthello-media:/app/data/media
+    command: ["python", "-m", "src.swarm.runner"]
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ──────────────────────────────────────────────────────────────────────────
   # WHATSAPP-BRIDGE - Node.js Baileys WhatsApp connector
   # Forwards messages to Python API
   # ──────────────────────────────────────────────────────────────────────────

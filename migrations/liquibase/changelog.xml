@@ -26,4 +26,7 @@
     <!-- Telegram channel support -->
     <include file="changesets/007-telegram-support.xml" relativeToChangelogFile="true"/>
 
+    <!-- Swarm event architecture tables -->
+    <include file="changesets/008-swarm-events.xml" relativeToChangelogFile="true"/>
+
 </databaseChangeLog>
