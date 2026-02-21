@@ -1,82 +1,84 @@
 # WhatsApp Bridge
 
-Node.js bridge that connects WhatsApp to the NextHello Python API using the Baileys library.
+Node.js bridge that connects WhatsApp to the NextHello Python API using **whatsapp-web.js** (Puppeteer-based).
+
+## How It Works
+
+This bridge uses [whatsapp-web.js](https://github.com/pedroslopez/whatsapp-web.js) which controls a headless Chromium browser to connect to web.whatsapp.com. This approach is more stable than direct WebSocket libraries because it uses the actual WhatsApp Web interface.
 
 ## Prerequisites
 
 - Docker and Docker Compose installed
-- PostgreSQL and Redis containers running
+- PostgreSQL and Redis containers running (for the full stack)
 
-## Step-by-Step: Connect WhatsApp
+## Quick Start
 
-### Step 1: Start Required Services
-
-Make sure PostgreSQL and Redis are running:
-
-```bash
-docker compose up -d postgres redis
-```
-
-### Step 2: Build the WhatsApp Bridge Image
+### Step 1: Build the WhatsApp Bridge Image
 
 ```bash
 docker compose build whatsapp-connect
 ```
 
-### Step 3: Run the WhatsApp Connect Tool
-
-Run the interactive WhatsApp connection tool:
+### Step 2: Run the WhatsApp Connect Tool
 
 ```bash
 docker compose run --rm whatsapp-connect
 ```
 
 This will:
-1. Generate a QR code displayed in your terminal
-2. Save the QR code to `/tmp/whatsapp-qr.txt` on your host machine
+1. Launch a headless Chromium browser
+2. Open WhatsApp Web
+3. Generate a QR code in your terminal
+4. Save the QR code to `/tmp/whatsapp-qr.txt`
 
-### Step 4: Scan the QR Code
+### Step 3: Scan the QR Code
 
 Open WhatsApp on your phone:
-1. Go to **Settings** > **Linked Devices**
+1. Go to **Settings** → **Linked Devices**
 2. Tap **Link a Device**
 3. Scan the QR code displayed in the terminal
 
-### Step 5: View QR Code from File (Optional)
-
-If the terminal output is hard to read, you can view the saved QR code:
-
+If the terminal QR code is hard to read:
 ```bash
 cat /tmp/whatsapp-qr.txt
 ```
 
-Or open it in a text editor that uses a monospace font.
-
-### Step 6: Verify Connection
+### Step 4: Verify Connection
 
 Once connected, you'll see:
 ```
-WhatsApp connected! Listening for messages...
+✅ WhatsApp connected! Listening for messages...
 ```
 
-You can now press `Ctrl+C` to exit the connect tool.
+Press `Ctrl+C` to exit the connect tool.
 
-### Step 7: Start the WhatsApp Bridge Service
+### Step 5: Start the WhatsApp Bridge Service
 
-After authentication, start the bridge service:
+After authentication, start the bridge as a background service:
 
 ```bash
 docker compose up -d whatsapp-bridge
 ```
 
-The bridge will automatically reconnect using the saved auth state.
+The bridge will automatically reconnect using saved credentials.
 
-## How It Works
+## Architecture
 
-1. **Authentication**: When you scan the QR code, Baileys saves authentication credentials to a Docker volume (`nexthello-whatsapp-auth`)
-2. **Message Flow**: Incoming WhatsApp messages are forwarded to the Python API at `/bridge/message`
-3. **Responses**: The API can return a response that the bridge sends back to WhatsApp
-4. **Call Handling**: Incoming calls are automatically rejected with a polite message
+```
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│   WhatsApp      │────▶│  whatsapp-web.js │────▶│   Python API    │
+│   (Phone)       │◀────│  + Chromium      │◀────│   (FastAPI)     │
+└─────────────────┘     └──────────────────┘     └─────────────────┘
+                              │
+                              ▼
+                        /tmp/whatsapp-qr.txt
+```
+
+1. **Chromium Browser**: Runs headlessly inside Docker
+2. **whatsapp-web.js**: Controls the browser, connects to web.whatsapp.com
+3. **QR Code**: Displayed in terminal and saved to file
+4. **Message Flow**: Incoming messages forwarded to Python API at `/bridge/message`
+5. **Responses**: API responses sent back through WhatsApp
 
 ## Environment Variables
 
@@ -84,60 +86,28 @@ The bridge will automatically reconnect using the saved auth state.
 |----------|---------|-------------|
 | `PYTHON_API_URL` | `http://localhost:8001` | URL of the Python API |
 | `QR_OUTPUT_DIR` | `/tmp` | Directory to save QR code file |
+| `PUPPETEER_EXECUTABLE_PATH` | `/usr/bin/chromium-browser` | Path to Chromium |
 
-## Troubleshooting
+## Docker Volumes
 
-### QR Code Not Appearing
+| Volume | Purpose |
+|--------|---------|
+| `nexthello-whatsapp-auth` | Stores WhatsApp session credentials |
+| `/tmp` (bind mount) | QR code output accessible from host |
 
-1. Make sure the container has terminal access:
-   ```bash
-   docker compose run --rm -it whatsapp-connect
-   ```
-
-2. Check the `/tmp/whatsapp-qr.txt` file on your host
-
-### Connection Keeps Dropping
-
-1. Check the logs:
-   ```bash
-   docker compose logs whatsapp-bridge
-   ```
-
-2. Delete auth state and re-authenticate:
-   ```bash
-   docker volume rm nexthello-whatsapp-auth
-   docker compose run --rm whatsapp-connect
-   ```
-
-### "Logged Out" Error
-
-WhatsApp may have logged out the device. Re-authenticate:
+## Commands Reference
 
 ```bash
-docker volume rm nexthello-whatsapp-auth
-docker compose run --rm whatsapp-connect
-```
+# Build the image
+docker compose build whatsapp-connect
 
-## File Structure
-
-```
-whatsapp-bridge/
-  index.js          # Main bridge code
-  package.json      # Node.js dependencies
-  Dockerfile        # Container build
-  README.md         # This file
-```
-
-## Quick Reference
-
-```bash
-# Connect WhatsApp (interactive)
+# Connect WhatsApp (interactive, shows QR code)
 docker compose run --rm whatsapp-connect
 
 # View saved QR code
 cat /tmp/whatsapp-qr.txt
 
-# Start bridge service
+# Start bridge as background service
 docker compose up -d whatsapp-bridge
 
 # View bridge logs
@@ -146,7 +116,76 @@ docker compose logs -f whatsapp-bridge
 # Restart bridge
 docker compose restart whatsapp-bridge
 
-# Re-authenticate
+# Stop bridge
+docker compose stop whatsapp-bridge
+
+# Re-authenticate (clear saved session)
 docker volume rm nexthello-whatsapp-auth
 docker compose run --rm whatsapp-connect
 ```
+
+## Troubleshooting
+
+### QR Code Not Appearing
+
+1. Ensure Docker has enough resources (Chromium needs ~512MB RAM)
+2. Check container logs:
+   ```bash
+   docker compose logs whatsapp-connect
+   ```
+3. View the saved QR file: `cat /tmp/whatsapp-qr.txt`
+
+### "Could Not Connect" After Scanning
+
+This can happen with direct WebSocket libraries. whatsapp-web.js (Puppeteer-based) is more reliable because it uses the actual WhatsApp Web interface.
+
+### Connection Keeps Dropping
+
+1. Check the logs for errors:
+   ```bash
+   docker compose logs -f whatsapp-bridge
+   ```
+2. WhatsApp may have logged out the device. Re-authenticate:
+   ```bash
+   docker volume rm nexthello-whatsapp-auth
+   docker compose run --rm whatsapp-connect
+   ```
+
+### Browser Crashes
+
+If Chromium crashes, try increasing Docker memory limits or check for:
+- `/dev/shm` size (should be at least 64MB)
+- Sandbox issues (we use `--no-sandbox` flag)
+
+## Features
+
+- **QR Code Authentication**: Scan once, stays connected
+- **Message Forwarding**: All incoming messages sent to Python API
+- **Auto-Reply**: API responses automatically sent back
+- **Call Rejection**: Incoming calls rejected with polite message
+- **Media Support**: Handles images, videos, audio, documents
+- **Persistent Sessions**: Credentials saved to Docker volume
+
+## File Structure
+
+```
+whatsapp-bridge/
+├── index.js          # Main bridge code (whatsapp-web.js)
+├── package.json      # Node.js dependencies
+├── Dockerfile        # Container with Chromium
+└── README.md         # This file
+```
+
+## Why whatsapp-web.js?
+
+We switched from Baileys to whatsapp-web.js because:
+
+| Feature | Baileys | whatsapp-web.js |
+|---------|---------|-----------------|
+| Connection Method | Direct WebSocket | Puppeteer/Browser |
+| Stability | Breaks with WA updates | More stable |
+| QR Code Issues | Common 405 errors | Reliable |
+| Resource Usage | Lightweight | Heavier (runs Chrome) |
+| Detection Risk | Higher | Lower |
+
+whatsapp-web.js uses the actual WhatsApp Web interface, making it more resistant to protocol changes.
