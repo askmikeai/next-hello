@@ -8,12 +8,21 @@ import makeWASocket, {
 } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode-terminal';
 import pino from 'pino';
+import fs from 'fs';
+import path from 'path';
 
 const PYTHON_API_URL = process.env.PYTHON_API_URL || 'http://localhost:8001';
 const AUTH_DIR = './auth_state';
+const QR_OUTPUT_DIR = process.env.QR_OUTPUT_DIR || '/tmp';
+const QR_FILE = path.join(QR_OUTPUT_DIR, 'whatsapp-qr.txt');
+
+// Hardcoded WhatsApp version to fix 405 connection errors
+// See: https://github.com/WhiskeySockets/Baileys/issues/1939
+const WHATSAPP_VERSION = [2, 3000, 1027934701];
 
 const logger = pino({ level: 'info' });
 let reconnectAttempts = 0;
+let isAuthenticated = false; // Prevent reconnection during initial QR auth
 const MAX_RECONNECT_DELAY = 60000; // Max 60 seconds between attempts
 
 async function forwardToPython(endpoint, data) {
@@ -44,11 +53,15 @@ async function startWhatsApp() {
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
 
   const sock = makeWASocket({
+    version: WHATSAPP_VERSION,
     auth: state,
-    printQRInTerminal: true, // Use built-in QR printing
-    logger: pino({ level: 'debug' }), // Enable debug logging
-    browser: ['NextHello', 'Chrome', '120.0.0'],
+    logger: pino({ level: 'info' }),
+    browser: ['Chrome (Linux)', 'Chrome', '120.0.0'],
     syncFullHistory: false,
+    connectTimeoutMs: 60000,
+    qrTimeout: 60000,
+    defaultQueryTimeoutMs: 60000,
+    retryRequestDelayMs: 2000,
   });
 
   // Handle connection updates
@@ -60,7 +73,27 @@ async function startWhatsApp() {
       console.log('='.repeat(50));
       console.log('  Scan this QR code with WhatsApp:');
       console.log('='.repeat(50));
-      qrcode.generate(qr, { small: true });
+      qrcode.generate(qr, { small: true }, (qrText) => {
+        console.log(qrText);
+        // Write QR code to file for external access
+        const output = [
+          '='.repeat(50),
+          '  Scan this QR code with WhatsApp',
+          '  Generated: ' + new Date().toISOString(),
+          '='.repeat(50),
+          '',
+          qrText,
+          '',
+          '='.repeat(50),
+        ].join('\n');
+
+        try {
+          fs.writeFileSync(QR_FILE, output, 'utf8');
+          console.log(`\n📱 QR code saved to: ${QR_FILE}\n`);
+        } catch (err) {
+          logger.error({ error: err.message }, 'Failed to write QR code to file');
+        }
+      });
       console.log('='.repeat(50));
       console.log('\n');
     }
@@ -69,22 +102,39 @@ async function startWhatsApp() {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
-      logger.info({ statusCode, shouldReconnect }, 'Connection closed');
+      logger.info({ statusCode, shouldReconnect, isAuthenticated }, 'Connection closed');
 
-      if (shouldReconnect) {
+      // Only reconnect if we were previously authenticated
+      // This prevents reconnection loops during QR code scanning
+      if (shouldReconnect && isAuthenticated) {
         reconnectAttempts++;
         const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), MAX_RECONNECT_DELAY);
         logger.info({ delay, attempt: reconnectAttempts }, 'Reconnecting after delay...');
         setTimeout(() => startWhatsApp(), delay);
-      } else {
+      } else if (!shouldReconnect) {
+        isAuthenticated = false;
         logger.info('Logged out. Delete auth_state folder to re-authenticate.');
+      } else {
+        // During initial auth, just wait - don't spam reconnects
+        logger.info('Connection closed during initial auth, waiting for QR scan...');
       }
     }
 
     if (connection === 'open') {
       reconnectAttempts = 0; // Reset on successful connection
+      isAuthenticated = true; // Mark as authenticated
       logger.info('Connected to WhatsApp!');
       console.log('\n✅ WhatsApp connected! Listening for messages...\n');
+
+      // Clean up QR file after successful connection
+      try {
+        if (fs.existsSync(QR_FILE)) {
+          fs.unlinkSync(QR_FILE);
+          logger.info('QR code file removed after successful connection');
+        }
+      } catch (err) {
+        // Ignore cleanup errors
+      }
     }
   });
 

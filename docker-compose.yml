@@ -216,8 +216,10 @@ services:
     tty: true
     environment:
       PYTHON_API_URL: http://api:8001
+      QR_OUTPUT_DIR: /qr
     volumes:
       - nexthello-whatsapp-auth:/app/auth_state
+      - /tmp:/qr
     profiles:
       - tools
 
