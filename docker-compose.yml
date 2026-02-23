@@ -191,12 +191,19 @@ services:
     image: nexthello-whatsapp:local
     container_name: nexthello-whatsapp-bridge
     depends_on:
+      postgres:
+        condition: service_healthy
       api:
         condition: service_healthy
     environment:
       PYTHON_API_URL: http://api:8001
+      HTTP_PORT: 3000
+      SESSION_ID: ${WHATSAPP_SESSION_ID:-default}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-nexthello}:${POSTGRES_PASSWORD:-nexthello_dev}@postgres:5432/${POSTGRES_DB:-nexthello}
     volumes:
       - nexthello-whatsapp-auth:/app/auth_state
+    ports:
+      - "3000:3000"
     restart: unless-stopped
     logging:
       driver: json-file
@@ -214,9 +221,14 @@ services:
     container_name: nexthello-whatsapp-connect
     stdin_open: true
     tty: true
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
       PYTHON_API_URL: http://api:8001
       QR_OUTPUT_DIR: /qr
+      SESSION_ID: ${WHATSAPP_SESSION_ID:-default}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-nexthello}:${POSTGRES_PASSWORD:-nexthello_dev}@postgres:5432/${POSTGRES_DB:-nexthello}
     volumes:
       - nexthello-whatsapp-auth:/app/auth_state
       - /tmp:/qr

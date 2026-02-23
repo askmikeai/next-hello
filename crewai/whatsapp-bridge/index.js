@@ -1,6 +1,10 @@
 /**
  * WhatsApp Bridge - Connects via QR code and forwards messages to Python API
  * Uses whatsapp-web.js (Puppeteer-based) for more stable connections
+ *
+ * Session persistence:
+ * - Local: Chromium profile in ./auth_state (Docker volume)
+ * - Remote: PostgreSQL backup for cloud portability
  */
 
 import pkg from 'whatsapp-web.js';
@@ -9,12 +13,46 @@ import qrcode from 'qrcode-terminal';
 import pino from 'pino';
 import fs from 'fs';
 import path from 'path';
+import http from 'http';
+import PostgresSessionStore from './pg-store.js';
 
 const PYTHON_API_URL = process.env.PYTHON_API_URL || 'http://localhost:8001';
 const QR_OUTPUT_DIR = process.env.QR_OUTPUT_DIR || '/tmp';
 const QR_FILE = path.join(QR_OUTPUT_DIR, 'whatsapp-qr.txt');
+const HTTP_PORT = process.env.HTTP_PORT || 3000;
+const SESSION_ID = process.env.SESSION_ID || 'default';
+const DATABASE_URL = process.env.DATABASE_URL;
 
 const logger = pino({ level: 'info' });
+
+// PostgreSQL session store (optional - only if DATABASE_URL is set)
+let sessionStore = null;
+
+async function initSessionStore() {
+  if (!DATABASE_URL) {
+    logger.info('DATABASE_URL not set - using local storage only');
+    return;
+  }
+
+  sessionStore = new PostgresSessionStore({
+    connectionString: DATABASE_URL,
+    sessionId: SESSION_ID,
+    localPath: './auth_state',
+    logger,
+  });
+
+  await sessionStore.init();
+
+  // If no local session, try to restore from PostgreSQL
+  if (!sessionStore.hasLocalSession()) {
+    logger.info('No local session found, checking PostgreSQL...');
+    const hasRemote = await sessionStore.hasRemoteSession();
+    if (hasRemote) {
+      logger.info('Found remote session, restoring...');
+      await sessionStore.restore();
+    }
+  }
+}
 
 async function forwardToPython(endpoint, data) {
   try {
@@ -86,7 +124,7 @@ client.on('qr', (qr) => {
 });
 
 // Ready event
-client.on('ready', () => {
+client.on('ready', async () => {
   logger.info('Connected to WhatsApp!');
   console.log('\n✅ WhatsApp connected! Listening for messages...\n');
 
@@ -99,11 +137,31 @@ client.on('ready', () => {
   } catch (err) {
     // Ignore cleanup errors
   }
+
+  // Backup session to PostgreSQL
+  if (sessionStore) {
+    logger.info('Backing up session to PostgreSQL...');
+    await sessionStore.backup();
+  }
+
+  // Start HTTP server
+  server.listen(HTTP_PORT, () => {
+    console.log(`HTTP API listening on port ${HTTP_PORT}`);
+    console.log(`Send messages: POST http://localhost:${HTTP_PORT}/send {"to": "+1234567890", "message": "Hello"}`);
+  });
 });
 
 // Authentication event
-client.on('authenticated', () => {
+client.on('authenticated', async () => {
   logger.info('WhatsApp authenticated');
+
+  // Backup session to PostgreSQL after authentication
+  if (sessionStore) {
+    // Wait a bit for session files to be written
+    setTimeout(async () => {
+      await sessionStore.backup();
+    }, 5000);
+  }
 });
 
 // Authentication failure
@@ -167,7 +225,6 @@ client.on('call', async (call) => {
   await call.reject();
 
   // Send a message explaining we don't take calls
-  const phoneNumber = call.from.replace('@c.us', '');
   try {
     await client.sendMessage(call.from, "Sorry, I can't take calls right now. Please send me a text message instead!");
   } catch (error) {
@@ -175,9 +232,130 @@ client.on('call', async (call) => {
   }
 });
 
-// Start the client
-console.log('Starting WhatsApp Bridge (whatsapp-web.js)...');
-console.log(`Python API: ${PYTHON_API_URL}`);
-console.log('Launching browser...');
+// HTTP Server for sending messages and session management
+const server = http.createServer(async (req, res) => {
+  // CORS headers
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-client.initialize();
+  if (req.method === 'OPTIONS') {
+    res.writeHead(200);
+    res.end();
+    return;
+  }
+
+  // Send message endpoint
+  if (req.method === 'POST' && req.url === '/send') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        const { to, message } = JSON.parse(body);
+        if (!to || !message) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Missing "to" or "message" field' }));
+          return;
+        }
+
+        // Format phone number
+        const chatId = to.replace(/[^0-9]/g, '') + '@c.us';
+
+        await client.sendMessage(chatId, message);
+        logger.info({ to: chatId }, 'Message sent via API');
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, to: chatId }));
+      } catch (error) {
+        logger.error({ error: error.message }, 'Failed to send message via API');
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+      }
+    });
+  }
+  // Health check endpoint
+  else if (req.method === 'GET' && req.url === '/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      status: 'ok',
+      connected: client.info ? true : false,
+      sessionId: SESSION_ID,
+      hasPostgres: !!sessionStore
+    }));
+  }
+  // Backup session to PostgreSQL
+  else if (req.method === 'POST' && req.url === '/session/backup') {
+    if (!sessionStore) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'PostgreSQL not configured' }));
+      return;
+    }
+    const success = await sessionStore.backup();
+    res.writeHead(success ? 200 : 500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success }));
+  }
+  // Restore session from PostgreSQL
+  else if (req.method === 'POST' && req.url === '/session/restore') {
+    if (!sessionStore) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'PostgreSQL not configured' }));
+      return;
+    }
+    const success = await sessionStore.restore();
+    res.writeHead(success ? 200 : 500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success, message: success ? 'Session restored. Restart container to use.' : 'No session to restore' }));
+  }
+  // Session status
+  else if (req.method === 'GET' && req.url === '/session/status') {
+    const status = {
+      sessionId: SESSION_ID,
+      hasLocal: sessionStore?.hasLocalSession() ?? fs.existsSync('./auth_state/session'),
+      hasRemote: sessionStore ? await sessionStore.hasRemoteSession() : false,
+      postgresConfigured: !!sessionStore
+    };
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(status));
+  }
+  else {
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Not found' }));
+  }
+});
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  logger.info('SIGTERM received, backing up session...');
+  if (sessionStore) {
+    await sessionStore.backup();
+    await sessionStore.close();
+  }
+  process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+  logger.info('SIGINT received, backing up session...');
+  if (sessionStore) {
+    await sessionStore.backup();
+    await sessionStore.close();
+  }
+  process.exit(0);
+});
+
+// Start the application
+async function main() {
+  console.log('Starting WhatsApp Bridge (whatsapp-web.js)...');
+  console.log(`Python API: ${PYTHON_API_URL}`);
+  console.log(`Session ID: ${SESSION_ID}`);
+  console.log(`PostgreSQL: ${DATABASE_URL ? 'configured' : 'not configured'}`);
+
+  // Initialize PostgreSQL session store
+  await initSessionStore();
+
+  console.log('Launching browser...');
+  client.initialize();
+}
+
+main().catch(err => {
+  logger.error({ error: err.message }, 'Failed to start');
+  process.exit(1);
+});

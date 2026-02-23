@@ -29,4 +29,7 @@
     <!-- Swarm event architecture tables -->
     <include file="changesets/008-swarm-events.xml" relativeToChangelogFile="true"/>
 
+    <!-- WhatsApp session storage for RemoteAuth -->
+    <include file="changesets/009-whatsapp-sessions.xml" relativeToChangelogFile="true"/>
+
 </databaseChangeLog>

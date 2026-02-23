@@ -87,6 +87,9 @@ The bridge will automatically reconnect using saved credentials.
 | `PYTHON_API_URL` | `http://localhost:8001` | URL of the Python API |
 | `QR_OUTPUT_DIR` | `/tmp` | Directory to save QR code file |
 | `PUPPETEER_EXECUTABLE_PATH` | `/usr/bin/chromium-browser` | Path to Chromium |
+| `DATABASE_URL` | (none) | PostgreSQL connection string for session backup |
+| `SESSION_ID` | `default` | Unique identifier for this WhatsApp session |
+| `DATABASE_SSL` | `false` | Set to `true` for SSL connections (cloud databases) |
 
 ## Docker Volumes
 
@@ -94,6 +97,79 @@ The bridge will automatically reconnect using saved credentials.
 |--------|---------|
 | `nexthello-whatsapp-auth` | Stores WhatsApp session credentials |
 | `/tmp` (bind mount) | QR code output accessible from host |
+
+## PostgreSQL Session Persistence
+
+WhatsApp sessions are valuable and can be difficult to re-create (Meta limits new connections). This bridge supports backing up sessions to PostgreSQL for:
+
+- **Cloud portability**: Sessions survive container rebuilds and deployments
+- **Disaster recovery**: Restore sessions on new infrastructure
+- **Multi-environment**: Share sessions between local and cloud environments
+
+### How It Works
+
+```
+┌─────────────────┐      Backup (tar.gz + base64)     ┌─────────────────┐
+│  Local Session  │──────────────────────────────────▶│   PostgreSQL    │
+│  (Chromium)     │◀──────────────────────────────────│   whatsapp_     │
+└─────────────────┘      Restore (on startup)         │   sessions      │
+                                                      └─────────────────┘
+```
+
+1. **On Authentication**: Session files compressed and stored in PostgreSQL
+2. **On Startup**: If no local session exists, restores from PostgreSQL
+3. **On Shutdown**: Backs up current session before exit
+
+### Setup
+
+1. Run database migrations:
+   ```bash
+   docker compose --profile migrations run --rm liquibase
+   ```
+
+2. Ensure `DATABASE_URL` is set in your environment or `.env` file
+
+3. Start the WhatsApp bridge - it will automatically:
+   - Check for existing remote session
+   - Restore if local session is missing
+   - Backup after successful authentication
+
+### HTTP API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/session/status` | GET | Check local and remote session status |
+| `/session/backup` | POST | Manually backup session to PostgreSQL |
+| `/session/restore` | POST | Restore session from PostgreSQL (requires restart) |
+| `/health` | GET | Health check with connection status |
+
+### Example: Check Session Status
+
+```bash
+curl http://localhost:3000/session/status
+```
+
+Response:
+```json
+{
+  "sessionId": "default",
+  "hasLocal": true,
+  "hasRemote": true,
+  "postgresConfigured": true
+}
+```
+
+### Example: Manual Backup
+
+```bash
+curl -X POST http://localhost:3000/session/backup
+```
+
+### Migrating to a New Environment
+
+1. Ensure PostgreSQL has the session backed up
+2. Deploy with same `DATABASE_URL` and `SESSION_ID`
+3. Bridge will automatically restore the session on startup
 
 ## Commands Reference
 
@@ -165,12 +241,15 @@ If Chromium crashes, try increasing Docker memory limits or check for:
 - **Call Rejection**: Incoming calls rejected with polite message
 - **Media Support**: Handles images, videos, audio, documents
 - **Persistent Sessions**: Credentials saved to Docker volume
+- **PostgreSQL Backup**: Sessions backed up to database for cloud portability
+- **Graceful Shutdown**: Sessions saved on SIGTERM/SIGINT
 
 ## File Structure
 
 ```
 whatsapp-bridge/
 ├── index.js          # Main bridge code (whatsapp-web.js)
+├── pg-store.js       # PostgreSQL session backup/restore
 ├── package.json      # Node.js dependencies
 ├── Dockerfile        # Container with Chromium
 └── README.md         # This file
