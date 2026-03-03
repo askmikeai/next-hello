@@ -7,6 +7,9 @@
     "build": "npm run build:frontend",
     "build:frontend": "cd src/admin/frontend && npm install && npm run build",
     "dev:frontend": "cd src/admin/frontend && npm run dev",
+    "test": "cd src/admin/frontend && npm test",
+    "test:watch": "cd src/admin/frontend && npm run test:watch",
+    "test:coverage": "cd src/admin/frontend && npm run test:coverage",
     "db:migrate": "docker compose --profile migrations run --rm liquibase",
     "db:status": "docker compose --profile migrations run --rm liquibase --changelog-file=changelog.xml status"
   },
