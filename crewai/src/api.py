@@ -9,6 +9,7 @@ Complete FastAPI application with:
 """
 
 import os
+import uuid
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -442,6 +443,17 @@ async def send_message_immediate(request: SendMessageRequest):
             )
         else:
             result = await _whatsapp_client.send_text(request.phone_number, request.content)
+
+        # Record outbound message
+        if _state_manager:
+            await _state_manager.add_message(
+                phone_number=request.phone_number,
+                message_id=str(uuid.uuid4()),
+                direction="outgoing",
+                message_type=request.message_type,
+                content=request.content,
+                media_url=request.media_url,
+            )
 
         return {"status": "sent", "result": result}
 
@@ -1092,6 +1104,26 @@ async def bridge_receive_message(request: BridgeMessageRequest):
             push_name=request.push_name,
             message_id=request.message_id,
         )
+
+        # Record inbound message
+        if _state_manager:
+            await _state_manager.add_message(
+                phone_number=request.phone_number,
+                message_id=request.message_id,
+                direction="incoming",
+                message_type=request.message_type,
+                content=request.content,
+            )
+
+            # Record outbound auto-reply if one was generated
+            if response:
+                await _state_manager.add_message(
+                    phone_number=request.phone_number,
+                    message_id=f"auto-reply-{request.message_id}",
+                    direction="outgoing",
+                    message_type="text",
+                    content=response,
+                )
 
         logger.info(f"Bridge response for {request.phone_number}: {response[:50] if response else 'None'}...")
 

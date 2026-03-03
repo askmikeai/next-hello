@@ -129,6 +129,9 @@ class AutonomousAgent(ABC):
         """
         logger.debug(f"[{self.name}] Received event: {event.event_type}")
 
+        activity_id: Optional[str] = None
+        started_at: Optional[datetime] = None
+
         try:
             # Get contact state from blackboard
             contact = await self.blackboard.get_contact(event.contact_id)
@@ -158,6 +161,16 @@ class AutonomousAgent(ABC):
                     event.event_id,
                 )
 
+                # Record activity start
+                started_at = datetime.utcnow()
+                action = event.event_type.value if isinstance(event.event_type, EventType) else str(event.event_type)
+                activity_id = await self.blackboard.log_agent_activity_start(
+                    agent_type=self.name,
+                    action=action,
+                    correlation_id=event.correlation_id,
+                    started_at=started_at,
+                )
+
                 # Execute the agent's logic
                 logger.info(f"[{self.name}] Executing for {event.contact_id}")
                 result_events = await self.execute(event, contact)
@@ -169,6 +182,16 @@ class AutonomousAgent(ABC):
 
                 # Log the event
                 await self.blackboard.log_event(event)
+
+                # Record activity completion
+                completed_at = datetime.utcnow()
+                duration_ms = int((completed_at - started_at).total_seconds() * 1000)
+                await self.blackboard.log_agent_activity_complete(
+                    activity_id=activity_id,
+                    status="completed",
+                    completed_at=completed_at,
+                    duration_ms=duration_ms,
+                )
 
                 # Update agent state
                 await self.blackboard.save_agent_state(
@@ -190,6 +213,21 @@ class AutonomousAgent(ABC):
 
         except Exception as e:
             logger.error(f"[{self.name}] Error handling event: {e}", exc_info=True)
+
+            # Record activity failure
+            if activity_id and started_at:
+                try:
+                    completed_at = datetime.utcnow()
+                    duration_ms = int((completed_at - started_at).total_seconds() * 1000)
+                    await self.blackboard.log_agent_activity_complete(
+                        activity_id=activity_id,
+                        status="failed",
+                        completed_at=completed_at,
+                        duration_ms=duration_ms,
+                        error_message=str(e)[:500],
+                    )
+                except Exception:
+                    pass
 
             # Update agent state to failed
             try:

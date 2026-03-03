@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+    xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.25.xsd">
+
+    <changeSet id="010-agent-activity-voice" author="nexthello">
+        <comment>Add 'voice' to agent_activity_log agent_type CHECK constraint</comment>
+
+        <sqlFile path="../sql/010_agent_activity_voice.sql" relativeToChangelogFile="true"/>
+    </changeSet>
+
+</databaseChangeLog>

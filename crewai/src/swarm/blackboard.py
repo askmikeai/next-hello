@@ -8,6 +8,7 @@ State is stored in both Redis (fast access) and PostgreSQL (persistence).
 """
 
 import os
+import uuid
 import asyncio
 import logging
 from datetime import datetime, timedelta
@@ -416,6 +417,83 @@ class Blackboard:
                 event.correlation_id,
                 event.timestamp,
             )
+
+    async def log_agent_activity_start(
+        self,
+        agent_type: str,
+        action: str,
+        correlation_id: str,
+        started_at: datetime,
+    ) -> Optional[str]:
+        """
+        Insert a started row into agent_activity_log.
+
+        Returns the activity row ID to be passed to log_agent_activity_complete,
+        or None if the DB is unavailable or the insert fails.
+        """
+        if not self._pool:
+            return None
+
+        activity_id = str(uuid.uuid4())
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO agent_activity_log (
+                        id, correlation_id, agent_type, action, started_at, status
+                    ) VALUES ($1, $2, $3, $4, $5, 'started')
+                    """,
+                    activity_id,
+                    correlation_id,
+                    agent_type,
+                    action,
+                    started_at,
+                )
+            return activity_id
+        except Exception as e:
+            logger.warning(f"Failed to log agent activity start ({agent_type}): {e}")
+            return None
+
+    async def log_agent_activity_complete(
+        self,
+        activity_id: Optional[str],
+        status: str,
+        completed_at: datetime,
+        duration_ms: int,
+        error_message: Optional[str] = None,
+    ) -> None:
+        """
+        Update an agent_activity_log row with completion details.
+
+        Args:
+            activity_id: ID returned by log_agent_activity_start
+            status: 'completed' or 'failed'
+            completed_at: When the agent finished
+            duration_ms: Wall-clock execution time in milliseconds
+            error_message: Exception message if status is 'failed'
+        """
+        if not self._pool or not activity_id:
+            return
+
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE agent_activity_log
+                    SET status = $1,
+                        completed_at = $2,
+                        duration_ms = $3,
+                        error_message = $4
+                    WHERE id = $5
+                    """,
+                    status,
+                    completed_at,
+                    duration_ms,
+                    error_message,
+                    activity_id,
+                )
+        except Exception as e:
+            logger.warning(f"Failed to log agent activity completion: {e}")
 
     async def get_agent_state(
         self,

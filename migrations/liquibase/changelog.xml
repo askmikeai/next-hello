@@ -32,4 +32,7 @@
     <!-- WhatsApp session storage for RemoteAuth -->
     <include file="changesets/009-whatsapp-sessions.xml" relativeToChangelogFile="true"/>
 
+    <!-- Add voice agent to agent_activity_log CHECK constraint -->
+    <include file="changesets/010-agent-activity-voice.xml" relativeToChangelogFile="true"/>
+
 </databaseChangeLog>
