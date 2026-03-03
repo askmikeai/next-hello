@@ -8,13 +8,18 @@
  */
 
 import pkg from 'whatsapp-web.js';
-const { Client, LocalAuth } = pkg;
+const { Client, LocalAuth, MessageMedia } = pkg;
 import qrcode from 'qrcode-terminal';
 import pino from 'pino';
 import fs from 'fs';
 import path from 'path';
 import http from 'http';
 import PostgresSessionStore from './pg-store.js';
+import puppeteer from 'puppeteer-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+
+// Apply stealth plugin to avoid detection
+puppeteer.use(StealthPlugin());
 
 const PYTHON_API_URL = process.env.PYTHON_API_URL || 'http://localhost:8001';
 const QR_OUTPUT_DIR = process.env.QR_OUTPUT_DIR || '/tmp';
@@ -68,24 +73,40 @@ async function forwardToPython(endpoint, data) {
   }
 }
 
-// Initialize WhatsApp client with Puppeteer
+// Realistic user agent (Chrome on macOS - matches WhatsApp Web expectations)
+const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
+// Check if we should run headless (default: true in Docker, false locally)
+const HEADLESS = process.env.HEADLESS !== 'false';
+
+// Build puppeteer args
+const puppeteerArgs = [
+  '--disable-blink-features=AutomationControlled',
+  '--disable-infobars',
+  '--window-size=1920,1080',
+  '--start-maximized',
+  `--user-agent=${USER_AGENT}`,
+  '--lang=en-US,en',
+];
+
+// Add Docker-specific args only when running headless (in container)
+if (HEADLESS) {
+  puppeteerArgs.push(
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+  );
+}
+
+// Initialize WhatsApp client with stealth Puppeteer
 const client = new Client({
   authStrategy: new LocalAuth({
     dataPath: './auth_state'
   }),
   puppeteer: {
-    headless: true,
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium-browser',
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-accelerated-2d-canvas',
-      '--no-first-run',
-      '--no-zygote',
-      '--disable-gpu',
-      '--single-process'
-    ]
+    headless: HEADLESS ? 'new' : false,
+    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH,
+    args: puppeteerArgs,
   }
 });
 
@@ -127,6 +148,9 @@ client.on('qr', (qr) => {
 client.on('ready', async () => {
   logger.info('Connected to WhatsApp!');
   console.log('\n✅ WhatsApp connected! Listening for messages...\n');
+
+  // Mark as online so last seen updates
+  await client.sendPresenceAvailable();
 
   // Clean up QR file after successful connection
   try {
@@ -184,6 +208,10 @@ client.on('message', async (msg) => {
   const phoneNumber = msg.from.replace('@c.us', '');
   const contact = await msg.getContact();
   const pushName = contact.pushname || contact.name || '';
+
+  // Mark chat as seen — sends read receipts and updates last seen
+  const chat = await msg.getChat();
+  await chat.sendSeen();
 
   // Determine message type
   let messageType = 'text';
@@ -268,6 +296,43 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ success: true, to: chatId }));
       } catch (error) {
         logger.error({ error: error.message }, 'Failed to send message via API');
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+      }
+    });
+  }
+  // Send voice message endpoint
+  else if (req.method === 'POST' && req.url === '/send-voice') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        const { to, audioPath, audioBase64, mimeType } = JSON.parse(body);
+        if (!to || (!audioPath && !audioBase64)) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Missing "to" or audio data' }));
+          return;
+        }
+
+        // Format phone number
+        const chatId = to.replace(/[^0-9]/g, '') + '@c.us';
+
+        // Create media from file path or base64
+        let media;
+        if (audioPath) {
+          media = MessageMedia.fromFilePath(audioPath);
+        } else {
+          media = new MessageMedia(mimeType || 'audio/ogg; codecs=opus', audioBase64);
+        }
+
+        // Send as voice note (PTT)
+        await client.sendMessage(chatId, media, { sendAudioAsVoice: true });
+        logger.info({ to: chatId }, 'Voice message sent via API');
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, to: chatId }));
+      } catch (error) {
+        logger.error({ error: error.message }, 'Failed to send voice message');
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: error.message }));
       }
