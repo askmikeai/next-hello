@@ -81,23 +81,6 @@ check_env() {
     fi
 }
 
-build_frontend() {
-    if [ ! -d "dist/src/admin" ]; then
-        print_info "Building frontend..."
-        if command -v pnpm &> /dev/null; then
-            pnpm build
-        elif command -v npm &> /dev/null; then
-            npm run build
-        else
-            print_warning "npm/pnpm not found, skipping frontend build"
-            return
-        fi
-        print_success "Frontend built"
-    else
-        print_success "Frontend already built"
-    fi
-}
-
 case "${1:-start}" in
     start)
         print_banner
@@ -105,16 +88,13 @@ case "${1:-start}" in
 
         check_docker
         check_env
-        build_frontend
-
         echo ""
         print_info "Starting services..."
-        docker compose up -d api worker whatsapp-bridge
+        docker compose up -d api worker whatsapp
 
         echo ""
         print_section "NextHello is Running"
 
-        echo -e "  ${CYAN}●${NC} Dashboard: ${CYAN}http://localhost:8001/admin/${NC}"
         echo -e "  ${CYAN}●${NC} API:       ${CYAN}http://localhost:8001/${NC}"
         echo ""
         echo -e "  ${DIM}View logs:    docker compose logs -f${NC}"
@@ -158,7 +138,6 @@ case "${1:-start}" in
         print_banner
         print_section "Building Images"
 
-        build_frontend
         docker compose build
         print_success "Build complete"
         ;;

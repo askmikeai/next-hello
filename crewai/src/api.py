@@ -8,17 +8,31 @@ Complete FastAPI application with:
 - Background job queue
 """
 
-import os
-import uuid
+import asyncio
+import json
 import logging
+import os
+import shutil
+import urllib.error
+import urllib.request
+import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Response, Query
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi import (
+    FastAPI,
+    HTTPException,
+    BackgroundTasks,
+    Request,
+    Response,
+    Query,
+    UploadFile,
+    File,
+)
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .crews import NetworkingCrew
@@ -50,6 +64,145 @@ _state_manager: Optional[RedisStateManager] = None
 _swarm_coordinator: Optional[SwarmCoordinator] = None
 _eventbus: Optional[EventBus] = None
 _blackboard: Optional[Blackboard] = None
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+GREETING_VIDEO_DIR = PROJECT_ROOT / "storage" / "greeting-video"
+GREETING_VIDEO_METADATA_PATH = GREETING_VIDEO_DIR / "metadata.json"
+WHATSAPP_CONNECTOR_URL = os.getenv("WHATSAPP_CONNECTOR_URL", "http://whatsapp:3000")
+
+
+def _fetch_connector_json(path: str) -> dict[str, Any]:
+    url = f"{WHATSAPP_CONNECTOR_URL}{path}"
+    try:
+        with urllib.request.urlopen(url, timeout=3) as response:
+            raw = response.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Connector returned HTTP {e.code} for {path}",
+        )
+    except urllib.error.URLError:
+        raise HTTPException(
+            status_code=503,
+            detail="WhatsApp connector is unavailable",
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to parse connector response: {e}",
+        )
+
+
+def _post_connector_json(path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    url = f"{WHATSAPP_CONNECTOR_URL}{path}"
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=8) as response:
+            raw = response.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as e:
+        detail = f"Connector returned HTTP {e.code} for {path}"
+        try:
+            raw = e.read().decode("utf-8")
+            if raw:
+                parsed = json.loads(raw)
+                detail = parsed.get("error") or parsed.get("message") or detail
+        except Exception:
+            pass
+        raise HTTPException(status_code=502, detail=detail)
+    except urllib.error.URLError:
+        raise HTTPException(status_code=503, detail="WhatsApp connector is unavailable")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to parse connector response: {e}")
+
+
+def _normalize_history_message_type(message_type: Optional[str]) -> str:
+    allowed = {"text", "image", "video", "audio", "document", "sticker", "location"}
+    normalized = (message_type or "text").lower()
+    return normalized if normalized in allowed else "text"
+
+
+async def _persist_message_history(
+    phone_number: str,
+    correlation_id: str,
+    direction: str,
+    message_type: str,
+    content: str,
+) -> None:
+    """Persist message to PostgreSQL message_history when available."""
+    if not _blackboard or not _blackboard._pool:
+        logger.warning(
+            "Skipping message_history persistence: PostgreSQL pool unavailable",
+            extra={
+                "phone_number": phone_number,
+                "correlation_id": correlation_id,
+                "direction": direction,
+                "message_type": message_type,
+            },
+        )
+        return
+
+    db_direction = "inbound" if direction == "incoming" else "outbound"
+    db_message_type = _normalize_history_message_type(message_type)
+
+    try:
+        logger.info(
+            "Persisting message_history row",
+            extra={
+                "phone_number": phone_number,
+                "correlation_id": correlation_id,
+                "direction": db_direction,
+                "message_type": db_message_type,
+                "content_length": len(content or ""),
+            },
+        )
+        async with _blackboard._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT id FROM networking_contacts WHERE phone_number = $1 LIMIT 1",
+                phone_number,
+            )
+            contact_id = row["id"] if row else None
+
+            await conn.execute(
+                """
+                INSERT INTO message_history (
+                    contact_id, phone_number, correlation_id,
+                    direction, channel, message_type, content
+                ) VALUES ($1, $2, $3, $4, 'whatsapp', $5, $6)
+                """,
+                contact_id,
+                phone_number,
+                correlation_id,
+                db_direction,
+                db_message_type,
+                content,
+            )
+        logger.info(
+            "Persisted message_history row",
+            extra={
+                "phone_number": phone_number,
+                "correlation_id": correlation_id,
+                "direction": db_direction,
+            },
+        )
+    except Exception as e:
+        logger.exception(
+            "Failed to persist message_history row",
+            extra={
+                "phone_number": phone_number,
+                "correlation_id": correlation_id,
+                "direction": db_direction,
+                "message_type": db_message_type,
+            },
+        )
 
 
 @asynccontextmanager
@@ -120,6 +273,250 @@ def get_crew() -> NetworkingCrew:
             event_name=os.getenv("EVENT_NAME", "the event"),
         )
     return _crew
+
+
+def _contact_response_from_blackboard(state) -> dict[str, Any]:
+    return {
+        "id": state.phone_number,
+        "phone_number": state.phone_number,
+        "first_name": state.first_name,
+        "last_name": state.last_name,
+        "email": state.email,
+        "company_name": state.company_name,
+        "job_title": state.job_title,
+        "status": "active" if state.conversation_turns > 0 else "new",
+        "qualification_tier": state.qualification_tier,
+        "created_at": state.created_at or "",
+        "updated_at": state.updated_at,
+    }
+
+
+def _contact_response_from_redis(state: ConversationState) -> dict[str, Any]:
+    qual_data = state.qualification_data or {}
+    return {
+        "id": state.phone_number,
+        "phone_number": state.phone_number,
+        "first_name": state.first_name,
+        "last_name": state.last_name,
+        "email": state.email,
+        "company_name": state.company_name,
+        "job_title": state.job_title,
+        "status": "active" if state.conversation_turns > 0 else "new",
+        "qualification_tier": qual_data.get("tier"),
+        "created_at": state.created_at or "",
+        "updated_at": state.updated_at,
+    }
+
+
+async def _get_db_contact_row(contact_id: str):
+    if not _blackboard or not _blackboard._pool:
+        return None
+
+    async with _blackboard._pool.acquire() as conn:
+        return await conn.fetchrow(
+            """
+            SELECT *
+            FROM networking_contacts
+            WHERE phone_number = $1 OR id::text = $1
+            LIMIT 1
+            """,
+            contact_id,
+        )
+
+
+async def _get_contact_payload(contact_id: str) -> Optional[dict[str, Any]]:
+    if _blackboard:
+        blackboard_state = await _blackboard.get_contact(contact_id)
+        if blackboard_state:
+            return _contact_response_from_blackboard(blackboard_state)
+
+    if _state_manager:
+        redis_state = await _state_manager.get_state(contact_id)
+        if redis_state:
+            return _contact_response_from_redis(redis_state)
+
+    row = await _get_db_contact_row(contact_id)
+    if row and _blackboard:
+        return _contact_response_from_blackboard(_blackboard._row_to_state(dict(row)))
+
+    return None
+
+
+async def _list_contacts_payload(limit: int) -> list[dict[str, Any]]:
+    if _blackboard:
+        contacts = await _blackboard.list_contacts(limit=limit)
+        if contacts:
+            return [_contact_response_from_blackboard(contact) for contact in contacts]
+
+    if not _state_manager:
+        return []
+
+    phone_numbers = await _state_manager.list_active_conversations(limit)
+    contacts = []
+    for phone in phone_numbers:
+        state = await _state_manager.get_state(phone)
+        if state:
+            contacts.append(_contact_response_from_redis(state))
+    return contacts
+
+
+async def _list_swarm_states_payload(limit: int = 50) -> list[dict[str, Any]]:
+    states = []
+
+    if _blackboard:
+        contacts = await _blackboard.list_contacts(limit=limit)
+        if contacts:
+            for contact in contacts:
+                states.append(
+                    {
+                        "correlationId": contact.phone_number,
+                        "phoneNumber": contact.phone_number,
+                        "currentAgent": None,
+                        "conversationTurns": contact.conversation_turns,
+                        "lastActivityAt": contact.last_message_at
+                        or contact.updated_at
+                        or contact.created_at
+                        or "",
+                        "taskQueueLength": len(contact.pending_actions or {}),
+                        "channel": "whatsapp",
+                    }
+                )
+            return states
+
+    if not _state_manager:
+        return []
+
+    phone_numbers = await _state_manager.list_active_conversations(limit)
+    for phone in phone_numbers:
+        state = await _state_manager.get_state(phone)
+        if state:
+            states.append(
+                {
+                    "correlationId": phone,
+                    "phoneNumber": phone,
+                    "currentAgent": None,
+                    "conversationTurns": state.conversation_turns,
+                    "lastActivityAt": state.last_message_at
+                    or state.updated_at
+                    or state.created_at
+                    or "",
+                    "taskQueueLength": 0,
+                    "channel": "whatsapp",
+                }
+            )
+
+    return states
+
+
+async def _query_agent_activities(
+    limit: int = 20,
+    agent_type: Optional[str] = None,
+    contact_id: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    if not _blackboard or not _blackboard._pool:
+        return []
+
+    params: list[Any] = []
+    conditions: list[str] = []
+
+    if agent_type:
+        params.append(agent_type)
+        conditions.append(f"agent_type = ${len(params)}")
+
+    if contact_id:
+        params.append(contact_id)
+        conditions.append(
+            f"(correlation_id = ${len(params)} OR contact_id = (SELECT id FROM networking_contacts WHERE phone_number = ${len(params)} OR id::text = ${len(params)} LIMIT 1))"
+        )
+
+    where_clause = ""
+    if conditions:
+        where_clause = "WHERE " + " AND ".join(conditions)
+
+    params.append(limit)
+
+    async with _blackboard._pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            SELECT id, correlation_id, agent_type, action, status, started_at,
+                   completed_at, duration_ms, input_tokens, output_tokens, error_message
+            FROM agent_activity_log
+            {where_clause}
+            ORDER BY started_at DESC
+            LIMIT ${len(params)}
+            """,
+            *params,
+        )
+
+    return [
+        {
+            "id": str(row["id"]),
+            "correlationId": row["correlation_id"],
+            "agentType": row["agent_type"],
+            "action": row["action"],
+            "status": row["status"] or "started",
+            "startedAt": str(row["started_at"]),
+            "completedAt": str(row["completed_at"]) if row["completed_at"] else None,
+            "durationMs": row["duration_ms"],
+            "inputTokens": row["input_tokens"],
+            "outputTokens": row["output_tokens"],
+            "metadata": {"errorMessage": row["error_message"]} if row["error_message"] else None,
+        }
+        for row in rows
+    ]
+
+
+def _load_greeting_video_metadata() -> Optional[dict[str, Any]]:
+    if not GREETING_VIDEO_METADATA_PATH.exists():
+        return None
+
+    try:
+        return json.loads(GREETING_VIDEO_METADATA_PATH.read_text())
+    except json.JSONDecodeError:
+        return None
+
+
+def _get_greeting_video_file_path(metadata: Optional[dict[str, Any]]) -> Optional[Path]:
+    if not metadata:
+        return None
+
+    filename = metadata.get("filename")
+    if not filename:
+        return None
+
+    file_path = GREETING_VIDEO_DIR / filename
+    if not file_path.exists() or not file_path.is_file():
+        return None
+
+    return file_path
+
+
+def _get_greeting_video_info() -> dict[str, Any]:
+    metadata = _load_greeting_video_metadata()
+    file_path = _get_greeting_video_file_path(metadata)
+
+    if not metadata or not file_path:
+        return {"exists": False}
+
+    return {
+        "exists": True,
+        "storageKey": str(file_path.relative_to(PROJECT_ROOT)),
+        "filename": metadata.get("filename"),
+        "sizeBytes": metadata.get("sizeBytes", file_path.stat().st_size),
+        "uploadedAt": metadata.get("uploadedAt"),
+        "url": "/admin/api/settings/greeting-video/file",
+    }
+
+
+async def _build_swarm_snapshot() -> dict[str, Any]:
+    return {
+        "type": "state:sync",
+        "timestamp": datetime.utcnow().isoformat(),
+        "data": {
+            "activities": await _query_agent_activities(limit=20),
+            "states": await _list_swarm_states_payload(limit=50),
+        },
+    }
 
 
 # ============================================================================
@@ -436,7 +833,9 @@ async def send_message_immediate(request: SendMessageRequest):
                 request.phone_number, image_url=request.media_url, caption=request.content
             )
         elif request.message_type == "audio":
-            result = await _whatsapp_client.send_audio(request.phone_number, audio_url=request.media_url)
+            result = await _whatsapp_client.send_audio(
+                request.phone_number, audio_url=request.media_url
+            )
         elif request.message_type == "video":
             result = await _whatsapp_client.send_video(
                 request.phone_number, video_url=request.media_url, caption=request.content
@@ -718,29 +1117,22 @@ async def set_llm_provider(provider: str):
 @app.get("/admin/api/stats")
 async def admin_get_stats():
     """Get contact statistics for dashboard"""
-    if not _state_manager:
-        return {"total": 0, "byStatus": {}, "byQualification": {}}
-
     try:
-        phone_numbers = await _state_manager.list_active_conversations(1000)
-        total = len(phone_numbers)
+        contacts = await _list_contacts_payload(1000)
+        total = len(contacts)
 
-        by_status: dict[str, int] = {"active": 0, "inactive": 0}
+        by_status: dict[str, int] = {"active": 0, "inactive": 0, "new": 0}
         by_qualification: dict[str, int] = {"hot": 0, "warm": 0, "cold": 0, "unqualified": 0}
 
-        for phone in phone_numbers[:100]:  # Sample first 100 for stats
-            state = await _state_manager.get_state(phone)
-            if state:
-                # Determine status based on recent activity
-                by_status["active"] += 1
+        for contact in contacts:
+            status = contact.get("status") or "inactive"
+            by_status[status] = by_status.get(status, 0) + 1
 
-                # Get qualification from state
-                qual_data = state.qualification_data or {}
-                tier = qual_data.get("tier", "unqualified")
-                if tier in by_qualification:
-                    by_qualification[tier] += 1
-                else:
-                    by_qualification["unqualified"] += 1
+            tier = contact.get("qualification_tier") or "unqualified"
+            if tier in by_qualification:
+                by_qualification[tier] += 1
+            else:
+                by_qualification["unqualified"] += 1
 
         return {
             "total": total,
@@ -755,32 +1147,8 @@ async def admin_get_stats():
 @app.get("/admin/api/contacts")
 async def admin_get_contacts(limit: int = Query(15, ge=1, le=100)):
     """Get recent contacts for dashboard"""
-    if not _state_manager:
-        return []
-
     try:
-        phone_numbers = await _state_manager.list_active_conversations(limit)
-        contacts = []
-
-        for phone in phone_numbers:
-            state = await _state_manager.get_state(phone)
-            if state:
-                qual_data = state.qualification_data or {}
-                contacts.append({
-                    "id": phone,
-                    "phone_number": phone,
-                    "first_name": state.first_name,
-                    "last_name": state.last_name,
-                    "email": state.email,
-                    "company_name": state.company_name,
-                    "job_title": state.job_title,
-                    "status": "active" if state.conversation_turns > 0 else "new",
-                    "qualification_tier": qual_data.get("tier"),
-                    "created_at": state.created_at or "",
-                    "updated_at": state.updated_at,
-                })
-
-        return contacts
+        return await _list_contacts_payload(limit)
     except Exception as e:
         logger.error(f"Error getting contacts: {e}")
         return []
@@ -825,6 +1193,143 @@ async def admin_get_health():
     }
 
 
+@app.get("/admin/api/whatsapp/connector")
+async def admin_get_whatsapp_connector():
+    """Get WhatsApp connector status and current QR payload."""
+    health = _fetch_connector_json("/health")
+    session = _fetch_connector_json("/session/status")
+    qr = _fetch_connector_json("/qr")
+
+    return {
+        "available": True,
+        "connected": bool(health.get("connected")),
+        "sessionId": health.get("sessionId") or session.get("sessionId"),
+        "postgresConfigured": bool(session.get("postgresConfigured")),
+        "hasRemoteSession": bool(session.get("hasRemote")),
+        "remoteFormat": session.get("remoteFormat"),
+        "hasLocalSession": bool(session.get("hasLocal")),
+        "qrAvailable": bool(qr.get("available")),
+        "qrText": qr.get("qrText"),
+    }
+
+
+class AdminWhatsAppSendRequest(BaseModel):
+    phone_number: str
+    content: str
+
+
+@app.post("/admin/api/whatsapp/send")
+async def admin_send_whatsapp_message(request: AdminWhatsAppSendRequest):
+    """Send a WhatsApp message through connector and persist an outbound row."""
+    phone_number = "".join(ch for ch in (request.phone_number or "") if ch.isdigit())
+    content = (request.content or "").strip()
+
+    if not phone_number:
+        raise HTTPException(status_code=400, detail="phone_number is required")
+    if not content:
+        raise HTTPException(status_code=400, detail="content is required")
+
+    connector_result = _post_connector_json(
+        "/send",
+        {
+            "to": phone_number,
+            "message": content,
+        },
+    )
+    if not connector_result.get("success"):
+        raise HTTPException(status_code=502, detail="Connector failed to send message")
+
+    connector_via = connector_result.get("via") or "unknown"
+    connector_to = connector_result.get("to")
+    connector_message_id = connector_result.get("messageId")
+
+    correlation_id = f"manual-outbound-{uuid.uuid4()}"
+    await _persist_message_history(
+        phone_number=phone_number,
+        correlation_id=correlation_id,
+        direction="outgoing",
+        message_type="text",
+        content=content,
+    )
+
+    if _state_manager:
+        await _state_manager.add_message(
+            phone_number=phone_number,
+            message_id=correlation_id,
+            direction="outgoing",
+            message_type="text",
+            content=content,
+        )
+
+    return {
+        "success": True,
+        "phoneNumber": phone_number,
+        "correlationId": correlation_id,
+        "via": connector_via,
+        "to": connector_to,
+        "messageId": connector_message_id,
+    }
+
+
+@app.get("/admin/api/whatsapp/messages/persisted")
+async def admin_get_persisted_whatsapp_messages(
+    phone: Optional[str] = None,
+    direction: Optional[str] = Query(None, pattern="^(inbound|outbound)$"),
+    since: Optional[str] = None,
+    limit: int = Query(20, ge=1, le=200),
+):
+    """Query persisted WhatsApp messages directly from PostgreSQL."""
+    if not _blackboard or not _blackboard._pool:
+        raise HTTPException(status_code=503, detail="PostgreSQL persistence is unavailable")
+
+    clauses: list[str] = ["channel = 'whatsapp'"]
+    params: list[Any] = []
+
+    if phone:
+        clauses.append(f"phone_number = ${len(params) + 1}")
+        params.append(phone)
+
+    if direction:
+        clauses.append(f"direction = ${len(params) + 1}")
+        params.append(direction)
+
+    if since:
+        try:
+            since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid 'since' timestamp format")
+        clauses.append(f"created_at >= ${len(params) + 1}")
+        params.append(since_dt)
+
+    where_sql = " AND ".join(clauses)
+    query = f"""
+        SELECT id, phone_number, correlation_id, direction, message_type, content, created_at
+        FROM message_history
+        WHERE {where_sql}
+        ORDER BY created_at DESC
+        LIMIT ${len(params) + 1}
+    """
+    params.append(limit)
+
+    async with _blackboard._pool.acquire() as conn:
+        rows = await conn.fetch(query, *params)
+
+    items = [
+        {
+            "id": str(row["id"]),
+            "phoneNumber": row["phone_number"],
+            "correlationId": row["correlation_id"],
+            "direction": row["direction"],
+            "messageType": row["message_type"],
+            "content": row["content"] or "",
+            "createdAt": row["created_at"].isoformat() if row["created_at"] else None,
+        }
+        for row in rows
+    ]
+
+    return {"count": len(items), "items": items}
+
+
 @app.get("/admin/api/messages")
 async def admin_get_messages(
     limit: int = Query(50, ge=1, le=500),
@@ -844,18 +1349,22 @@ async def admin_get_messages(
             contact_name = state.first_name if state else None
 
             for msg in history:
-                messages.append({
-                    "id": msg.get("id", ""),
-                    "contactId": phone,
-                    "phoneNumber": phone,
-                    "correlationId": phone,
-                    "direction": "inbound" if msg.get("direction") == "incoming" else "outbound",
-                    "channel": "whatsapp",
-                    "messageType": msg.get("type", "text"),
-                    "content": msg.get("content"),
-                    "createdAt": msg.get("timestamp", ""),
-                    "contactName": contact_name,
-                })
+                messages.append(
+                    {
+                        "id": msg.get("id", ""),
+                        "contactId": phone,
+                        "phoneNumber": phone,
+                        "correlationId": phone,
+                        "direction": "inbound"
+                        if msg.get("direction") == "incoming"
+                        else "outbound",
+                        "channel": "whatsapp",
+                        "messageType": msg.get("type", "text"),
+                        "content": msg.get("content"),
+                        "createdAt": msg.get("timestamp", ""),
+                        "contactName": contact_name,
+                    }
+                )
         else:
             # Get messages across all contacts
             phone_numbers = await _state_manager.list_active_conversations(20)
@@ -865,18 +1374,22 @@ async def admin_get_messages(
                 contact_name = state.first_name if state else None
 
                 for msg in history:
-                    messages.append({
-                        "id": msg.get("id", ""),
-                        "contactId": p,
-                        "phoneNumber": p,
-                        "correlationId": p,
-                        "direction": "inbound" if msg.get("direction") == "incoming" else "outbound",
-                        "channel": "whatsapp",
-                        "messageType": msg.get("type", "text"),
-                        "content": msg.get("content"),
-                        "createdAt": msg.get("timestamp", ""),
-                        "contactName": contact_name,
-                    })
+                    messages.append(
+                        {
+                            "id": msg.get("id", ""),
+                            "contactId": p,
+                            "phoneNumber": p,
+                            "correlationId": p,
+                            "direction": "inbound"
+                            if msg.get("direction") == "incoming"
+                            else "outbound",
+                            "channel": "whatsapp",
+                            "messageType": msg.get("type", "text"),
+                            "content": msg.get("content"),
+                            "createdAt": msg.get("timestamp", ""),
+                            "contactName": contact_name,
+                        }
+                    )
 
             # Sort by timestamp and limit
             messages.sort(key=lambda x: x["createdAt"], reverse=True)
@@ -894,34 +1407,18 @@ async def admin_get_activities(
     agentType: Optional[str] = None,
 ):
     """Get recent agent activities"""
-    # This would track agent executions - placeholder for now
-    return []
+    try:
+        return await _query_agent_activities(limit=limit, agent_type=agentType)
+    except Exception as e:
+        logger.error(f"Error getting activities: {e}")
+        return []
 
 
 @app.get("/admin/api/swarm/states")
 async def admin_get_swarm_states():
     """Get active swarm/conversation states"""
-    if not _state_manager:
-        return []
-
     try:
-        phone_numbers = await _state_manager.list_active_conversations(50)
-        states = []
-
-        for phone in phone_numbers:
-            state = await _state_manager.get_state(phone)
-            if state:
-                states.append({
-                    "correlationId": phone,
-                    "phoneNumber": phone,
-                    "currentAgent": None,
-                    "conversationTurns": state.conversation_turns,
-                    "lastActivityAt": state.last_message_at or state.updated_at or "",
-                    "taskQueueLength": 0,
-                    "channel": "whatsapp",
-                })
-
-        return states
+        return await _list_swarm_states_payload(limit=50)
     except Exception as e:
         logger.error(f"Error getting swarm states: {e}")
         return []
@@ -934,7 +1431,12 @@ async def admin_get_agent_stats():
         return [
             {"agentType": "research", "executions": 0, "avgDurationMs": 0, "successRate": 1.0},
             {"agentType": "qualification", "executions": 0, "avgDurationMs": 0, "successRate": 1.0},
-            {"agentType": "personalization", "executions": 0, "avgDurationMs": 0, "successRate": 1.0},
+            {
+                "agentType": "personalization",
+                "executions": 0,
+                "avgDurationMs": 0,
+                "successRate": 1.0,
+            },
             {"agentType": "video", "executions": 0, "avgDurationMs": 0, "successRate": 1.0},
             {"agentType": "voice", "executions": 0, "avgDurationMs": 0, "successRate": 1.0},
             {"agentType": "crm", "executions": 0, "avgDurationMs": 0, "successRate": 1.0},
@@ -953,7 +1455,12 @@ async def admin_get_agent_stats():
             stats = {row["source_agent"]: row["count"] for row in rows}
 
         return [
-            {"agentType": agent, "executions": stats.get(agent, 0), "avgDurationMs": 0, "successRate": 1.0}
+            {
+                "agentType": agent,
+                "executions": stats.get(agent, 0),
+                "avgDurationMs": 0,
+                "successRate": 1.0,
+            }
             for agent in ["research", "qualification", "personalization", "video", "voice", "crm"]
         ]
     except Exception as e:
@@ -962,35 +1469,21 @@ async def admin_get_agent_stats():
 
 
 @app.get("/admin/api/swarm/events")
-async def admin_get_recent_events(limit: int = Query(50, ge=1, le=200)):
-    """Get recent swarm events"""
-    if not _blackboard or not _blackboard._pool:
-        return []
+async def admin_get_recent_events(request: Request):
+    """Stream swarm state to the admin dashboard via SSE."""
 
-    try:
-        async with _blackboard._pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT event_id, event_type, source_agent, contact_id, created_at
-                FROM swarm_event_log
-                ORDER BY created_at DESC
-                LIMIT $1
-                """,
-                limit,
-            )
-            return [
-                {
-                    "eventId": row["event_id"],
-                    "eventType": row["event_type"],
-                    "sourceAgent": row["source_agent"],
-                    "contactId": row["contact_id"],
-                    "createdAt": str(row["created_at"]),
-                }
-                for row in rows
-            ]
-    except Exception as e:
-        logger.error(f"Error getting events: {e}")
-        return []
+    async def event_stream():
+        yield "event: connected\ndata: {}\n\n"
+
+        while True:
+            if await request.is_disconnected():
+                break
+
+            payload = await _build_swarm_snapshot()
+            yield f"event: state:sync\ndata: {json.dumps(payload)}\n\n"
+            await asyncio.sleep(5)
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @app.post("/admin/api/swarm/trigger/{event_type}/{contact_id}")
@@ -1023,16 +1516,16 @@ async def admin_trigger_event(event_type: str, contact_id: str):
 async def admin_send_voice(contact_id: str):
     """Trigger voice message generation for a contact"""
     try:
-        state = await _state_manager.get_state(contact_id) if _state_manager else None
-        if not state:
+        contact = await _get_contact_payload(contact_id)
+        if not contact:
             return {"success": False, "error": "Contact not found"}
 
         # Generate a script and enqueue voice generation
         crew = get_crew()
         script = crew.generate_welcome_message(
-            first_name=state.first_name or "there",
-            company_name=state.company_name,
-            job_title=state.job_title,
+            first_name=contact.get("first_name") or "there",
+            company_name=contact.get("company_name"),
+            job_title=contact.get("job_title"),
         )
 
         job_id = await enqueue_voice(contact_id, str(script))
@@ -1046,16 +1539,16 @@ async def admin_send_voice(contact_id: str):
 async def admin_send_video(contact_id: str):
     """Trigger video generation for a contact"""
     try:
-        state = await _state_manager.get_state(contact_id) if _state_manager else None
-        if not state:
+        contact = await _get_contact_payload(contact_id)
+        if not contact:
             return {"success": False, "error": "Contact not found"}
 
         # Generate a script and enqueue video generation
         crew = get_crew()
         script = crew.generate_video_script(
-            first_name=state.first_name or "there",
-            company_name=state.company_name,
-            job_title=state.job_title,
+            first_name=contact.get("first_name") or "there",
+            company_name=contact.get("company_name"),
+            job_title=contact.get("job_title"),
         )
 
         job_id = await enqueue_video(contact_id, str(script))
@@ -1065,13 +1558,306 @@ async def admin_send_video(contact_id: str):
         return {"success": False, "error": str(e)}
 
 
+@app.get("/admin/api/contacts/{contact_id}")
+async def admin_get_contact(contact_id: str):
+    """Get a single contact for the admin detail view."""
+    try:
+        return await _get_contact_payload(contact_id)
+    except Exception as e:
+        logger.error(f"Error getting contact {contact_id}: {e}")
+        return None
+
+
+@app.get("/admin/api/contacts/{contact_id}/messages")
+async def admin_get_contact_messages(contact_id: str, limit: int = Query(50, ge=1, le=500)):
+    """Get messages for a single contact."""
+    return await admin_get_messages(limit=limit, phone=contact_id)
+
+
+@app.get("/admin/api/contacts/{contact_id}/activities")
+async def admin_get_contact_activities(contact_id: str, limit: int = Query(50, ge=1, le=200)):
+    """Get agent activity for a single contact."""
+    try:
+        return await _query_agent_activities(limit=limit, contact_id=contact_id)
+    except Exception as e:
+        logger.error(f"Error getting activities for {contact_id}: {e}")
+        return []
+
+
+@app.get("/admin/api/contacts/{contact_id}/enrichment")
+async def admin_get_contact_enrichment(contact_id: str):
+    """Get latest PDL enrichment for a contact."""
+    row = await _get_db_contact_row(contact_id)
+    if not row or not _blackboard or not _blackboard._pool:
+        return None
+
+    async with _blackboard._pool.acquire() as conn:
+        enrichment = await conn.fetchrow(
+            """
+            SELECT *
+            FROM pdl_person_enrichment
+            WHERE contact_id = $1
+            ORDER BY enriched_at DESC NULLS LAST, created_at DESC
+            LIMIT 1
+            """,
+            row["id"],
+        )
+
+    if not enrichment:
+        return None
+
+    data = dict(enrichment)
+    return {
+        "id": str(data.get("id")),
+        "contactId": str(data.get("contact_id")),
+        "pdlId": data.get("pdl_id"),
+        "likelihood": data.get("likelihood"),
+        "matchedOn": data.get("matched_on"),
+        "fullName": data.get("full_name"),
+        "firstName": data.get("first_name"),
+        "lastName": data.get("last_name"),
+        "workEmail": data.get("work_email"),
+        "personalEmails": data.get("personal_emails"),
+        "mobilePhone": data.get("mobile_phone"),
+        "jobTitle": data.get("job_title"),
+        "jobTitleRole": data.get("job_title_role"),
+        "jobTitleLevels": data.get("job_title_levels"),
+        "jobStartDate": str(data.get("job_start_date")) if data.get("job_start_date") else None,
+        "inferredSalary": data.get("inferred_salary"),
+        "inferredYearsExperience": data.get("inferred_years_experience"),
+        "jobCompanyName": data.get("job_company_name"),
+        "jobCompanyWebsite": data.get("job_company_website"),
+        "jobCompanyLinkedinUrl": data.get("job_company_linkedin_url"),
+        "jobCompanySize": data.get("job_company_size"),
+        "jobCompanyIndustry": data.get("job_company_industry"),
+        "jobCompanyType": data.get("job_company_type"),
+        "jobCompanyEmployeeCount": data.get("job_company_employee_count"),
+        "jobCompanyInferredRevenue": data.get("job_company_inferred_revenue"),
+        "locationName": data.get("location_name"),
+        "locationLocality": data.get("location_locality"),
+        "locationRegion": data.get("location_region"),
+        "locationCountry": data.get("location_country"),
+        "linkedinUrl": data.get("linkedin_url"),
+        "linkedinId": data.get("linkedin_id"),
+        "linkedinUsername": data.get("linkedin_username"),
+        "linkedinConnections": data.get("linkedin_connections"),
+        "twitterUrl": data.get("twitter_url"),
+        "twitterUsername": data.get("twitter_username"),
+        "githubUrl": data.get("github_url"),
+        "githubUsername": data.get("github_username"),
+        "facebookUrl": data.get("facebook_url"),
+        "experience": data.get("experience"),
+        "education": data.get("education"),
+        "skills": data.get("skills"),
+        "interests": data.get("interests"),
+        "enrichedAt": str(data.get("enriched_at")) if data.get("enriched_at") else None,
+    }
+
+
+@app.get("/admin/api/contacts/{contact_id}/luma")
+async def admin_get_contact_luma(contact_id: str):
+    """Get Luma guest and event associations for a contact."""
+    row = await _get_db_contact_row(contact_id)
+    if not row or not _blackboard or not _blackboard._pool:
+        return {"guest": None, "events": []}
+
+    async with _blackboard._pool.acquire() as conn:
+        guest = await conn.fetchrow(
+            """
+            SELECT g.*
+            FROM contact_luma_associations cla
+            JOIN luma_guests g ON g.id = cla.guest_id
+            WHERE cla.contact_id = $1
+            ORDER BY cla.created_at DESC
+            LIMIT 1
+            """,
+            row["id"],
+        )
+
+        events = await conn.fetch(
+            """
+            SELECT e.*, leg.is_featured, leg.is_host
+            FROM contact_luma_associations cla
+            JOIN luma_event_guests leg ON leg.guest_id = cla.guest_id
+            JOIN luma_events e ON e.id = leg.event_id
+            WHERE cla.contact_id = $1
+            ORDER BY e.event_date DESC NULLS LAST, e.created_at DESC
+            """,
+            row["id"],
+        )
+
+    guest_payload = None
+    if guest:
+        guest_payload = {
+            "id": str(guest["id"]),
+            "lumaUserId": guest["luma_user_id"],
+            "lumaProfileUrl": guest["luma_profile_url"],
+            "name": guest["name"],
+            "bio": guest["bio"],
+            "instagramUrl": guest["instagram_url"],
+            "twitterUrl": guest["twitter_url"],
+            "linkedinUrl": guest["linkedin_url"],
+            "websiteUrl": guest["website_url"],
+            "instagramHandle": guest["instagram_handle"],
+            "twitterHandle": guest["twitter_handle"],
+        }
+
+    return {
+        "guest": guest_payload,
+        "events": [
+            {
+                "id": str(event["id"]),
+                "slug": event["slug"],
+                "name": event["name"],
+                "url": event["url"],
+                "eventDate": str(event["event_date"]) if event["event_date"] else None,
+                "location": event["location"],
+                "isOnline": event["is_online"],
+                "hostName": event["host_name"],
+                "guestCount": event["guest_count"] or 0,
+                "isFeatured": event["is_featured"],
+                "isHost": event["is_host"],
+            }
+            for event in events
+        ],
+    }
+
+
+@app.get("/admin/api/contacts/{contact_id}/media")
+async def admin_get_contact_media(contact_id: str):
+    """Get tracked media files for a contact."""
+    row = await _get_db_contact_row(contact_id)
+    if not row or not _blackboard or not _blackboard._pool:
+        return []
+
+    async with _blackboard._pool.acquire() as conn:
+        files = await conn.fetch(
+            """
+            SELECT id, storage_key, media_type, mime_type, size_bytes, source, source_url, created_at
+            FROM media_files
+            WHERE (contact_id = $1 OR phone_number = $2)
+              AND deleted_at IS NULL
+            ORDER BY created_at DESC
+            """,
+            row["id"],
+            row["phone_number"],
+        )
+
+    payload = []
+    for media in files:
+        url = media["source_url"] or f"/admin/api/media/{media['id']}"
+        payload.append(
+            {
+                "id": str(media["id"]),
+                "storageKey": media["storage_key"],
+                "mediaType": media["media_type"],
+                "mimeType": media["mime_type"],
+                "sizeBytes": media["size_bytes"],
+                "source": media["source"],
+                "createdAt": str(media["created_at"]),
+                "url": url,
+            }
+        )
+
+    return payload
+
+
+@app.get("/admin/api/media/{media_id}")
+async def admin_get_media_file(media_id: str):
+    """Serve a tracked local media file if present on disk."""
+    if not _blackboard or not _blackboard._pool:
+        raise HTTPException(status_code=404, detail="Media not found")
+
+    async with _blackboard._pool.acquire() as conn:
+        media = await conn.fetchrow(
+            """
+            SELECT storage_key, mime_type
+            FROM media_files
+            WHERE id::text = $1 AND deleted_at IS NULL
+            LIMIT 1
+            """,
+            media_id,
+        )
+
+    if not media:
+        raise HTTPException(status_code=404, detail="Media not found")
+
+    file_path = PROJECT_ROOT / media["storage_key"]
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Media file missing on disk")
+
+    return FileResponse(file_path, media_type=media["mime_type"])
+
+
+@app.get("/admin/api/settings/greeting-video")
+async def admin_get_greeting_video():
+    """Return greeting video metadata for the settings page."""
+    return _get_greeting_video_info()
+
+
+@app.get("/admin/api/settings/greeting-video/file")
+async def admin_get_greeting_video_file():
+    """Serve the current greeting video."""
+    metadata = _load_greeting_video_metadata()
+    file_path = _get_greeting_video_file_path(metadata)
+    if not file_path:
+        raise HTTPException(status_code=404, detail="Greeting video not found")
+
+    return FileResponse(file_path)
+
+
+@app.post("/admin/api/settings/greeting-video")
+async def admin_upload_greeting_video(video: UploadFile = File(...)):
+    """Upload or replace the greeting video."""
+    if not video.content_type or not video.content_type.startswith("video/"):
+        raise HTTPException(status_code=400, detail="Please upload a valid video file")
+
+    filename = video.filename or "greeting-video.mp4"
+
+    GREETING_VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+
+    for existing in GREETING_VIDEO_DIR.iterdir():
+        if existing.is_file():
+            existing.unlink()
+
+    target_path = GREETING_VIDEO_DIR / filename
+    with target_path.open("wb") as buffer:
+        shutil.copyfileobj(video.file, buffer)
+
+    metadata = {
+        "filename": filename,
+        "sizeBytes": target_path.stat().st_size,
+        "uploadedAt": datetime.utcnow().isoformat(),
+    }
+    GREETING_VIDEO_METADATA_PATH.write_text(json.dumps(metadata))
+
+    return {"success": True}
+
+
+@app.delete("/admin/api/settings/greeting-video")
+async def admin_delete_greeting_video():
+    """Delete the current greeting video and metadata."""
+    info = _get_greeting_video_info()
+    if not info.get("exists"):
+        return {"success": True}
+
+    metadata = _load_greeting_video_metadata()
+    file_path = _get_greeting_video_file_path(metadata)
+    if file_path and file_path.exists():
+        file_path.unlink()
+    if GREETING_VIDEO_METADATA_PATH.exists():
+        GREETING_VIDEO_METADATA_PATH.unlink()
+
+    return {"success": True}
+
+
 # ============================================================================
-# WhatsApp Bridge Endpoint (for Baileys/QR code connection)
+# WhatsApp Connector Endpoint (for Baileys/QR code connection)
 # ============================================================================
 
 
-class BridgeMessageRequest(BaseModel):
-    """Incoming message from WhatsApp bridge"""
+class WhatsAppConnectorMessageRequest(BaseModel):
+    """Incoming message from WhatsApp connector"""
 
     phone_number: str
     message_id: str
@@ -1081,15 +1867,26 @@ class BridgeMessageRequest(BaseModel):
     media_id: Optional[str] = None
 
 
-@app.post("/bridge/message")
-async def bridge_receive_message(request: BridgeMessageRequest):
+@app.post("/whatsapp/message")
+async def whatsapp_receive_message(request: WhatsAppConnectorMessageRequest):
     """
-    Receive a message from the WhatsApp bridge and return a response.
+    Receive a message from the WhatsApp connector and return a response.
 
     Uses the swarm coordinator to publish events and generate immediate responses.
     Agents process events asynchronously via Redis Streams.
     """
-    logger.info(f"Bridge received message from {request.phone_number}: {request.content[:50]}...")
+    logger.info(
+        f"WhatsApp connector received message from {request.phone_number}: {request.content[:50]}..."
+    )
+    logger.info(
+        "Inbound connector payload accepted",
+        extra={
+            "phone_number": request.phone_number,
+            "message_id": request.message_id,
+            "message_type": request.message_type,
+            "content_length": len(request.content or ""),
+        },
+    )
 
     try:
         if not _swarm_coordinator:
@@ -1105,6 +1902,23 @@ async def bridge_receive_message(request: BridgeMessageRequest):
             message_id=request.message_id,
         )
 
+        await _persist_message_history(
+            phone_number=request.phone_number,
+            correlation_id=request.message_id,
+            direction="incoming",
+            message_type=request.message_type,
+            content=request.content,
+        )
+        logger.info(
+            "Inbound message persistence call completed",
+            extra={
+                "phone_number": request.phone_number,
+                "message_id": request.message_id,
+            },
+        )
+
+        auto_reply_id: Optional[str] = None
+
         # Record inbound message
         if _state_manager:
             await _state_manager.add_message(
@@ -1114,55 +1928,41 @@ async def bridge_receive_message(request: BridgeMessageRequest):
                 message_type=request.message_type,
                 content=request.content,
             )
+        else:
+            logger.warning(
+                "State manager unavailable while recording inbound message",
+                extra={
+                    "phone_number": request.phone_number,
+                    "message_id": request.message_id,
+                },
+            )
 
             # Record outbound auto-reply if one was generated
             if response:
+                auto_reply_id = f"auto-reply-{request.message_id}"
                 await _state_manager.add_message(
                     phone_number=request.phone_number,
-                    message_id=f"auto-reply-{request.message_id}",
+                    message_id=auto_reply_id,
                     direction="outgoing",
                     message_type="text",
                     content=response,
                 )
 
-        logger.info(f"Bridge response for {request.phone_number}: {response[:50] if response else 'None'}...")
+        if response:
+            await _persist_message_history(
+                phone_number=request.phone_number,
+                correlation_id=auto_reply_id or f"auto-reply-{request.message_id}",
+                direction="outgoing",
+                message_type="text",
+                content=response,
+            )
+
+        logger.info(
+            f"WhatsApp connector response for {request.phone_number}: {response[:50] if response else 'None'}..."
+        )
 
         return {"success": True, "response": response}
 
     except Exception as e:
-        logger.error(f"Bridge message processing failed: {e}")
+        logger.error(f"WhatsApp connector message processing failed: {e}")
         return {"success": False, "error": str(e), "response": None}
-
-
-# ============================================================================
-# Static File Serving for Frontend
-# ============================================================================
-
-# Path to the frontend build directory
-FRONTEND_DIR = Path(os.getenv(
-    "FRONTEND_DIR",
-    "/Users/michaelfriedberg/PhpstormProjects/nexthello/dist/src/admin"
-))
-
-
-@app.get("/admin/{full_path:path}")
-async def serve_admin_frontend(full_path: str):
-    """Serve the admin frontend SPA"""
-    # Check if requesting a static asset
-    file_path = FRONTEND_DIR / full_path
-    if file_path.exists() and file_path.is_file():
-        return FileResponse(file_path)
-
-    # For all other routes, serve index.html (SPA routing)
-    index_path = FRONTEND_DIR / "index.html"
-    if index_path.exists():
-        return FileResponse(index_path)
-
-    return {"error": f"Frontend not found at {FRONTEND_DIR}. Run: cd src/admin/frontend && npm run build"}
-
-
-# Mount static assets directory
-if FRONTEND_DIR.exists():
-    assets_dir = FRONTEND_DIR / "assets"
-    if assets_dir.exists():
-        app.mount("/admin/assets", StaticFiles(directory=str(assets_dir)), name="admin-assets")

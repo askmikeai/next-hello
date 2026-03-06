@@ -1,9 +1,9 @@
 /**
- * PostgreSQL Session Store for whatsapp-web.js
+ * PostgreSQL Session Store for Baileys auth state
  *
  * Backs up and restores WhatsApp sessions to/from PostgreSQL.
- * Works alongside LocalAuth - backs up after authentication,
- * restores on startup if local session is missing.
+ * Works with multi-file auth state under ./auth_state/session.
+ * Backs up after credential updates and restores on startup.
  *
  * Benefits:
  * - Works in cloud environments
@@ -28,6 +28,7 @@ export class PostgresSessionStore {
     });
     this.sessionId = options.sessionId || 'default';
     this.localPath = options.localPath || './auth_state';
+    this.sessionFormat = 'baileys-multifile-v1';
     this.logger = options.logger || console;
   }
 
@@ -41,10 +42,17 @@ export class PostgresSessionStore {
         CREATE TABLE IF NOT EXISTS whatsapp_sessions (
           session_id TEXT PRIMARY KEY,
           session_data TEXT NOT NULL,
+          session_format TEXT DEFAULT 'unknown',
           created_at TIMESTAMPTZ DEFAULT NOW(),
           updated_at TIMESTAMPTZ DEFAULT NOW()
         )
       `);
+
+      await client.query(`
+        ALTER TABLE whatsapp_sessions
+        ADD COLUMN IF NOT EXISTS session_format TEXT DEFAULT 'unknown'
+      `);
+
       this.logger.info({ sessionId: this.sessionId }, 'PostgreSQL session store initialized');
     } catch (err) {
       this.logger.error({ error: err.message }, 'Failed to initialize session store');
@@ -70,11 +78,37 @@ export class PostgresSessionStore {
   }
 
   /**
+   * Get remote session metadata
+   */
+  async getRemoteSessionInfo() {
+    try {
+      const result = await this.pool.query(
+        'SELECT session_format, updated_at FROM whatsapp_sessions WHERE session_id = $1',
+        [this.sessionId]
+      );
+
+      if (result.rows.length === 0) {
+        return { exists: false, format: null, updatedAt: null };
+      }
+
+      return {
+        exists: true,
+        format: result.rows[0].session_format || 'unknown',
+        updatedAt: result.rows[0].updated_at,
+      };
+    } catch (err) {
+      this.logger.error({ error: err.message }, 'Failed to fetch remote session metadata');
+      return { exists: false, format: null, updatedAt: null };
+    }
+  }
+
+  /**
    * Check if local session exists
    */
   hasLocalSession() {
     const sessionPath = path.join(this.localPath, 'session');
-    return fs.existsSync(sessionPath);
+    const credsPath = path.join(sessionPath, 'creds.json');
+    return fs.existsSync(sessionPath) && fs.existsSync(credsPath);
   }
 
   /**
@@ -83,22 +117,14 @@ export class PostgresSessionStore {
    */
   async backup() {
     const sessionPath = path.join(this.localPath, 'session');
+    const credsPath = path.join(sessionPath, 'creds.json');
 
-    if (!fs.existsSync(sessionPath)) {
-      this.logger.warn('No local session to backup');
+    if (!fs.existsSync(sessionPath) || !fs.existsSync(credsPath)) {
+      this.logger.warn('No valid Baileys session to backup (missing creds.json)');
       return false;
     }
 
     try {
-      // Remove lock files before backup
-      const lockFiles = ['SingletonLock', 'SingletonSocket', 'SingletonCookie'];
-      for (const lock of lockFiles) {
-        const lockPath = path.join(sessionPath, lock);
-        if (fs.existsSync(lockPath)) {
-          fs.unlinkSync(lockPath);
-        }
-      }
-
       // Create tarball of session directory
       const tarFile = '/tmp/wa-session.tar.gz';
       execSync(`tar -czf ${tarFile} -C ${this.localPath} session`, { stdio: 'pipe' });
@@ -109,17 +135,18 @@ export class PostgresSessionStore {
 
       // Store in PostgreSQL
       await this.pool.query(`
-        INSERT INTO whatsapp_sessions (session_id, session_data, updated_at)
-        VALUES ($1, $2, NOW())
+        INSERT INTO whatsapp_sessions (session_id, session_data, session_format, updated_at)
+        VALUES ($1, $2, $3, NOW())
         ON CONFLICT (session_id)
-        DO UPDATE SET session_data = $2, updated_at = NOW()
-      `, [this.sessionId, base64Data]);
+        DO UPDATE SET session_data = $2, session_format = $3, updated_at = NOW()
+      `, [this.sessionId, base64Data, this.sessionFormat]);
 
       // Cleanup
       fs.unlinkSync(tarFile);
 
       this.logger.info({
         sessionId: this.sessionId,
+        format: this.sessionFormat,
         size: `${(base64Data.length / 1024 / 1024).toFixed(2)}MB`
       }, 'Session backed up to PostgreSQL');
 
@@ -136,7 +163,7 @@ export class PostgresSessionStore {
   async restore() {
     try {
       const result = await this.pool.query(
-        'SELECT session_data, updated_at FROM whatsapp_sessions WHERE session_id = $1',
+        'SELECT session_data, session_format, updated_at FROM whatsapp_sessions WHERE session_id = $1',
         [this.sessionId]
       );
 
@@ -145,7 +172,15 @@ export class PostgresSessionStore {
         return false;
       }
 
-      const { session_data, updated_at } = result.rows[0];
+      const { session_data, session_format, updated_at } = result.rows[0];
+
+      if (session_format !== this.sessionFormat) {
+        this.logger.warn(
+          { expected: this.sessionFormat, actual: session_format || 'unknown' },
+          'Remote session format is incompatible with Baileys'
+        );
+        return false;
+      }
 
       // Decode and extract
       const tarData = Buffer.from(session_data, 'base64');
@@ -160,21 +195,12 @@ export class PostgresSessionStore {
       // Extract tarball
       execSync(`tar -xzf ${tarFile} -C ${this.localPath}`, { stdio: 'pipe' });
 
-      // Remove lock files after restore
-      const sessionPath = path.join(this.localPath, 'session');
-      const lockFiles = ['SingletonLock', 'SingletonSocket', 'SingletonCookie'];
-      for (const lock of lockFiles) {
-        const lockPath = path.join(sessionPath, lock);
-        if (fs.existsSync(lockPath)) {
-          fs.unlinkSync(lockPath);
-        }
-      }
-
       // Cleanup
       fs.unlinkSync(tarFile);
 
       this.logger.info({
         sessionId: this.sessionId,
+        format: session_format,
         restoredFrom: updated_at
       }, 'Session restored from PostgreSQL');
 

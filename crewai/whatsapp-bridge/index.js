@@ -1,62 +1,123 @@
 /**
- * WhatsApp Bridge - Connects via QR code and forwards messages to Python API
- * Uses whatsapp-web.js (Puppeteer-based) for more stable connections
+ * WhatsApp connector powered by Baileys.
  *
- * Session persistence:
- * - Local: Chromium profile in ./auth_state (Docker volume)
- * - Remote: PostgreSQL backup for cloud portability
+ * - Connects using QR authentication
+ * - Persists auth state in ./auth_state/session
+ * - Optionally backs up/restores auth state to PostgreSQL
+ * - Forwards inbound messages to the Python API
  */
 
-import pkg from 'whatsapp-web.js';
-const { Client, LocalAuth, MessageMedia } = pkg;
+import makeWASocket, {
+  Browsers,
+  DisconnectReason,
+  fetchLatestBaileysVersion,
+  useMultiFileAuthState,
+} from '@whiskeysockets/baileys';
 import qrcode from 'qrcode-terminal';
 import pino from 'pino';
 import fs from 'fs';
 import path from 'path';
 import http from 'http';
 import PostgresSessionStore from './pg-store.js';
-import puppeteer from 'puppeteer-extra';
-import StealthPlugin from 'puppeteer-extra-plugin-stealth';
-
-// Apply stealth plugin to avoid detection
-puppeteer.use(StealthPlugin());
 
 const PYTHON_API_URL = process.env.PYTHON_API_URL || 'http://localhost:8001';
 const QR_OUTPUT_DIR = process.env.QR_OUTPUT_DIR || '/tmp';
 const QR_FILE = path.join(QR_OUTPUT_DIR, 'whatsapp-qr.txt');
-const HTTP_PORT = process.env.HTTP_PORT || 3000;
+const HTTP_PORT = Number(process.env.HTTP_PORT || 3000);
 const SESSION_ID = process.env.SESSION_ID || 'default';
 const DATABASE_URL = process.env.DATABASE_URL;
+const AUTH_ROOT = './auth_state';
+const AUTH_DIR = path.join(AUTH_ROOT, 'session');
 
-const logger = pino({ level: 'info' });
+const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 
-// PostgreSQL session store (optional - only if DATABASE_URL is set)
 let sessionStore = null;
+let socket = null;
+let isConnected = false;
+let isStarting = false;
+let backupTimer = null;
 
-async function initSessionStore() {
-  if (!DATABASE_URL) {
-    logger.info('DATABASE_URL not set - using local storage only');
-    return;
+function serializeForLog(value, maxStringLength = 500) {
+  const seen = new WeakSet();
+
+  function walk(input) {
+    if (input == null) return input;
+    if (typeof input === 'string') {
+      if (input.length <= maxStringLength) return input;
+      return `${input.slice(0, maxStringLength)}...<truncated:${input.length}>`;
+    }
+    if (typeof input === 'number' || typeof input === 'boolean') return input;
+    if (typeof input === 'bigint') return input.toString();
+    if (Buffer.isBuffer(input)) return `<Buffer length=${input.length}>`;
+    if (Array.isArray(input)) return input.map((item) => walk(item));
+    if (typeof input === 'object') {
+      if (seen.has(input)) return '<circular>';
+      seen.add(input);
+      const out = {};
+      for (const [k, v] of Object.entries(input)) {
+        out[k] = walk(v);
+      }
+      return out;
+    }
+    return String(input);
   }
 
-  sessionStore = new PostgresSessionStore({
-    connectionString: DATABASE_URL,
-    sessionId: SESSION_ID,
-    localPath: './auth_state',
-    logger,
-  });
+  return walk(value);
+}
 
-  await sessionStore.init();
+function normalizePhone(value) {
+  return String(value || '').replace(/[^0-9]/g, '');
+}
 
-  // If no local session, try to restore from PostgreSQL
-  if (!sessionStore.hasLocalSession()) {
-    logger.info('No local session found, checking PostgreSQL...');
-    const hasRemote = await sessionStore.hasRemoteSession();
-    if (hasRemote) {
-      logger.info('Found remote session, restoring...');
-      await sessionStore.restore();
+function toJid(phone) {
+  return `${normalizePhone(phone)}@s.whatsapp.net`;
+}
+
+function fromJid(jid) {
+  return String(jid || '').split('@')[0] || '';
+}
+
+function extractPhoneFromMessageKey(key = {}) {
+  const candidates = [key.remoteJidAlt, key.remoteJid, key.participantAlt, key.participant]
+    .filter(Boolean)
+    .map((value) => fromJid(value))
+    .map((value) => normalizePhone(value));
+
+  for (const candidate of candidates) {
+    if (candidate && candidate.length >= 7) {
+      return candidate;
     }
   }
+
+  return '';
+}
+
+function extractMessageDetails(message = {}) {
+  if (message.conversation) {
+    return { type: 'text', content: message.conversation };
+  }
+
+  if (message.extendedTextMessage?.text) {
+    return { type: 'text', content: message.extendedTextMessage.text };
+  }
+
+  if (message.imageMessage) {
+    return { type: 'image', content: message.imageMessage.caption || '' };
+  }
+
+  if (message.videoMessage) {
+    return { type: 'video', content: message.videoMessage.caption || '' };
+  }
+
+  if (message.audioMessage) {
+    return { type: 'audio', content: '' };
+  }
+
+  if (message.documentMessage) {
+    return { type: 'document', content: message.documentMessage.caption || '' };
+  }
+
+  return { type: 'text', content: '' };
 }
 
 async function forwardToPython(endpoint, data) {
@@ -66,203 +127,328 @@ async function forwardToPython(endpoint, data) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     });
-    return await response.json();
+    const payload = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      logger.error(
+        {
+          endpoint,
+          status: response.status,
+          phoneNumber: data?.phone_number,
+          messageId: data?.message_id,
+          response: payload,
+        },
+        'Python API returned non-2xx response for inbound forward'
+      );
+    } else {
+      logger.info(
+        {
+          endpoint,
+          status: response.status,
+          phoneNumber: data?.phone_number,
+          messageId: data?.message_id,
+          success: payload?.success,
+        },
+        'Forwarded inbound message to Python API'
+      );
+    }
+
+    return payload;
   } catch (error) {
     logger.error({ error: error.message }, 'Failed to forward to Python API');
     return null;
   }
 }
 
-// Realistic user agent (Chrome on macOS - matches WhatsApp Web expectations)
-const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-
-// Check if we should run headless (default: true in Docker, false locally)
-const HEADLESS = process.env.HEADLESS !== 'false';
-
-// Build puppeteer args
-const puppeteerArgs = [
-  '--disable-blink-features=AutomationControlled',
-  '--disable-infobars',
-  '--window-size=1920,1080',
-  '--start-maximized',
-  `--user-agent=${USER_AGENT}`,
-  '--lang=en-US,en',
-];
-
-// Add Docker-specific args only when running headless (in container)
-if (HEADLESS) {
-  puppeteerArgs.push(
-    '--no-sandbox',
-    '--disable-setuid-sandbox',
-    '--disable-dev-shm-usage',
-  );
-}
-
-// Initialize WhatsApp client with stealth Puppeteer
-const client = new Client({
-  authStrategy: new LocalAuth({
-    dataPath: './auth_state'
-  }),
-  puppeteer: {
-    headless: HEADLESS ? 'new' : false,
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH,
-    args: puppeteerArgs,
+async function initSessionStore() {
+  if (!DATABASE_URL) {
+    logger.info('DATABASE_URL not set - using local auth state only');
+    return;
   }
-});
 
-// QR Code event
-client.on('qr', (qr) => {
-  console.log('\n');
-  console.log('='.repeat(50));
-  console.log('  Scan this QR code with WhatsApp:');
-  console.log('='.repeat(50));
-
-  qrcode.generate(qr, { small: true }, (qrText) => {
-    console.log(qrText);
-
-    // Write QR code to file for external access
-    const output = [
-      '='.repeat(50),
-      '  Scan this QR code with WhatsApp',
-      '  Generated: ' + new Date().toISOString(),
-      '='.repeat(50),
-      '',
-      qrText,
-      '',
-      '='.repeat(50),
-    ].join('\n');
-
-    try {
-      fs.writeFileSync(QR_FILE, output, 'utf8');
-      console.log(`\n📱 QR code saved to: ${QR_FILE}\n`);
-    } catch (err) {
-      logger.error({ error: err.message }, 'Failed to write QR code to file');
-    }
+  sessionStore = new PostgresSessionStore({
+    connectionString: DATABASE_URL,
+    sessionId: SESSION_ID,
+    localPath: AUTH_ROOT,
+    logger,
   });
 
-  console.log('='.repeat(50));
-  console.log('\n');
-});
+  await sessionStore.init();
 
-// Ready event
-client.on('ready', async () => {
-  logger.info('Connected to WhatsApp!');
-  console.log('\n✅ WhatsApp connected! Listening for messages...\n');
+  const remote = await sessionStore.getRemoteSessionInfo();
+  if (remote.exists) {
+    logger.info(
+      { format: remote.format, updatedAt: remote.updatedAt },
+      'Remote session found in PostgreSQL, attempting restore first'
+    );
+    const restored = await sessionStore.restore();
+    if (!restored && !sessionStore.hasLocalSession()) {
+      logger.info('Remote restore unavailable/incompatible and no local session; QR required');
+    }
+  } else if (!sessionStore.hasLocalSession()) {
+    logger.info('No remote or local session found; QR authentication required');
+  }
+}
 
-  // Mark as online so last seen updates
-  await client.sendPresenceAvailable();
+function writeQrFile(qrText) {
+  const output = [
+    '='.repeat(50),
+    '  Scan this QR code with WhatsApp',
+    `  Generated: ${new Date().toISOString()}`,
+    '='.repeat(50),
+    '',
+    qrText,
+    '',
+    '='.repeat(50),
+  ].join('\n');
 
-  // Clean up QR file after successful connection
+  fs.mkdirSync(QR_OUTPUT_DIR, { recursive: true });
+  fs.writeFileSync(QR_FILE, output, 'utf8');
+}
+
+function cleanupQrFile() {
   try {
     if (fs.existsSync(QR_FILE)) {
       fs.unlinkSync(QR_FILE);
-      logger.info('QR code file removed after successful connection');
     }
-  } catch (err) {
+  } catch (_) {
     // Ignore cleanup errors
   }
+}
 
-  // Backup session to PostgreSQL
-  if (sessionStore) {
-    logger.info('Backing up session to PostgreSQL...');
-    await sessionStore.backup();
+function scheduleBackup() {
+  if (!sessionStore) {
+    return;
   }
 
-  // Start HTTP server
-  server.listen(HTTP_PORT, () => {
-    console.log(`HTTP API listening on port ${HTTP_PORT}`);
-    console.log(`Send messages: POST http://localhost:${HTTP_PORT}/send {"to": "+1234567890", "message": "Hello"}`);
-  });
-});
-
-// Authentication event
-client.on('authenticated', async () => {
-  logger.info('WhatsApp authenticated');
-
-  // Backup session to PostgreSQL after authentication
-  if (sessionStore) {
-    // Wait a bit for session files to be written
-    setTimeout(async () => {
-      await sessionStore.backup();
-    }, 5000);
-  }
-});
-
-// Authentication failure
-client.on('auth_failure', (msg) => {
-  logger.error({ msg }, 'Authentication failed');
-  console.error('❌ Authentication failed:', msg);
-});
-
-// Disconnected event
-client.on('disconnected', (reason) => {
-  logger.info({ reason }, 'WhatsApp disconnected');
-  console.log('Disconnected:', reason);
-});
-
-// Message event
-client.on('message', async (msg) => {
-  // Skip status broadcasts
-  if (msg.from === 'status@broadcast') return;
-
-  const phoneNumber = msg.from.replace('@c.us', '');
-  const contact = await msg.getContact();
-  const pushName = contact.pushname || contact.name || '';
-
-  // Mark chat as seen — sends read receipts and updates last seen
-  const chat = await msg.getChat();
-  await chat.sendSeen();
-
-  // Determine message type
-  let messageType = 'text';
-  let content = msg.body || '';
-
-  if (msg.hasMedia) {
-    if (msg.type === 'image') messageType = 'image';
-    else if (msg.type === 'video') messageType = 'video';
-    else if (msg.type === 'audio' || msg.type === 'ptt') messageType = 'audio';
-    else if (msg.type === 'document') messageType = 'document';
+  if (backupTimer) {
+    clearTimeout(backupTimer);
   }
 
-  logger.info({ phoneNumber, messageType, content: content?.slice(0, 50) }, 'Received message');
-
-  // Forward to Python API
-  const result = await forwardToPython('/bridge/message', {
-    phone_number: phoneNumber,
-    message_id: msg.id._serialized,
-    message_type: messageType,
-    content,
-    push_name: pushName,
-    media_id: null,
-  });
-
-  // Send response back if Python returned one
-  if (result?.response) {
+  backupTimer = setTimeout(async () => {
     try {
-      await msg.reply(result.response);
-      logger.info({ to: phoneNumber }, 'Message sent');
+      await sessionStore.backup();
     } catch (error) {
-      logger.error({ error: error.message, to: phoneNumber }, 'Failed to send message');
+      logger.error({ error: error.message }, 'Session backup failed');
     }
+  }, 3000);
+}
+
+async function ensureSocketConnected() {
+  if (socket && isConnected) {
+    return;
   }
-});
 
-// Handle incoming calls (reject them)
-client.on('call', async (call) => {
-  logger.info({ from: call.from }, 'Rejecting incoming call');
-  await call.reject();
+  if (isStarting) {
+    return;
+  }
 
-  // Send a message explaining we don't take calls
+  isStarting = true;
+
   try {
-    await client.sendMessage(call.from, "Sorry, I can't take calls right now. Please send me a text message instead!");
-  } catch (error) {
-    logger.error({ error: error.message }, 'Failed to send call rejection message');
-  }
-});
+    fs.mkdirSync(AUTH_DIR, { recursive: true });
 
-// HTTP Server for sending messages and session management
+    const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+    const { version } = await fetchLatestBaileysVersion();
+
+    socket = makeWASocket({
+      version,
+      auth: state,
+      browser: Browsers.macOS('Desktop'),
+      printQRInTerminal: false,
+      logger: pino({ level: process.env.BAILEYS_LOG_LEVEL || 'trace' }),
+      syncFullHistory: false,
+      markOnlineOnConnect: true,
+    });
+
+    socket.ev.process(async (events) => {
+      logger.info(
+        {
+          eventKeys: Object.keys(events || {}),
+          events: serializeForLog(events || {}),
+        },
+        'Baileys event batch'
+      );
+    });
+
+    socket.ev.on('messages.update', (updates = []) => {
+      logger.info(
+        {
+          updates: serializeForLog(updates),
+        },
+        'Baileys messages.update'
+      );
+    });
+
+    socket.ev.on('message-receipt.update', (updates = []) => {
+      logger.info(
+        {
+          updates: serializeForLog(updates),
+        },
+        'Baileys message-receipt.update'
+      );
+    });
+
+    socket.ev.on('creds.update', async () => {
+      await saveCreds();
+      scheduleBackup();
+    });
+
+    socket.ev.on('connection.update', async (update) => {
+      const { connection, lastDisconnect, qr } = update;
+
+      if (qr) {
+        console.log('\n' + '='.repeat(50));
+        console.log('  Scan this QR code with WhatsApp:');
+        console.log('='.repeat(50));
+        qrcode.generate(qr, { small: true }, (qrText) => {
+          console.log(qrText);
+          writeQrFile(qrText);
+          console.log(`\nQR code saved to: ${QR_FILE}\n`);
+        });
+      }
+
+      if (connection === 'open') {
+        isConnected = true;
+        cleanupQrFile();
+        logger.info('Connected to WhatsApp via Baileys');
+        scheduleBackup();
+      }
+
+      if (connection === 'close') {
+        isConnected = false;
+        const statusCode = lastDisconnect?.error?.output?.statusCode;
+        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+
+        logger.warn({ statusCode, shouldReconnect }, 'WhatsApp disconnected');
+
+        if (shouldReconnect) {
+          socket = null;
+          setTimeout(() => {
+            ensureSocketConnected().catch((error) => {
+              logger.error({ error: error.message }, 'Reconnect failed');
+            });
+          }, 2000);
+        }
+      }
+    });
+
+    socket.ev.on('messages.upsert', async ({ messages, type }) => {
+      if (type !== 'notify' || !Array.isArray(messages)) {
+        return;
+      }
+
+      for (const msg of messages) {
+        if (!msg?.key || msg.key.fromMe) {
+          continue;
+        }
+
+        const phoneNumber = extractPhoneFromMessageKey(msg.key);
+        const remoteJid = msg.key.remoteJidAlt || msg.key.remoteJid;
+
+        if (!phoneNumber) {
+          logger.warn(
+            {
+              key: serializeForLog(msg.key),
+            },
+            'Skipping inbound message: unable to resolve phone number from key'
+          );
+          continue;
+        }
+
+        const { type: messageType, content } = extractMessageDetails(msg.message || {});
+        const pushName = msg.pushName || null;
+        const messageId = msg.key.id || `${Date.now()}`;
+
+        try {
+          await socket.readMessages([msg.key]);
+          logger.info(
+            {
+              phoneNumber,
+              messageId,
+              remoteJid: msg.key.remoteJid,
+            },
+            'Marked inbound message as read'
+          );
+        } catch (error) {
+          logger.warn(
+            {
+              phoneNumber,
+              messageId,
+              error: error.message,
+            },
+            'Failed to mark inbound message as read'
+          );
+        }
+
+        logger.info(
+          {
+            phoneNumber,
+            remoteJid: msg.key.remoteJid,
+            remoteJidAlt: msg.key.remoteJidAlt,
+            messageType,
+            preview: content.slice(0, 60),
+          },
+          'Received incoming WhatsApp message'
+        );
+
+        const result = await forwardToPython('/whatsapp/message', {
+          phone_number: phoneNumber,
+          message_id: messageId,
+          message_type: messageType,
+          content,
+          push_name: pushName,
+          media_id: null,
+        });
+
+        logger.info(
+          {
+            phoneNumber,
+            messageId,
+            forwarded: !!result,
+            apiSuccess: !!result?.success,
+          },
+          'Inbound forward result'
+        );
+
+        if (result?.response && socket) {
+          try {
+            const replyJid = msg.key.remoteJid || msg.key.remoteJidAlt || toJid(phoneNumber);
+            await socket.sendMessage(replyJid, { text: result.response }, { quoted: msg });
+          } catch (error) {
+            logger.error({ error: error.message }, 'Failed to send auto-reply');
+          }
+        }
+      }
+    });
+  } finally {
+    isStarting = false;
+  }
+}
+
+function parseJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.on('data', (chunk) => {
+      body += chunk;
+    });
+    req.on('end', () => {
+      try {
+        resolve(body ? JSON.parse(body) : {});
+      } catch (error) {
+        reject(error);
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+function sendJson(res, status, payload) {
+  res.writeHead(status, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(payload));
+}
+
 const server = http.createServer(async (req, res) => {
-  // CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -273,154 +459,176 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Send message endpoint
-  if (req.method === 'POST' && req.url === '/send') {
-    let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', async () => {
-      try {
-        const { to, message } = JSON.parse(body);
-        if (!to || !message) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Missing "to" or "message" field' }));
-          return;
-        }
-
-        // Format phone number
-        const chatId = to.replace(/[^0-9]/g, '') + '@c.us';
-
-        await client.sendMessage(chatId, message);
-        logger.info({ to: chatId }, 'Message sent via API');
-
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true, to: chatId }));
-      } catch (error) {
-        logger.error({ error: error.message }, 'Failed to send message via API');
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: error.message }));
-      }
-    });
-  }
-  // Send voice message endpoint
-  else if (req.method === 'POST' && req.url === '/send-voice') {
-    let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', async () => {
-      try {
-        const { to, audioPath, audioBase64, mimeType } = JSON.parse(body);
-        if (!to || (!audioPath && !audioBase64)) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Missing "to" or audio data' }));
-          return;
-        }
-
-        // Format phone number
-        const chatId = to.replace(/[^0-9]/g, '') + '@c.us';
-
-        // Create media from file path or base64
-        let media;
-        if (audioPath) {
-          media = MessageMedia.fromFilePath(audioPath);
-        } else {
-          media = new MessageMedia(mimeType || 'audio/ogg; codecs=opus', audioBase64);
-        }
-
-        // Send as voice note (PTT)
-        await client.sendMessage(chatId, media, { sendAudioAsVoice: true });
-        logger.info({ to: chatId }, 'Voice message sent via API');
-
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true, to: chatId }));
-      } catch (error) {
-        logger.error({ error: error.message }, 'Failed to send voice message');
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: error.message }));
-      }
-    });
-  }
-  // Health check endpoint
-  else if (req.method === 'GET' && req.url === '/health') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+  if (req.method === 'GET' && req.url === '/health') {
+    sendJson(res, 200, {
       status: 'ok',
-      connected: client.info ? true : false,
+      connected: isConnected,
       sessionId: SESSION_ID,
-      hasPostgres: !!sessionStore
-    }));
+      hasPostgres: !!sessionStore,
+    });
+    return;
   }
-  // Backup session to PostgreSQL
-  else if (req.method === 'POST' && req.url === '/session/backup') {
+
+  if (req.method === 'GET' && req.url === '/qr') {
+    const hasQr = fs.existsSync(QR_FILE);
+    sendJson(res, 200, {
+      available: hasQr,
+      connected: isConnected,
+      qrText: hasQr ? fs.readFileSync(QR_FILE, 'utf8') : null,
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/send') {
+    try {
+      const { to, message } = await parseJsonBody(req);
+      if (!to || !message) {
+        sendJson(res, 400, { error: 'Missing "to" or "message" field' });
+        return;
+      }
+
+      if (!socket || !isConnected) {
+        sendJson(res, 503, { error: 'WhatsApp is not connected' });
+        return;
+      }
+
+      const jid = toJid(to);
+      const sendResult = await socket.sendMessage(jid, { text: String(message) });
+      const messageId = sendResult?.key?.id || null;
+
+      logger.info(
+        {
+          to: jid,
+          messageId,
+          preview: String(message).slice(0, 120),
+        },
+        'Sent outbound WhatsApp message via Baileys'
+      );
+
+      sendJson(res, 200, {
+        success: true,
+        to: jid,
+        messageId,
+        via: 'baileys',
+      });
+    } catch (error) {
+      logger.error({ error: error.message }, 'Failed to send text message');
+      sendJson(res, 500, { error: error.message });
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/send-voice') {
+    try {
+      const { to, audioPath, audioBase64, mimeType } = await parseJsonBody(req);
+      if (!to || (!audioPath && !audioBase64)) {
+        sendJson(res, 400, { error: 'Missing "to" or audio data' });
+        return;
+      }
+
+      if (!socket || !isConnected) {
+        sendJson(res, 503, { error: 'WhatsApp is not connected' });
+        return;
+      }
+
+      const jid = toJid(to);
+      let audioBuffer;
+
+      if (audioPath) {
+        audioBuffer = fs.readFileSync(audioPath);
+      } else {
+        audioBuffer = Buffer.from(audioBase64, 'base64');
+      }
+
+      await socket.sendMessage(jid, {
+        audio: audioBuffer,
+        mimetype: mimeType || 'audio/ogg; codecs=opus',
+        ptt: true,
+      });
+
+      sendJson(res, 200, { success: true, to: jid });
+    } catch (error) {
+      logger.error({ error: error.message }, 'Failed to send voice message');
+      sendJson(res, 500, { error: error.message });
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/session/backup') {
     if (!sessionStore) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'PostgreSQL not configured' }));
+      sendJson(res, 400, { error: 'PostgreSQL not configured' });
       return;
     }
     const success = await sessionStore.backup();
-    res.writeHead(success ? 200 : 500, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ success }));
+    sendJson(res, success ? 200 : 500, { success });
+    return;
   }
-  // Restore session from PostgreSQL
-  else if (req.method === 'POST' && req.url === '/session/restore') {
+
+  if (req.method === 'POST' && req.url === '/session/restore') {
     if (!sessionStore) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'PostgreSQL not configured' }));
+      sendJson(res, 400, { error: 'PostgreSQL not configured' });
       return;
     }
     const success = await sessionStore.restore();
-    res.writeHead(success ? 200 : 500, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ success, message: success ? 'Session restored. Restart container to use.' : 'No session to restore' }));
+    sendJson(res, success ? 200 : 500, {
+      success,
+      message: success ? 'Session restored. Restart container to use.' : 'No session to restore',
+    });
+    return;
   }
-  // Session status
-  else if (req.method === 'GET' && req.url === '/session/status') {
-    const status = {
+
+  if (req.method === 'GET' && req.url === '/session/status') {
+    const remote = sessionStore
+      ? await sessionStore.getRemoteSessionInfo()
+      : { exists: false, format: null };
+
+    sendJson(res, 200, {
       sessionId: SESSION_ID,
-      hasLocal: sessionStore?.hasLocalSession() ?? fs.existsSync('./auth_state/session'),
-      hasRemote: sessionStore ? await sessionStore.hasRemoteSession() : false,
-      postgresConfigured: !!sessionStore
-    };
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(status));
+      hasLocal: sessionStore?.hasLocalSession() ?? fs.existsSync(AUTH_DIR),
+      hasRemote: remote.exists,
+      remoteFormat: remote.format,
+      postgresConfigured: !!sessionStore,
+    });
+    return;
   }
-  else {
-    res.writeHead(404, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Not found' }));
-  }
+
+  sendJson(res, 404, { error: 'Not found' });
 });
 
-// Graceful shutdown
-process.on('SIGTERM', async () => {
-  logger.info('SIGTERM received, backing up session...');
+async function shutdown() {
+  logger.info('Shutting down WhatsApp connector');
+
+  if (backupTimer) {
+    clearTimeout(backupTimer);
+    backupTimer = null;
+  }
+
   if (sessionStore) {
     await sessionStore.backup();
     await sessionStore.close();
   }
-  process.exit(0);
-});
 
-process.on('SIGINT', async () => {
-  logger.info('SIGINT received, backing up session...');
-  if (sessionStore) {
-    await sessionStore.backup();
-    await sessionStore.close();
-  }
   process.exit(0);
-});
+}
 
-// Start the application
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
+
 async function main() {
-  console.log('Starting WhatsApp Bridge (whatsapp-web.js)...');
+  console.log('Starting WhatsApp connector (Baileys)...');
   console.log(`Python API: ${PYTHON_API_URL}`);
   console.log(`Session ID: ${SESSION_ID}`);
   console.log(`PostgreSQL: ${DATABASE_URL ? 'configured' : 'not configured'}`);
 
-  // Initialize PostgreSQL session store
   await initSessionStore();
+  await ensureSocketConnected();
 
-  console.log('Launching browser...');
-  client.initialize();
+  server.listen(HTTP_PORT, () => {
+    console.log(`HTTP API listening on port ${HTTP_PORT}`);
+  });
 }
 
-main().catch(err => {
-  logger.error({ error: err.message }, 'Failed to start');
+main().catch((error) => {
+  logger.error({ error: error.message, stack: error.stack }, 'Failed to start');
   process.exit(1);
 });

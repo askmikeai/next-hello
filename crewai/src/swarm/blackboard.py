@@ -11,6 +11,7 @@ import os
 import uuid
 import asyncio
 import logging
+from decimal import Decimal
 from datetime import datetime, timedelta
 from typing import Optional, Any, Dict, List
 from dataclasses import dataclass, field
@@ -264,6 +265,18 @@ class Blackboard:
             state.created_at = now
         state.updated_at = now
 
+        def to_datetime(value: Optional[str]) -> Optional[datetime]:
+            if not value:
+                return None
+            if isinstance(value, datetime):
+                return value
+            if isinstance(value, str):
+                return datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return None
+
+        created_at_db = to_datetime(state.created_at)
+        updated_at_db = to_datetime(state.updated_at)
+
         # Save to cache
         await self._redis.setex(
             self._cache_key(state.phone_number),
@@ -323,8 +336,8 @@ class Blackboard:
                     state.welcomed,
                     state.voice_mode,
                     json.dumps(state.pending_actions),
-                    state.created_at,
-                    state.updated_at,
+                    created_at_db,
+                    updated_at_db,
                 )
 
     async def update_contact(
@@ -409,7 +422,9 @@ class Blackboard:
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 """,
                 event.event_id,
-                event.event_type.value if isinstance(event.event_type, EventType) else event.event_type,
+                event.event_type.value
+                if isinstance(event.event_type, EventType)
+                else event.event_type,
                 event.source_agent,
                 event.contact_id,
                 json.dumps(event.payload),
@@ -565,6 +580,14 @@ class Blackboard:
         if isinstance(pending_actions, str):
             pending_actions = json.loads(pending_actions) if pending_actions else {}
 
+        qualification_score = row.get("qualification_score")
+        if isinstance(qualification_score, Decimal):
+            qualification_score = int(qualification_score)
+
+        conversation_turns = row.get("conversation_turns", 0)
+        if isinstance(conversation_turns, Decimal):
+            conversation_turns = int(conversation_turns)
+
         return ContactState(
             phone_number=row.get("phone_number", ""),
             first_name=row.get("first_name"),
@@ -577,10 +600,10 @@ class Blackboard:
             research_status=row.get("research_status", "pending"),
             research_data=row.get("research_data"),
             qualification_tier=row.get("qualification_tier"),
-            qualification_score=row.get("qualification_score"),
+            qualification_score=qualification_score,
             heygen_video_url=row.get("heygen_video_url"),
             hubspot_contact_id=row.get("hubspot_contact_id"),
-            conversation_turns=row.get("conversation_turns", 0),
+            conversation_turns=conversation_turns,
             welcomed=row.get("welcomed", False),
             voice_mode=row.get("voice_mode", False),
             pending_actions=pending_actions,

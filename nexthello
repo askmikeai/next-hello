@@ -11,6 +11,9 @@
 #   status      Check health of all services
 #   logs        View service logs
 #   whatsapp    Connect WhatsApp (scan QR code)
+#   whatsapp-test  Verify inbound persistence to PostgreSQL
+#   whatsapp-session-test  Verify Baileys session persistence + restore
+#   whatsapp-flow-test  Send outbound test message + verify DB
 #   migrate     Run database migrations
 #   build       Rebuild Docker images
 #   shell       Open shell in API container
@@ -51,7 +54,6 @@ case "${1:-help}" in
         echo ""
         success "NextHello is running"
         echo ""
-        echo "  Dashboard: http://localhost:8001/admin/"
         echo "  API Docs:  http://localhost:8001/docs"
         echo ""
         ;;
@@ -86,20 +88,54 @@ case "${1:-help}" in
                 docker compose logs -f worker
                 ;;
             whatsapp|bridge)
-                docker compose logs -f whatsapp-bridge
+                docker compose logs -f whatsapp
                 ;;
             *)
-                docker compose logs -f api worker whatsapp-bridge
+                docker compose logs -f api worker whatsapp
                 ;;
         esac
         ;;
 
     whatsapp|connect)
         check_docker
-        info "Starting WhatsApp connection..."
-        echo "Scan the QR code with your phone to connect."
+        info "Preparing WhatsApp connection..."
+        docker compose up -d api whatsapp >/dev/null
+        echo "Fetching QR via API and waiting for connection..."
         echo ""
-        docker compose exec -it api python cli.py whatsapp
+        docker compose exec -it api python cli.py connect --watch
+        ;;
+
+    whatsapp-test|wa-test)
+        check_docker
+        info "Starting WhatsApp persistence verification..."
+        docker compose up -d api whatsapp >/dev/null
+        echo ""
+        docker compose exec -it api python cli.py whatsapp-test --timeout 240
+        ;;
+
+    whatsapp-session-test|wa-session-test)
+        check_docker
+        info "Starting WhatsApp session verification..."
+        docker compose up -d api whatsapp >/dev/null
+        echo ""
+        docker compose exec -it api python cli.py whatsapp-session-test --timeout 240
+
+        info "Restarting whatsapp container to verify restore..."
+        docker compose restart whatsapp >/dev/null
+        sleep 3
+        docker compose exec -it api python cli.py whatsapp-session-test --timeout 90
+        success "WhatsApp session persistence + restore test passed"
+        ;;
+
+    whatsapp-flow-test|wa-flow-test)
+        check_docker
+        info "Starting WhatsApp outbound flow test..."
+        docker compose up -d api whatsapp >/dev/null
+
+        TARGET_PHONE="7544220907"
+        info "Sending test message to ${TARGET_PHONE} and verifying PostgreSQL persistence..."
+        docker compose exec -it api python cli.py whatsapp-outbound-test --timeout 240 --phone "$TARGET_PHONE"
+        success "WhatsApp flow test passed (outbound send + PostgreSQL persistence)"
         ;;
 
     migrate|db:migrate)
@@ -168,7 +204,10 @@ COMMANDS:
   restart     Restart all services
   status      Check service health
   logs        View logs (all, api, worker, whatsapp)
-  whatsapp    Connect WhatsApp (scan QR code)
+  whatsapp       Connect WhatsApp (scan QR code)
+  whatsapp-test  Verify fresh inbound is persisted to PostgreSQL
+  whatsapp-session-test  Verify Baileys session persistence + restore
+  whatsapp-flow-test  Send outbound test message + verify PostgreSQL
   migrate     Run database migrations
   build       Build Docker images
   rebuild     Build and restart
@@ -179,13 +218,15 @@ COMMANDS:
 
 EXAMPLES:
   ./nexthello start              # Start everything
-  ./nexthello whatsapp           # Connect WhatsApp
+  ./nexthello whatsapp           # Connect WhatsApp and watch status
+  ./nexthello whatsapp-test      # Verify inbound persistence
+  ./nexthello whatsapp-session-test # Verify session persistence + restore
+  ./nexthello whatsapp-flow-test # Send + verify outbound persistence
   ./nexthello logs api           # View API logs
   ./nexthello status             # Check health
   ./nexthello cli research       # Run CLI command
 
 URLS:
-  Dashboard: http://localhost:8001/admin/
   API Docs:  http://localhost:8001/docs
 
 EOF

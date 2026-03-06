@@ -1,20 +1,9 @@
-# WhatsApp Bridge Dockerfile
-# Uses whatsapp-web.js with Puppeteer/Chromium
+# WhatsApp Baileys connector Dockerfile
 FROM node:20-alpine
 
-# Install Chromium and dependencies for Puppeteer
 RUN apk add --no-cache \
-    chromium \
-    nss \
-    freetype \
-    harfbuzz \
     ca-certificates \
-    ttf-freefont \
     git
-
-# Tell Puppeteer to use installed Chromium
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
-    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
 WORKDIR /app
 
@@ -27,5 +16,5 @@ RUN npm install
 # Copy application code
 COPY . .
 
-# Run the bridge
+# Run the connector
 CMD ["node", "index.js"]

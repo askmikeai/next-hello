@@ -30,7 +30,6 @@ cp crewai/.env.example crewai/.env
 ./nexthello status
 ```
 
-**Dashboard:** http://localhost:8001/admin/
 **API Docs:** http://localhost:8001/docs
 
 ---
@@ -181,8 +180,7 @@ docker volume rm nexthello-whatsapp-auth
 | **API** | `crewai/src/api.py` | FastAPI server, webhooks, admin dashboard |
 | **Worker** | `crewai/src/queue/worker.py` | ARQ background job processor |
 | **Agents** | `crewai/src/agents/` | CrewAI agent definitions |
-| **WhatsApp Bridge** | `crewai/whatsapp-bridge/` | Node.js Baileys connector |
-| **React Dashboard** | `src/admin/frontend/` | Admin UI |
+| **WhatsApp Connector** | `crewai/whatsapp-bridge/` | Node.js Baileys connector |
 
 ---
 
@@ -205,7 +203,7 @@ docker volume rm nexthello-whatsapp-auth
 |-----------|------|-------------|
 | `api` | 8001 | FastAPI + CrewAI + CLI |
 | `worker` | - | ARQ background jobs |
-| `whatsapp-bridge` | - | Baileys WhatsApp connector |
+| `whatsapp` | - | Baileys WhatsApp connector |
 | `postgres` | 5432 | PostgreSQL database |
 | `redis` | 6379 | Conversation state & job queues |
 
@@ -217,6 +215,9 @@ docker volume rm nexthello-whatsapp-auth
 ./nexthello status     # Check health
 ./nexthello logs       # View all logs
 ./nexthello logs api   # View API logs only
+./nexthello whatsapp-test # Verify inbound persistence in PostgreSQL
+./nexthello whatsapp-session-test # Verify session persistence + restore
+./nexthello whatsapp-flow-test # Interactive inbound flow test (logs + DB)
 ./nexthello rebuild    # Rebuild and restart
 ./nexthello ps         # Show containers
 ```
@@ -230,7 +231,7 @@ docker volume rm nexthello-whatsapp-auth
 - `GET /config` - Current configuration
 
 ### WhatsApp
-- `POST /bridge/message` - Receive from WhatsApp bridge
+- `POST /whatsapp/message` - Receive from WhatsApp connector
 - `POST /send` - Queue outbound message
 
 ### Agents
@@ -245,6 +246,8 @@ docker volume rm nexthello-whatsapp-auth
 - `GET /admin/api/contacts` - List contacts
 - `GET /admin/api/stats` - Dashboard statistics
 - `GET /admin/api/messages` - Message history
+- `GET /admin/api/whatsapp/connector` - Connector status + live QR payload
+- `GET /admin/api/whatsapp/messages/persisted` - Persisted WhatsApp messages from PostgreSQL
 
 Full interactive docs at http://localhost:8001/docs
 
@@ -269,19 +272,9 @@ python cli.py start
 # Or start services individually
 python cli.py api      # Terminal 1: API on port 8001
 python cli.py worker   # Terminal 2: Background jobs
-python cli.py whatsapp # Terminal 3: WhatsApp bridge
+python cli.py whatsapp # Terminal 3: WhatsApp connector runtime
+python cli.py connect  # Show QR through API endpoint
 ```
-
-### Frontend Development
-
-```bash
-cd src/admin/frontend
-npm install
-npm run dev            # Dev server with hot reload
-npm run build          # Production build
-```
-
----
 
 ## Troubleshooting
 

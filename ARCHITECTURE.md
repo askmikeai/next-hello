@@ -53,10 +53,9 @@ nexthello/
 │   ├── queue/                    # BullMQ job queue
 │   │   ├── client.ts             # Queue setup
 │   │   └── workers/              # Job processors
-│   ├── admin/                    # Admin dashboard
+│   ├── admin/                    # Admin API
 │   │   ├── routes.ts             # API endpoints
 │   │   ├── api.ts                # API logic
-│   │   └── frontend/             # React app
 │   ├── integrations/             # External APIs
 │   │   ├── heygen/               # Video generation
 │   │   ├── elevenlabs/           # Text-to-speech
@@ -271,18 +270,7 @@ User asks for "text"      ──► Disable voice mode      ──► Respond wi
 
 ---
 
-## Admin Dashboard
-
-**Location:** `src/admin/`
-
-### Frontend (React + Vite)
-
-- **Overview:** Stats, contacts, messages, queues
-- **Swarm:** Real-time topology visualization, agent activities
-- **Contacts:** Detail view with enrichment, messages, media
-- **Settings:** Configuration management
-
-### API Endpoints
+## Admin API Endpoints
 
 | Endpoint | Purpose |
 |----------|---------|
@@ -353,7 +341,7 @@ User asks for "text"      ──► Disable voice mode      ──► Respond wi
 | `nexthello-minio` | 9000 | S3 storage |
 | `nexthello-prometheus` | 9090 | Metrics |
 | `nexthello-grafana` | 3001 | Dashboards |
-| `nexthello-whatsapp-bridge` | - | WhatsApp client |
+| `nexthello-whatsapp` | - | WhatsApp Baileys connector |
 
 ### Volumes
 
@@ -361,7 +349,7 @@ User asks for "text"      ──► Disable voice mode      ──► Respond wi
 - `nexthello-media` - Media files
 - `nexthello-postgres` - Database data
 - `nexthello-redis` - Redis persistence
-- `nexthello-whatsapp-auth` - WhatsApp bridge auth
+- `nexthello-whatsapp-auth` - WhatsApp connector auth
 
 ---
 
@@ -473,7 +461,6 @@ liquibase --changelog-file=migrations/liquibase/changelog.xml update
 
 # Development
 npm run dev              # TypeScript watch
-npm run dev:frontend     # React dev server
 npm start                # Run compiled server
 
 # Testing

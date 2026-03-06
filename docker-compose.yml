@@ -23,7 +23,6 @@
 #    View all logs:   docker compose logs -f
 #    Check status:    docker compose ps
 #    Stop services:   docker compose down
-#    Dashboard:       http://localhost:8001/admin/
 #    API Docs:        http://localhost:8001/docs
 #
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -91,7 +90,6 @@ services:
 
   # ──────────────────────────────────────────────────────────────────────────
   # API - Python FastAPI + CrewAI server
-  # Dashboard: http://localhost:8001/admin/
   # API Docs:  http://localhost:8001/docs
   # ──────────────────────────────────────────────────────────────────────────
   api:
@@ -109,10 +107,9 @@ services:
       REDIS_URL: redis://redis:6379/0
       DATABASE_URL: postgresql://${POSTGRES_USER:-nexthello}:${POSTGRES_PASSWORD:-nexthello_dev}@postgres:5432/${POSTGRES_DB:-nexthello}
       SUPABASE_URL: postgresql://${POSTGRES_USER:-nexthello}:${POSTGRES_PASSWORD:-nexthello_dev}@postgres:5432/${POSTGRES_DB:-nexthello}
-      FRONTEND_DIR: /app/frontend
+      WHATSAPP_CONNECTOR_URL: http://whatsapp:3000
     volumes:
       - nexthello-media:/app/data/media
-      - ./dist/src/admin:/app/frontend:ro
     ports:
       - "8001:8001"
     restart: unless-stopped
@@ -183,13 +180,13 @@ services:
         max-file: "3"
 
   # ──────────────────────────────────────────────────────────────────────────
-  # WHATSAPP-BRIDGE - Node.js Baileys WhatsApp connector
+  # WHATSAPP - Node.js Baileys WhatsApp connector
   # Forwards messages to Python API
   # ──────────────────────────────────────────────────────────────────────────
-  whatsapp-bridge:
+  whatsapp:
     build: ./crewai/whatsapp-bridge
     image: nexthello-whatsapp:local
-    container_name: nexthello-whatsapp-bridge
+    container_name: nexthello-whatsapp
     depends_on:
       postgres:
         condition: service_healthy
