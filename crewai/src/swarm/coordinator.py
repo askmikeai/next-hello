@@ -94,15 +94,17 @@ class SwarmCoordinator:
             await self.blackboard.save_contact(contact)
 
             # Publish contact.created event
-            await self.eventbus.publish(SwarmEvent(
-                event_type=EventType.CONTACT_CREATED,
-                contact_id=phone_number,
-                payload={
-                    "push_name": push_name,
-                    "source": "whatsapp",
-                },
-                source_agent="coordinator",
-            ))
+            await self.eventbus.publish(
+                SwarmEvent(
+                    event_type=EventType.CONTACT_CREATED,
+                    contact_id=phone_number,
+                    payload={
+                        "push_name": push_name,
+                        "source": "whatsapp",
+                    },
+                    source_agent="coordinator",
+                )
+            )
 
         # Extract entities from message
         entities = self._extract_entities(message_text)
@@ -131,38 +133,52 @@ class SwarmCoordinator:
         updated_fields["last_message_at"] = datetime.utcnow().isoformat()
         updated_fields["last_message_text"] = message_text[:500]
 
+        # Voice preference rules:
+        # - Audio input enables voice mode by default.
+        # - Explicit text-only instruction disables voice mode.
+        if self._wants_text_only(message_text):
+            updated_fields["voice_mode"] = False
+        elif message_type == "audio" and not contact.voice_mode:
+            updated_fields["voice_mode"] = True
+
         if updated_fields:
             contact = await self.blackboard.update_contact(phone_number, **updated_fields)
 
             # If contact info changed, publish update event
-            if any(k in updated_fields for k in ["email", "linkedin_url", "first_name", "company_name"]):
-                await self.eventbus.publish(SwarmEvent(
-                    event_type=EventType.CONTACT_UPDATED,
-                    contact_id=phone_number,
-                    payload={
-                        "updated_fields": list(updated_fields.keys()),
-                        "entities": entities,
-                    },
-                    source_agent="coordinator",
-                ))
+            if any(
+                k in updated_fields for k in ["email", "linkedin_url", "first_name", "company_name"]
+            ):
+                await self.eventbus.publish(
+                    SwarmEvent(
+                        event_type=EventType.CONTACT_UPDATED,
+                        contact_id=phone_number,
+                        payload={
+                            "updated_fields": list(updated_fields.keys()),
+                            "entities": entities,
+                        },
+                        source_agent="coordinator",
+                    )
+                )
 
         # Detect intent
         intent = self._detect_intent(message_text)
 
         # Publish message.received event
-        await self.eventbus.publish(SwarmEvent(
-            event_type=EventType.MESSAGE_RECEIVED,
-            contact_id=phone_number,
-            payload={
-                "text": message_text,
-                "message_type": message_type,
-                "message_id": message_id,
-                "intent": intent,
-                "entities": entities,
-                "is_new_contact": is_new_contact,
-            },
-            source_agent="coordinator",
-        ))
+        await self.eventbus.publish(
+            SwarmEvent(
+                event_type=EventType.MESSAGE_RECEIVED,
+                contact_id=phone_number,
+                payload={
+                    "text": message_text,
+                    "message_type": message_type,
+                    "message_id": message_id,
+                    "intent": intent,
+                    "entities": entities,
+                    "is_new_contact": is_new_contact,
+                },
+                source_agent="coordinator",
+            )
+        )
 
         # Generate immediate response for new contacts
         # The Personalization Agent will handle actual responses via message.send
@@ -170,11 +186,25 @@ class SwarmCoordinator:
             await self.blackboard.update_contact(phone_number, welcomed=True)
             name = push_name or contact.first_name or "there"
             owner_name = os.getenv("OWNER_NAME", "I")
-            return (
+            welcome_text = (
                 f"Hey {name}! Great to connect with you. "
                 f"I'm {owner_name}'s assistant - happy to chat and help however I can. "
                 f"What brings you here today?"
             )
+
+            # If they reached out by voice, send a voice version of the welcome too
+            # unless they explicitly requested text-only responses.
+            if message_type == "audio" and not self._wants_text_only(message_text):
+                await self.eventbus.publish(
+                    SwarmEvent(
+                        event_type=EventType.VOICE_REQUESTED,
+                        contact_id=phone_number,
+                        payload={"script": welcome_text},
+                        source_agent="coordinator",
+                    )
+                )
+
+            return welcome_text
 
         return None
 
@@ -190,61 +220,73 @@ class SwarmCoordinator:
 
         Publishes message.send event for the messaging agent to handle.
         """
-        await self.eventbus.publish(SwarmEvent(
-            event_type=EventType.MESSAGE_SEND,
-            contact_id=phone_number,
-            payload={
-                "text": text,
-                "message_type": message_type,
-                "media_url": media_url,
-            },
-            source_agent="coordinator",
-        ))
+        await self.eventbus.publish(
+            SwarmEvent(
+                event_type=EventType.MESSAGE_SEND,
+                contact_id=phone_number,
+                payload={
+                    "text": text,
+                    "message_type": message_type,
+                    "media_url": media_url,
+                },
+                source_agent="coordinator",
+            )
+        )
 
     async def request_research(self, phone_number: str) -> None:
         """Request research for a contact"""
-        await self.eventbus.publish(SwarmEvent(
-            event_type=EventType.RESEARCH_NEEDED,
-            contact_id=phone_number,
-            payload={},
-            source_agent="coordinator",
-        ))
+        await self.eventbus.publish(
+            SwarmEvent(
+                event_type=EventType.RESEARCH_NEEDED,
+                contact_id=phone_number,
+                payload={},
+                source_agent="coordinator",
+            )
+        )
 
     async def request_qualification(self, phone_number: str) -> None:
         """Request qualification for a contact"""
-        await self.eventbus.publish(SwarmEvent(
-            event_type=EventType.QUALIFICATION_NEEDED,
-            contact_id=phone_number,
-            payload={},
-            source_agent="coordinator",
-        ))
+        await self.eventbus.publish(
+            SwarmEvent(
+                event_type=EventType.QUALIFICATION_NEEDED,
+                contact_id=phone_number,
+                payload={},
+                source_agent="coordinator",
+            )
+        )
 
     async def request_video(self, phone_number: str, script: Optional[str] = None) -> None:
         """Request video generation for a contact"""
-        await self.eventbus.publish(SwarmEvent(
-            event_type=EventType.VIDEO_REQUESTED,
-            contact_id=phone_number,
-            payload={"script": script} if script else {},
-            source_agent="coordinator",
-        ))
+        await self.eventbus.publish(
+            SwarmEvent(
+                event_type=EventType.VIDEO_REQUESTED,
+                contact_id=phone_number,
+                payload={"script": script} if script else {},
+                source_agent="coordinator",
+            )
+        )
 
     async def request_voice(self, phone_number: str, script: Optional[str] = None) -> None:
         """Request voice generation for a contact"""
-        await self.eventbus.publish(SwarmEvent(
-            event_type=EventType.VOICE_REQUESTED,
-            contact_id=phone_number,
-            payload={"script": script} if script else {},
-            source_agent="coordinator",
-        ))
+        await self.eventbus.publish(
+            SwarmEvent(
+                event_type=EventType.VOICE_REQUESTED,
+                contact_id=phone_number,
+                payload={"script": script} if script else {},
+                source_agent="coordinator",
+            )
+        )
 
     async def request_crm_sync(self, phone_number: str) -> None:
         """Request CRM sync for a contact"""
-        await self.eventbus.publish(SwarmEvent(
-            event_type=EventType.CRM_SYNC_NEEDED,
-            contact_id=phone_number,
-            payload={},
-            source_agent="coordinator",
-        ))
+        await self.eventbus.publish(
+            SwarmEvent(
+                event_type=EventType.CRM_SYNC_NEEDED,
+                contact_id=phone_number,
+                payload={},
+                source_agent="coordinator",
+            )
+        )
 
     def _detect_intent(self, message: str) -> str:
         """
@@ -255,7 +297,9 @@ class SwarmCoordinator:
         message_lower = message.lower().strip()
 
         # Greeting patterns
-        if re.search(r"^(hi|hello|hey|howdy|hola|greetings|good (morning|afternoon|evening))", message_lower):
+        if re.search(
+            r"^(hi|hello|hey|howdy|hola|greetings|good (morning|afternoon|evening))", message_lower
+        ):
             return "greeting"
 
         # Introduction patterns
@@ -263,7 +307,9 @@ class SwarmCoordinator:
             return "introduction"
 
         # Meeting request patterns
-        if re.search(r"(let'?s|can we|want to|schedule|book).*(meet|chat|talk|call)", message_lower):
+        if re.search(
+            r"(let'?s|can we|want to|schedule|book).*(meet|chat|talk|call)", message_lower
+        ):
             return "meeting_request"
 
         # Contact info patterns
@@ -283,6 +329,19 @@ class SwarmCoordinator:
             return "question"
 
         return "general"
+
+    def _wants_text_only(self, message: str) -> bool:
+        """Detect explicit instruction to avoid voice replies."""
+        message_lower = message.lower().strip()
+        patterns = [
+            r"\btext only\b",
+            r"\bno voice\b",
+            r"\bdon'?t (send|use) voice\b",
+            r"\bdo not (send|use) voice\b",
+            r"\bstop (sending )?voice\b",
+            r"\bvoice off\b",
+        ]
+        return any(re.search(pattern, message_lower) for pattern in patterns)
 
     def _extract_entities(self, message: str) -> dict:
         """

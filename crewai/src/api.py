@@ -9,6 +9,7 @@ Complete FastAPI application with:
 """
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -21,6 +22,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
+import httpx
 from dotenv import load_dotenv
 from fastapi import (
     FastAPI,
@@ -128,6 +130,53 @@ def _normalize_history_message_type(message_type: Optional[str]) -> str:
     allowed = {"text", "image", "video", "audio", "document", "sticker", "location"}
     normalized = (message_type or "text").lower()
     return normalized if normalized in allowed else "text"
+
+
+async def _transcribe_audio_base64(audio_base64: str, mime_type: str = "audio/ogg") -> str:
+    """Transcribe base64-encoded audio using OpenAI Whisper API."""
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return ""
+
+    try:
+        audio_bytes = base64.b64decode(audio_base64)
+    except Exception:
+        logger.warning("Failed to decode inbound audio base64 payload")
+        return ""
+
+    if not audio_bytes:
+        return ""
+
+    ext = ".ogg"
+    if "mpeg" in mime_type or "mp3" in mime_type:
+        ext = ".mp3"
+    elif "wav" in mime_type:
+        ext = ".wav"
+
+    files = {"file": (f"voice_note{ext}", audio_bytes, mime_type)}
+    data = {"model": "whisper-1"}
+
+    try:
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            response = await client.post(
+                "https://api.openai.com/v1/audio/transcriptions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                files=files,
+                data=data,
+            )
+
+        if response.status_code != 200:
+            logger.warning(
+                "OpenAI transcription failed",
+                extra={"status_code": response.status_code, "body": response.text[:300]},
+            )
+            return ""
+
+        payload = response.json()
+        return (payload.get("text") or "").strip()
+    except Exception as e:
+        logger.warning(f"Inbound audio transcription failed: {e}")
+        return ""
 
 
 async def _persist_message_history(
@@ -1218,6 +1267,13 @@ class AdminWhatsAppSendRequest(BaseModel):
     content: str
 
 
+class AdminWhatsAppSendVoiceRequest(BaseModel):
+    phone_number: str
+    audio_base64: str
+    mime_type: str = "audio/mpeg"
+    content: str = ""
+
+
 @app.post("/admin/api/whatsapp/send")
 async def admin_send_whatsapp_message(request: AdminWhatsAppSendRequest):
     """Send a WhatsApp message through connector and persist an outbound row."""
@@ -1258,6 +1314,62 @@ async def admin_send_whatsapp_message(request: AdminWhatsAppSendRequest):
             message_id=correlation_id,
             direction="outgoing",
             message_type="text",
+            content=content,
+        )
+
+    return {
+        "success": True,
+        "phoneNumber": phone_number,
+        "correlationId": correlation_id,
+        "via": connector_via,
+        "to": connector_to,
+        "messageId": connector_message_id,
+    }
+
+
+@app.post("/admin/api/whatsapp/send-voice")
+async def admin_send_whatsapp_voice(request: AdminWhatsAppSendVoiceRequest):
+    """Send a WhatsApp voice note through connector and persist outbound row."""
+    phone_number = "".join(ch for ch in (request.phone_number or "") if ch.isdigit())
+    audio_base64 = (request.audio_base64 or "").strip()
+    mime_type = (request.mime_type or "audio/mpeg").strip() or "audio/mpeg"
+    content = (request.content or "").strip()
+
+    if not phone_number:
+        raise HTTPException(status_code=400, detail="phone_number is required")
+    if not audio_base64:
+        raise HTTPException(status_code=400, detail="audio_base64 is required")
+
+    connector_result = _post_connector_json(
+        "/send-voice",
+        {
+            "to": phone_number,
+            "audioBase64": audio_base64,
+            "mimeType": mime_type,
+        },
+    )
+    if not connector_result.get("success"):
+        raise HTTPException(status_code=502, detail="Connector failed to send voice message")
+
+    connector_via = connector_result.get("via") or "baileys"
+    connector_to = connector_result.get("to")
+    connector_message_id = connector_result.get("messageId")
+
+    correlation_id = f"manual-outbound-{uuid.uuid4()}"
+    await _persist_message_history(
+        phone_number=phone_number,
+        correlation_id=correlation_id,
+        direction="outgoing",
+        message_type="audio",
+        content=content,
+    )
+
+    if _state_manager:
+        await _state_manager.add_message(
+            phone_number=phone_number,
+            message_id=correlation_id,
+            direction="outgoing",
+            message_type="audio",
             content=content,
         )
 
@@ -1865,6 +1977,8 @@ class WhatsAppConnectorMessageRequest(BaseModel):
     content: str = ""
     push_name: Optional[str] = None
     media_id: Optional[str] = None
+    audio_base64: Optional[str] = None
+    audio_mime_type: Optional[str] = None
 
 
 @app.post("/whatsapp/message")
@@ -1888,6 +2002,23 @@ async def whatsapp_receive_message(request: WhatsAppConnectorMessageRequest):
         },
     )
 
+    message_text = request.content or ""
+    if request.message_type == "audio" and not message_text.strip() and request.audio_base64:
+        transcript = await _transcribe_audio_base64(
+            request.audio_base64,
+            request.audio_mime_type or "audio/ogg",
+        )
+        if transcript:
+            message_text = transcript
+            logger.info(
+                "Inbound audio transcribed",
+                extra={
+                    "phone_number": request.phone_number,
+                    "message_id": request.message_id,
+                    "transcript_length": len(transcript),
+                },
+            )
+
     try:
         if not _swarm_coordinator:
             raise ValueError("Swarm coordinator not initialized")
@@ -1896,7 +2027,7 @@ async def whatsapp_receive_message(request: WhatsAppConnectorMessageRequest):
         # This publishes events for agents and returns immediate response for new contacts
         response = await _swarm_coordinator.handle_incoming_message(
             phone_number=request.phone_number,
-            message_text=request.content,
+            message_text=message_text,
             message_type=request.message_type,
             push_name=request.push_name,
             message_id=request.message_id,
@@ -1907,7 +2038,7 @@ async def whatsapp_receive_message(request: WhatsAppConnectorMessageRequest):
             correlation_id=request.message_id,
             direction="incoming",
             message_type=request.message_type,
-            content=request.content,
+            content=message_text,
         )
         logger.info(
             "Inbound message persistence call completed",
@@ -1926,7 +2057,7 @@ async def whatsapp_receive_message(request: WhatsAppConnectorMessageRequest):
                 message_id=request.message_id,
                 direction="incoming",
                 message_type=request.message_type,
-                content=request.content,
+                content=message_text,
             )
         else:
             logger.warning(

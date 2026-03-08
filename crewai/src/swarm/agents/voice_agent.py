@@ -44,6 +44,10 @@ class VoiceAgent(AutonomousAgent):
             EventType.MESSAGE_RECEIVED,
         ]
 
+    @property
+    def requires_lock(self) -> bool:
+        return False
+
     async def should_act(
         self,
         event: SwarmEvent,
@@ -109,25 +113,29 @@ class VoiceAgent(AutonomousAgent):
                 )
 
                 # Publish voice.completed
-                result_events.append(event.create_response(
-                    event_type=EventType.VOICE_COMPLETED,
-                    payload={
-                        "audio_url": audio_url,
-                        "script": script,
-                    },
-                    source_agent=self.name,
-                ))
+                result_events.append(
+                    event.create_response(
+                        event_type=EventType.VOICE_COMPLETED,
+                        payload={
+                            "audio_url": audio_url,
+                            "script": script,
+                        },
+                        source_agent=self.name,
+                    )
+                )
 
                 # Request message send with audio
-                result_events.append(event.create_response(
-                    event_type=EventType.MESSAGE_SEND,
-                    payload={
-                        "message_type": "audio",
-                        "media_url": audio_url,
-                        "text": "",  # No caption for voice messages
-                    },
-                    source_agent=self.name,
-                ))
+                result_events.append(
+                    event.create_response(
+                        event_type=EventType.MESSAGE_SEND,
+                        payload={
+                            "message_type": "audio",
+                            "media_url": audio_url,
+                            "text": "",  # No caption for voice messages
+                        },
+                        source_agent=self.name,
+                    )
+                )
 
                 logger.info(f"[{self.name}] Voice generated for {contact.phone_number}")
 

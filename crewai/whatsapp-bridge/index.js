@@ -10,6 +10,7 @@
 import makeWASocket, {
   Browsers,
   DisconnectReason,
+  downloadMediaMessage,
   fetchLatestBaileysVersion,
   useMultiFileAuthState,
 } from '@whiskeysockets/baileys';
@@ -357,6 +358,36 @@ async function ensureSocketConnected() {
         }
 
         const { type: messageType, content } = extractMessageDetails(msg.message || {});
+        let audioBase64 = null;
+        let audioMimeType = null;
+
+        if (messageType === 'audio') {
+          try {
+            const audioBuffer = await downloadMediaMessage(
+              msg,
+              'buffer',
+              {},
+              {
+                logger,
+                reuploadRequest: socket.updateMediaMessage,
+              }
+            );
+
+            if (audioBuffer) {
+              audioBase64 = Buffer.from(audioBuffer).toString('base64');
+              audioMimeType = msg.message?.audioMessage?.mimetype || 'audio/ogg; codecs=opus';
+            }
+          } catch (error) {
+            logger.warn(
+              {
+                phoneNumber,
+                messageId,
+                error: error.message,
+              },
+              'Failed to download inbound audio for transcription'
+            );
+          }
+        }
         const pushName = msg.pushName || null;
         const messageId = msg.key.id || `${Date.now()}`;
 
@@ -397,6 +428,8 @@ async function ensureSocketConnected() {
           message_id: messageId,
           message_type: messageType,
           content,
+          audio_base64: audioBase64,
+          audio_mime_type: audioMimeType,
           push_name: pushName,
           media_id: null,
         });

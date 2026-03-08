@@ -77,6 +77,12 @@ class PersonalizationAgent(AutonomousAgent):
         # For messages, respond to questions and discussions
         if event.event_type == EventType.MESSAGE_RECEIVED:
             intent = event.payload.get("intent", "")
+            message_type = str(event.payload.get("message_type", "text")).lower()
+
+            # Always respond to voice notes.
+            if message_type == "audio":
+                return True
+
             # Skip greetings (coordinator handles immediate response)
             if intent == "greeting" and not contact.welcomed:
                 return False
@@ -122,6 +128,16 @@ class PersonalizationAgent(AutonomousAgent):
                             source_agent=self.name,
                         )
                     )
+
+                    # If contact prefers voice, request voice generation too.
+                    if contact.voice_mode:
+                        result_events.append(
+                            event.create_response(
+                                event_type=EventType.VOICE_REQUESTED,
+                                payload={"script": response},
+                                source_agent=self.name,
+                            )
+                        )
 
             elif event.event_type == EventType.QUALIFICATION_COMPLETED:
                 response = await self._generate_qualification_followup(event, contact)
@@ -169,6 +185,14 @@ class PersonalizationAgent(AutonomousAgent):
         """Generate a response to an incoming message"""
         message_text = event.payload.get("text", "")
         intent = event.payload.get("intent", "general")
+        message_type = str(event.payload.get("message_type", "text")).lower()
+
+        if message_type == "audio" and not str(message_text).strip():
+            name = contact.first_name or contact.push_name or "there"
+            return (
+                f"Thanks for your voice note, {name}. I heard you and I am happy to help. "
+                "What should we focus on first?"
+            )
 
         # Build context about the contact
         contact_context = self._build_contact_context(contact)
