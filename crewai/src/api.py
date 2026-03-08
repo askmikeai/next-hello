@@ -1318,6 +1318,10 @@ class AdminWhatsAppSendVoiceRequest(BaseModel):
     content: str = ""
 
 
+class AdminDeleteContactRequest(BaseModel):
+    phone_number: str
+
+
 @app.post("/admin/api/whatsapp/send")
 async def admin_send_whatsapp_message(request: AdminWhatsAppSendRequest):
     """Send a WhatsApp message through connector and persist an outbound row."""
@@ -1424,6 +1428,23 @@ async def admin_send_whatsapp_voice(request: AdminWhatsAppSendVoiceRequest):
         "via": connector_via,
         "to": connector_to,
         "messageId": connector_message_id,
+    }
+
+
+@app.post("/admin/api/contacts/delete")
+async def admin_delete_contact_data(request: AdminDeleteContactRequest):
+    """Immediately delete a contact's stored data by phone number."""
+    phone_number = "".join(ch for ch in (request.phone_number or "") if ch.isdigit())
+    if not phone_number:
+        raise HTTPException(status_code=400, detail="phone_number is required")
+    if not _blackboard:
+        raise HTTPException(status_code=503, detail="Blackboard is unavailable")
+
+    deleted = await _blackboard.delete_contact_data(phone_number)
+    return {
+        "success": True,
+        "phoneNumber": phone_number,
+        "deleted": deleted,
     }
 
 
@@ -2063,6 +2084,10 @@ async def whatsapp_receive_message(request: WhatsAppConnectorMessageRequest):
                 },
             )
 
+    is_erasure_request = bool(
+        _swarm_coordinator and _swarm_coordinator.is_erasure_request(message_text)
+    )
+
     try:
         if not _swarm_coordinator:
             raise ValueError("Swarm coordinator not initialized")
@@ -2077,25 +2102,34 @@ async def whatsapp_receive_message(request: WhatsAppConnectorMessageRequest):
             message_id=request.message_id,
         )
 
-        await _persist_message_history(
-            phone_number=request.phone_number,
-            correlation_id=request.message_id,
-            direction="incoming",
-            message_type=request.message_type,
-            content=message_text,
-        )
-        logger.info(
-            "Inbound message persistence call completed",
-            extra={
-                "phone_number": request.phone_number,
-                "message_id": request.message_id,
-            },
-        )
+        if not is_erasure_request:
+            await _persist_message_history(
+                phone_number=request.phone_number,
+                correlation_id=request.message_id,
+                direction="incoming",
+                message_type=request.message_type,
+                content=message_text,
+            )
+            logger.info(
+                "Inbound message persistence call completed",
+                extra={
+                    "phone_number": request.phone_number,
+                    "message_id": request.message_id,
+                },
+            )
+        else:
+            logger.info(
+                "Skipped message persistence due to erasure request",
+                extra={
+                    "phone_number": request.phone_number,
+                    "message_id": request.message_id,
+                },
+            )
 
         auto_reply_id: Optional[str] = None
 
         # Record inbound message
-        if _state_manager:
+        if _state_manager and not is_erasure_request:
             await _state_manager.add_message(
                 phone_number=request.phone_number,
                 message_id=request.message_id,
@@ -2103,7 +2137,7 @@ async def whatsapp_receive_message(request: WhatsAppConnectorMessageRequest):
                 message_type=request.message_type,
                 content=message_text,
             )
-        else:
+        elif not is_erasure_request:
             logger.warning(
                 "State manager unavailable while recording inbound message",
                 extra={
@@ -2123,7 +2157,7 @@ async def whatsapp_receive_message(request: WhatsAppConnectorMessageRequest):
                     content=response,
                 )
 
-        if response:
+        if response and not is_erasure_request:
             await _persist_message_history(
                 phone_number=request.phone_number,
                 correlation_id=auto_reply_id or f"auto-reply-{request.message_id}",

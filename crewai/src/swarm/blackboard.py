@@ -573,6 +573,93 @@ class Blackboard:
             rows = await conn.fetch(query, limit, offset)
             return [self._row_to_state(dict(row)) for row in rows]
 
+    async def delete_contact_data(self, contact_id: str) -> dict[str, int]:
+        """Delete all stored data for a contact by phone number."""
+        await self.connect()
+
+        phone_number = "".join(ch for ch in str(contact_id or "") if ch.isdigit())
+        if not phone_number:
+            return {"contacts": 0, "messages": 0, "events": 0, "agent_states": 0, "activities": 0}
+
+        # Remove cached state/locks immediately.
+        await self._redis.delete(self._cache_key(phone_number))
+        await self._redis.delete(self._lock_key(phone_number))
+
+        deleted = {
+            "contacts": 0,
+            "messages": 0,
+            "events": 0,
+            "agent_states": 0,
+            "activities": 0,
+        }
+
+        def _rows_affected(result: str) -> int:
+            # asyncpg returns strings like: "DELETE 3", "UPDATE 1"
+            try:
+                return int(str(result).split()[-1])
+            except Exception:
+                return 0
+
+        if not self._pool:
+            return deleted
+
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                # Delete stream/state rows keyed by phone number.
+                deleted["agent_states"] = _rows_affected(
+                    await conn.execute(
+                        "DELETE FROM swarm_agent_state WHERE contact_id = $1",
+                        phone_number,
+                    )
+                )
+                deleted["events"] = _rows_affected(
+                    await conn.execute(
+                        "DELETE FROM swarm_event_log WHERE contact_id = $1",
+                        phone_number,
+                    )
+                )
+
+                # Message history is keyed by phone_number in practice.
+                deleted["messages"] = _rows_affected(
+                    await conn.execute(
+                        "DELETE FROM message_history WHERE phone_number = $1",
+                        phone_number,
+                    )
+                )
+
+                # Keep media audit trail but mark media rows as deleted.
+                await conn.execute(
+                    "UPDATE media_files SET deleted_at = NOW() WHERE phone_number = $1 AND deleted_at IS NULL",
+                    phone_number,
+                )
+
+                contact_row = await conn.fetchrow(
+                    "SELECT id FROM networking_contacts WHERE phone_number = $1",
+                    phone_number,
+                )
+                if contact_row:
+                    contact_uuid = contact_row["id"]
+
+                    deleted["activities"] = _rows_affected(
+                        await conn.execute(
+                            "DELETE FROM agent_activity_log WHERE contact_id = $1",
+                            contact_uuid,
+                        )
+                    )
+
+                    deleted["contacts"] = _rows_affected(
+                        await conn.execute(
+                            "DELETE FROM networking_contacts WHERE id = $1",
+                            contact_uuid,
+                        )
+                    )
+
+        logger.info(
+            "Deleted contact data",
+            extra={"phone_number": phone_number, **deleted},
+        )
+        return deleted
+
     def _row_to_state(self, row: dict) -> ContactState:
         """Convert database row to ContactState"""
         # Handle JSON fields

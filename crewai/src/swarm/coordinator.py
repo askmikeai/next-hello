@@ -82,6 +82,13 @@ class SwarmCoordinator:
         """
         logger.info(f"Processing message from {phone_number}: {message_text[:50]}...")
 
+        if self.is_erasure_request(message_text):
+            await self.blackboard.delete_contact_data(phone_number)
+            return (
+                "Understood. I deleted your stored information from this system now. "
+                "If you message again later, we will treat it as a new conversation."
+            )
+
         # Get or create contact state
         contact = await self.blackboard.get_contact(phone_number)
         is_new_contact = contact is None
@@ -340,6 +347,20 @@ class SwarmCoordinator:
             r"\bdo not (send|use) voice\b",
             r"\bstop (sending )?voice\b",
             r"\bvoice off\b",
+        ]
+        return any(re.search(pattern, message_lower) for pattern in patterns)
+
+    def is_erasure_request(self, message: str) -> bool:
+        """Detect requests to delete personal data immediately."""
+        message_lower = message.lower().strip()
+        patterns = [
+            r"\bdelete\s+(my\s+)?(data|information|info|details|profile)\b",
+            r"\bremove\s+(my\s+)?(data|information|info|details|profile)\b",
+            r"\berase\s+(my\s+)?(data|information|info|details|profile)\b",
+            r"\bdelete\s+me\b",
+            r"\bremove\s+me\b",
+            r"\bforget\s+me\b",
+            r"\bright\s+to\s+be\s+forgotten\b",
         ]
         return any(re.search(pattern, message_lower) for pattern in patterns)
 
