@@ -69,6 +69,11 @@ class AutonomousAgent(ABC):
         """Consumer group for this agent type"""
         return f"swarm-agent-{self.name}"
 
+    @property
+    def requires_lock(self) -> bool:
+        """Whether this agent requires per-contact lock coordination."""
+        return True
+
     def get_streams(self) -> List[str]:
         """Get Redis stream names for subscribed events"""
         streams: Set[str] = set()
@@ -143,14 +148,16 @@ class AutonomousAgent(ABC):
                 logger.debug(f"[{self.name}] Skipping event for {event.contact_id}")
                 return True  # Acknowledge but don't process
 
-            # Acquire lock for this contact
-            lock_acquired = await self.blackboard.acquire_lock(
-                event.contact_id,
-                self.consumer_name,
-            )
-            if not lock_acquired:
-                logger.debug(f"[{self.name}] Could not acquire lock for {event.contact_id}")
-                return False  # Don't ack - will retry
+            lock_acquired = True
+            if self.requires_lock:
+                # Acquire lock for this contact
+                lock_acquired = await self.blackboard.acquire_lock(
+                    event.contact_id,
+                    self.consumer_name,
+                )
+                if not lock_acquired:
+                    logger.debug(f"[{self.name}] Could not acquire lock for {event.contact_id}")
+                    return False  # Don't ack - will retry
 
             try:
                 # Update agent state
@@ -163,7 +170,11 @@ class AutonomousAgent(ABC):
 
                 # Record activity start
                 started_at = datetime.utcnow()
-                action = event.event_type.value if isinstance(event.event_type, EventType) else str(event.event_type)
+                action = (
+                    event.event_type.value
+                    if isinstance(event.event_type, EventType)
+                    else str(event.event_type)
+                )
                 activity_id = await self.blackboard.log_agent_activity_start(
                     agent_type=self.name,
                     action=action,
@@ -180,36 +191,45 @@ class AutonomousAgent(ABC):
                     await self.eventbus.publish(result_event)
                     logger.info(f"[{self.name}] Published {result_event.event_type}")
 
-                # Log the event
-                await self.blackboard.log_event(event)
+                # Best-effort bookkeeping (should not fail message processing)
+                try:
+                    await self.blackboard.log_event(event)
+                except Exception as e:
+                    logger.warning(f"[{self.name}] Failed to log event: {e}")
 
-                # Record activity completion
                 completed_at = datetime.utcnow()
                 duration_ms = int((completed_at - started_at).total_seconds() * 1000)
-                await self.blackboard.log_agent_activity_complete(
-                    activity_id=activity_id,
-                    status="completed",
-                    completed_at=completed_at,
-                    duration_ms=duration_ms,
-                )
+                if activity_id:
+                    try:
+                        await self.blackboard.log_agent_activity_complete(
+                            activity_id=activity_id,
+                            status="completed",
+                            completed_at=completed_at,
+                            duration_ms=duration_ms,
+                        )
+                    except Exception as e:
+                        logger.warning(f"[{self.name}] Failed to complete activity log: {e}")
 
-                # Update agent state
-                await self.blackboard.save_agent_state(
-                    self.name,
-                    event.contact_id,
-                    "completed",
-                    event.event_id,
-                )
+                try:
+                    await self.blackboard.save_agent_state(
+                        self.name,
+                        event.contact_id,
+                        "completed",
+                        event.event_id,
+                    )
+                except Exception as e:
+                    logger.warning(f"[{self.name}] Failed to update agent state: {e}")
 
                 logger.info(f"[{self.name}] Completed for {event.contact_id}")
                 return True
 
             finally:
                 # Always release lock
-                await self.blackboard.release_lock(
-                    event.contact_id,
-                    self.consumer_name,
-                )
+                if self.requires_lock and lock_acquired:
+                    await self.blackboard.release_lock(
+                        event.contact_id,
+                        self.consumer_name,
+                    )
 
         except Exception as e:
             logger.error(f"[{self.name}] Error handling event: {e}", exc_info=True)
@@ -251,8 +271,7 @@ class AutonomousAgent(ABC):
         streams = self.get_streams()
 
         logger.info(
-            f"[{self.name}] Starting agent "
-            f"(instance={self.instance_id}, streams={streams})"
+            f"[{self.name}] Starting agent (instance={self.instance_id}, streams={streams})"
         )
 
         self._task = self.eventbus.start_consumer(

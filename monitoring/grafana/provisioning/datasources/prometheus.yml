@@ -14,3 +14,11 @@ datasources:
       manageAlerts: true
       prometheusType: Prometheus
       prometheusVersion: 2.48.0
+
+  - name: Loki
+    type: loki
+    access: proxy
+    url: http://nexthello-loki:3100
+    editable: false
+    jsonData:
+      maxLines: 1000

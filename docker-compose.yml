@@ -232,6 +232,48 @@ services:
     profiles:
       - tools
 
+  # ──────────────────────────────────────────────────────────────────────────
+  # AGENT-LOG-MONITOR - Centralized error monitoring for agent containers
+  # Watches Docker logs and emits only error/failure lines.
+  # View: docker compose logs -f agent-log-monitor
+  # ──────────────────────────────────────────────────────────────────────────
+  agent-log-monitor:
+    image: timberio/vector:0.40.1-alpine
+    container_name: nexthello-agent-log-monitor
+    depends_on:
+      - loki
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./ops/vector-agent-errors.toml:/etc/vector/vector.toml:ro
+      - nexthello-agent-errors:/var/log/agent-errors
+    command: ["--config", "/etc/vector/vector.toml"]
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # LOKI - Log storage backend for Grafana Explore
+  # UI query endpoint: http://localhost:3100
+  # ──────────────────────────────────────────────────────────────────────────
+  loki:
+    image: grafana/loki:3.1.1
+    container_name: nexthello-loki
+    command: ["-config.file=/etc/loki/config.yml"]
+    volumes:
+      - ./monitoring/loki/loki.yml:/etc/loki/config.yml:ro
+      - nexthello-loki:/loki
+    ports:
+      - "3100:3100"
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # VOLUMES
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -244,6 +286,10 @@ volumes:
     name: nexthello-media
   nexthello-whatsapp-auth:
     name: nexthello-whatsapp-auth
+  nexthello-agent-errors:
+    name: nexthello-agent-errors
+  nexthello-loki:
+    name: nexthello-loki
 
 networks:
   default:

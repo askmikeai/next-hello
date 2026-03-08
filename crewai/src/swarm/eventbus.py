@@ -352,11 +352,13 @@ class EventBus:
                     for msg_id, msg_data in messages:
                         if "data" in msg_data:
                             event = SwarmEvent.from_json(msg_data["data"])
-                            claimed.append(StreamMessage(
-                                message_id=msg_id,
-                                stream=stream,
-                                event=event,
-                            ))
+                            claimed.append(
+                                StreamMessage(
+                                    message_id=msg_id,
+                                    stream=stream,
+                                    event=event,
+                                )
+                            )
 
             return claimed
 

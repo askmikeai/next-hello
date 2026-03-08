@@ -21,6 +21,7 @@ from .agents import (
     ResearchAgent,
     QualificationAgent,
     PersonalizationAgent,
+    MessagingAgent,
     VideoAgent,
     VoiceAgent,
     CRMAgent,
@@ -43,15 +44,31 @@ RESET = "\033[0m"
 def print_banner() -> None:
     """Print the NextHello CLI banner with Miami Vice colors"""
     print()
-    print(f"{PINK}  _   _           _   _   _      _ _        {CYAN}⣿⣿⣿⣿⣿⣿⣿⣿⠿⠿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿{RESET}")
-    print(f"{PINK} | \\ | | _____  _| |_| | | | ___| | | ___   {CYAN}⣿⣿⣿⣿⣿⣿⠏⠀⠀⠀⠀⠙⠿⠿⠿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿{RESET}")
-    print(f"{PINK} |  \\| |/ _ \\ \\/ / __| |_| |/ _ \\ | |/ _ \\  {CYAN}⣿⣿⣿⣿⣿⣿⡀⠀⣠⣴⣶⣿⣿⣿⣿⣶⣮⣝⠻⢿⣿⣿⣿⣿⣿{RESET}")
-    print(f"{PINK} | |\\  |  __/>  <| |_|  _  |  __/ | | (_) | {CYAN}⣿⣿⣿⣿⣿⡟⣡⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦⡀⠀⠀⠙⢿{RESET}")
-    print(f"{PINK} |_| \\_|\\___/_/\\_\\\\__|_| |_|\\___|_|_|\\___/  {CYAN}⣿⠿⣿⣿⡿⢰⣿⡿⠋⠉⠉⢻⣿⣿⣿⣿⣿⣿⣿⣿⣿⡄⠀⠀⣸{RESET}")
+    print(
+        f"{PINK}  _   _           _   _   _      _ _        {CYAN}⣿⣿⣿⣿⣿⣿⣿⣿⠿⠿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿{RESET}"
+    )
+    print(
+        f"{PINK} | \\ | | _____  _| |_| | | | ___| | | ___   {CYAN}⣿⣿⣿⣿⣿⣿⠏⠀⠀⠀⠀⠙⠿⠿⠿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿{RESET}"
+    )
+    print(
+        f"{PINK} |  \\| |/ _ \\ \\/ / __| |_| |/ _ \\ | |/ _ \\  {CYAN}⣿⣿⣿⣿⣿⣿⡀⠀⣠⣴⣶⣿⣿⣿⣿⣶⣮⣝⠻⢿⣿⣿⣿⣿⣿{RESET}"
+    )
+    print(
+        f"{PINK} | |\\  |  __/>  <| |_|  _  |  __/ | | (_) | {CYAN}⣿⣿⣿⣿⣿⡟⣡⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦⡀⠀⠀⠙⢿{RESET}"
+    )
+    print(
+        f"{PINK} |_| \\_|\\___/_/\\_\\\\__|_| |_|\\___|_|_|\\___/  {CYAN}⣿⠿⣿⣿⡿⢰⣿⡿⠋⠉⠉⢻⣿⣿⣿⣿⣿⣿⣿⣿⣿⡄⠀⠀⣸{RESET}"
+    )
     print(f"                                            {CYAN}⠁⠀⠀⠙⠃⢿⣿⡅⠀⠀⢀⣼⣿⣿⣿⣿⠟⠛⠻⣿⣿⣷⢀⣴⣿{RESET}")
-    print(f"{ORANGE}  NextHello{RESET}                                 {CYAN}⡀⠀⠀⠀⠀⠸⣿⣛⣳⣾⣿⢿⡍⢉⣻⡇⠰⠀⠀⣿⣿⣿⢸⣿⣿{RESET}")
-    print(f"{CYAN}  AI Networking Swarm{RESET}                       {CYAN}⣷⡀⠀⠀⠀⠀⠈⠻⢿⣿⣿⣷⣶⣬⣽⣿⣦⣤⣤⣟⣿⢇⣾⣿⣿{RESET}")
-    print(f"    {YELLOW}🌴{RESET} {PINK}Made in Miami{RESET}                         {CYAN}⣿⣿⣄⠀⠀⠀⠀⠀⠀⠈⠙⠻⠿⣿⣿⣿⣿⣮⣿⠟⣡⣾⣿⣿⣿{RESET}")
+    print(
+        f"{ORANGE}  NextHello{RESET}                                 {CYAN}⡀⠀⠀⠀⠀⠸⣿⣛⣳⣾⣿⢿⡍⢉⣻⡇⠰⠀⠀⣿⣿⣿⢸⣿⣿{RESET}"
+    )
+    print(
+        f"{CYAN}  AI Networking Swarm{RESET}                       {CYAN}⣷⡀⠀⠀⠀⠀⠈⠻⢿⣿⣿⣷⣶⣬⣽⣿⣦⣤⣤⣟⣿⢇⣾⣿⣿{RESET}"
+    )
+    print(
+        f"    {YELLOW}🌴{RESET} {PINK}Made in Miami{RESET}                         {CYAN}⣿⣿⣄⠀⠀⠀⠀⠀⠀⠈⠙⠻⠿⣿⣿⣿⣿⣮⣿⠟⣡⣾⣿⣿⣿{RESET}"
+    )
     print(f"                                            {CYAN}⣿⣿⣿⡇⢰⣶⣤⣤⣤⣀⣀⠀⠀⠀⠀⠀⠀⠀⠀⢻⣿⣿⣿⣿⣿{RESET}")
     print()
 
@@ -105,6 +122,7 @@ class SwarmRunner:
         self.agent_pool.add_agent(ResearchAgent(self.eventbus, self.blackboard))
         self.agent_pool.add_agent(QualificationAgent(self.eventbus, self.blackboard))
         self.agent_pool.add_agent(PersonalizationAgent(self.eventbus, self.blackboard))
+        self.agent_pool.add_agent(MessagingAgent(self.eventbus, self.blackboard))
         self.agent_pool.add_agent(VideoAgent(self.eventbus, self.blackboard))
         self.agent_pool.add_agent(VoiceAgent(self.eventbus, self.blackboard))
         self.agent_pool.add_agent(CRMAgent(self.eventbus, self.blackboard))

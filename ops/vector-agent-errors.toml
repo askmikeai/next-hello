@@ -1,0 +1,51 @@
+[sources.agent_docker_logs]
+type = "docker_logs"
+docker_host = "unix:///var/run/docker.sock"
+include_containers = [
+  "nexthello-swarm",
+  "nexthello-agent-personalization",
+  "nexthello-agent-qualification",
+  "nexthello-agent-research",
+  "nexthello-agent-video",
+  "nexthello-agent-voice",
+  "nexthello-agent-crm",
+]
+
+[transforms.agent_errors]
+type = "filter"
+inputs = ["agent_docker_logs"]
+condition = '''
+exists(.message) && match(to_string!(.message), r'(?i)\b(error|exception|traceback|failed|fatal)\b')
+'''
+
+[transforms.compact]
+type = "remap"
+inputs = ["agent_errors"]
+source = '''
+. = {
+  "timestamp": .timestamp,
+  "container": .container_name,
+  "message": to_string!(.message)
+}
+'''
+
+[sinks.console]
+type = "console"
+inputs = ["compact"]
+target = "stdout"
+encoding.codec = "json"
+
+[sinks.file]
+type = "file"
+inputs = ["compact"]
+path = "/var/log/agent-errors/agent-errors-%Y-%m-%d.log"
+encoding.codec = "json"
+
+[sinks.loki]
+type = "loki"
+inputs = ["compact"]
+endpoint = "http://loki:3100"
+healthcheck = false
+encoding.codec = "json"
+labels.job = "nexthello-agent-errors"
+labels.container = "{{ container }}"

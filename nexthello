@@ -14,6 +14,8 @@
 #   whatsapp-test  Verify inbound persistence to PostgreSQL
 #   whatsapp-session-test  Verify Baileys session persistence + restore
 #   whatsapp-flow-test  Send outbound test message + verify DB
+#   swarm-response-test  Simulate inbound and verify swarm response
+#   model       Show/set active LLM provider
 #   migrate     Run database migrations
 #   build       Rebuild Docker images
 #   shell       Open shell in API container
@@ -77,6 +79,117 @@ case "${1:-help}" in
         docker compose exec api python cli.py status
         ;;
 
+    model)
+        shift || true
+        ENV_FILE=".env"
+        if [ ! -f "$ENV_FILE" ]; then
+            error "Missing .env file in project root"
+            exit 1
+        fi
+
+        if [ -z "${1:-}" ]; then
+            CURRENT=$(python - "$ENV_FILE" <<'PY'
+import re
+import sys
+path = sys.argv[1]
+value = None
+for line in open(path, encoding="utf-8", errors="ignore"):
+    m = re.match(r"\s*LLM_PROVIDER\s*=\s*(.*)\s*$", line)
+    if m:
+        value = m.group(1).strip().strip('"').strip("'")
+        break
+print(value or "anthropic/claude-sonnet-4-20250514 (default)")
+PY
+)
+            info "Current model: ${CURRENT}"
+            echo ""
+            echo "Usage: ./nexthello model <alias|provider>"
+            echo "Aliases: llama4, claude, gpt4o, local"
+            echo "Example: ./nexthello model openrouter/meta-llama/llama-4-maverick"
+            exit 0
+        fi
+
+        case "$1" in
+            llama4|llama-4|maverick|llama4-maverick)
+                PROVIDER="openrouter/meta-llama/llama-4-maverick"
+                ;;
+            claude|claude-sonnet|sonnet)
+                PROVIDER="anthropic/claude-sonnet-4-20250514"
+                ;;
+            gpt4o|gpt-4o)
+                PROVIDER="openai/gpt-4o"
+                ;;
+            local|ollama|llama3|llama3.2)
+                PROVIDER="ollama/llama3.2"
+                ;;
+            *)
+                PROVIDER="$1"
+                ;;
+        esac
+
+        python - "$ENV_FILE" "$PROVIDER" <<'PY'
+import re
+import sys
+
+path = sys.argv[1]
+provider = sys.argv[2]
+ollama_base = "http://host.docker.internal:11434"
+
+with open(path, encoding="utf-8", errors="ignore") as f:
+    lines = f.readlines()
+
+updated_provider = False
+updated_ollama_api_base = False
+updated_ollama_base_url = False
+out = []
+for line in lines:
+    if re.match(r"\s*LLM_PROVIDER\s*=", line):
+        out.append(f"LLM_PROVIDER={provider}\n")
+        updated_provider = True
+    elif re.match(r"\s*OLLAMA_API_BASE\s*=", line):
+        out.append(f"OLLAMA_API_BASE={ollama_base}\n")
+        updated_ollama_api_base = True
+    elif re.match(r"\s*OLLAMA_BASE_URL\s*=", line):
+        out.append(f"OLLAMA_BASE_URL={ollama_base}\n")
+        updated_ollama_base_url = True
+    else:
+        out.append(line)
+
+if not updated_provider:
+    if out and not out[-1].endswith("\n"):
+        out[-1] = out[-1] + "\n"
+    out.append("\n# Active LLM provider\n")
+    out.append(f"LLM_PROVIDER={provider}\n")
+
+if provider.startswith("ollama/"):
+    if not updated_ollama_api_base:
+        out.append("OLLAMA_API_BASE=http://host.docker.internal:11434\n")
+    if not updated_ollama_base_url:
+        out.append("OLLAMA_BASE_URL=http://host.docker.internal:11434\n")
+
+with open(path, "w", encoding="utf-8") as f:
+    f.writelines(out)
+PY
+
+        success "Set LLM provider to ${PROVIDER}"
+
+        if [[ "$PROVIDER" == openrouter/* ]]; then
+            if ! grep -q '^OPENROUTER_API_KEY=' "$ENV_FILE"; then
+                warn "OPENROUTER_API_KEY is not set in .env; model calls may fail"
+            fi
+        elif [[ "$PROVIDER" == ollama/* ]]; then
+            info "Configured Ollama base URL: http://host.docker.internal:11434"
+            if ! curl -s --max-time 2 http://localhost:11434/api/tags >/dev/null 2>&1; then
+                warn "Ollama does not appear reachable on localhost:11434 from host"
+            fi
+        fi
+
+        check_docker
+        info "Restarting api, worker, and swarm to apply model change..."
+        docker compose up -d --force-recreate api worker swarm >/dev/null
+        success "Model switch applied"
+        ;;
+
     logs)
         check_docker
         shift || true
@@ -87,11 +200,14 @@ case "${1:-help}" in
             worker)
                 docker compose logs -f worker
                 ;;
+            swarm)
+                docker compose logs -f swarm
+                ;;
             whatsapp|bridge)
                 docker compose logs -f whatsapp
                 ;;
             *)
-                docker compose logs -f api worker whatsapp
+                docker compose logs -f api worker swarm whatsapp
                 ;;
         esac
         ;;
@@ -136,6 +252,20 @@ case "${1:-help}" in
         info "Sending test message to ${TARGET_PHONE} and verifying PostgreSQL persistence..."
         docker compose exec -it api python cli.py whatsapp-outbound-test --timeout 240 --phone "$TARGET_PHONE"
         success "WhatsApp flow test passed (outbound send + PostgreSQL persistence)"
+        ;;
+
+    swarm-response-test|swarm-test)
+        check_docker
+        if [ -z "${2:-}" ]; then
+            error "Usage: ./nexthello swarm-response-test <phone>"
+            exit 1
+        fi
+
+        TARGET_PHONE="${2}"
+        shift 2 || true
+        info "Starting swarm response test for ${TARGET_PHONE}..."
+        docker compose up -d api swarm whatsapp >/dev/null
+        docker compose exec -it api python cli.py swarm-response-test --timeout 240 --phone "$TARGET_PHONE" "$@"
         ;;
 
     migrate|db:migrate)
@@ -203,11 +333,13 @@ COMMANDS:
   stop        Stop all services
   restart     Restart all services
   status      Check service health
-  logs        View logs (all, api, worker, whatsapp)
+  logs        View logs (all, api, worker, swarm, whatsapp)
+  model       Show or set LLM provider
   whatsapp       Connect WhatsApp (scan QR code)
   whatsapp-test  Verify fresh inbound is persisted to PostgreSQL
   whatsapp-session-test  Verify Baileys session persistence + restore
   whatsapp-flow-test  Send outbound test message + verify PostgreSQL
+  swarm-response-test  Simulate inbound and verify swarm response
   migrate     Run database migrations
   build       Build Docker images
   rebuild     Build and restart
@@ -222,7 +354,10 @@ EXAMPLES:
   ./nexthello whatsapp-test      # Verify inbound persistence
   ./nexthello whatsapp-session-test # Verify session persistence + restore
   ./nexthello whatsapp-flow-test # Send + verify outbound persistence
+  ./nexthello swarm-response-test 17544220907 # Validate swarm response persistence
   ./nexthello logs api           # View API logs
+  ./nexthello model llama4       # Switch to Llama 4 Maverick
+  ./nexthello model local        # Switch to local Ollama (llama3.2)
   ./nexthello status             # Check health
   ./nexthello cli research       # Run CLI command
 

@@ -112,26 +112,30 @@ class PersonalizationAgent(AutonomousAgent):
             if event.event_type == EventType.MESSAGE_RECEIVED:
                 response = await self._generate_message_response(event, contact)
                 if response:
-                    result_events.append(event.create_response(
-                        event_type=EventType.MESSAGE_SEND,
-                        payload={
-                            "text": response,
-                            "message_type": "text",
-                        },
-                        source_agent=self.name,
-                    ))
+                    result_events.append(
+                        event.create_response(
+                            event_type=EventType.MESSAGE_SEND,
+                            payload={
+                                "text": response,
+                                "message_type": "text",
+                            },
+                            source_agent=self.name,
+                        )
+                    )
 
             elif event.event_type == EventType.QUALIFICATION_COMPLETED:
                 response = await self._generate_qualification_followup(event, contact)
                 if response:
-                    result_events.append(event.create_response(
-                        event_type=EventType.MESSAGE_SEND,
-                        payload={
-                            "text": response,
-                            "message_type": "text",
-                        },
-                        source_agent=self.name,
-                    ))
+                    result_events.append(
+                        event.create_response(
+                            event_type=EventType.MESSAGE_SEND,
+                            payload={
+                                "text": response,
+                                "message_type": "text",
+                            },
+                            source_agent=self.name,
+                        )
+                    )
 
             elif event.event_type == EventType.VIDEO_REQUESTED:
                 script = await self._generate_video_script(contact)
@@ -142,11 +146,13 @@ class PersonalizationAgent(AutonomousAgent):
                         video_script=script,
                     )
 
-                    result_events.append(event.create_response(
-                        event_type=EventType.VIDEO_SCRIPT_READY,
-                        payload={"script": script},
-                        source_agent=self.name,
-                    ))
+                    result_events.append(
+                        event.create_response(
+                            event_type=EventType.VIDEO_SCRIPT_READY,
+                            payload={"script": script},
+                            source_agent=self.name,
+                        )
+                    )
 
             logger.info(f"[{self.name}] Generated content for {contact.phone_number}")
 
@@ -196,7 +202,7 @@ class PersonalizationAgent(AutonomousAgent):
 
         task = Task(
             description=f"""
-            Generate a friendly response to this message from {contact.first_name or 'the contact'}:
+            Generate a friendly response to this message from {contact.first_name or "the contact"}:
 
             Message: {message_text}
 
@@ -214,9 +220,16 @@ class PersonalizationAgent(AutonomousAgent):
         )
 
         crew = Crew(agents=[agent], tasks=[task], verbose=False)
-        result = crew.kickoff()
-
-        return str(result)
+        try:
+            result = crew.kickoff()
+            return str(result)
+        except Exception as e:
+            logger.warning(f"[{self.name}] LLM response failed, using fallback: {e}")
+            name = contact.first_name or contact.push_name or "there"
+            return (
+                f"Thanks for the message, {name}. I ran into a temporary issue on my side, "
+                "but I am here and can still help. Can you share a bit more detail so I can assist?"
+            )
 
     async def _generate_qualification_followup(
         self,
@@ -239,7 +252,9 @@ class PersonalizationAgent(AutonomousAgent):
         skills = research.get("skills", [])[:3]
 
         if company and title:
-            opening = f"I was looking at your background, {name} - {title} at {company} is impressive!"
+            opening = (
+                f"I was looking at your background, {name} - {title} at {company} is impressive!"
+            )
         elif company:
             opening = f"I was looking into {company}, {name} - really interesting work!"
         elif title:

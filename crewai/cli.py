@@ -9,6 +9,7 @@ Usage:
     python cli.py connect     # Show WhatsApp QR via API
     python cli.py whatsapp-session-test  # Verify session in PostgreSQL
     python cli.py whatsapp-outbound-test --phone 7544220907  # Send + verify outbound persistence
+    python cli.py swarm-response-test --phone 17544220907  # Simulate inbound + verify swarm response
     python cli.py worker      # Start background worker only
     python cli.py status      # Check service status
 """
@@ -19,6 +20,7 @@ import subprocess
 import time
 import signal
 import json
+import uuid
 from datetime import datetime, timezone
 import urllib.request
 import urllib.error
@@ -469,6 +471,133 @@ def run_whatsapp_outbound_persistence_test(phone, timeout=180, message=None):
     return False
 
 
+def run_swarm_response_test(phone, timeout=180, message=None):
+    """Manual test: simulate inbound message and verify swarm outbound response persistence."""
+    inbound_endpoint = "http://localhost:8001/whatsapp/message"
+    persisted_endpoint = "http://localhost:8001/admin/api/whatsapp/messages/persisted"
+
+    if not check_api():
+        print_error("API server is not running")
+        print_command("Start services", "./nexthello start")
+        return False
+
+    phone = "".join(ch for ch in str(phone or "") if ch.isdigit())
+    if not phone:
+        print_error("A valid phone number is required")
+        return False
+
+    started_at = datetime.now(timezone.utc).isoformat()
+    message = (message or f"swarm response test {started_at}").strip()
+    inbound_message_id = f"swarm-test-{uuid.uuid4()}"
+
+    print_section("Swarm Response Test")
+    print_info(f"Target phone: {Miami.CYAN}{phone}{Miami.RESET}")
+    print_info(f"Inbound content: {Miami.CYAN}{message}{Miami.RESET}")
+    print("")
+
+    known_outbound_ids = set()
+    try:
+        baseline_url = f"{persisted_endpoint}?" + urllib.parse.urlencode(
+            {
+                "direction": "outbound",
+                "phone": phone,
+                "limit": "100",
+            }
+        )
+        baseline = fetch_json(baseline_url, timeout=3)
+        known_outbound_ids = {
+            item.get("id") for item in (baseline.get("items") or []) if item.get("id")
+        }
+        print_info(f"Baseline loaded: {len(known_outbound_ids)} existing outbound row(s)")
+    except Exception as e:
+        print_warning(f"Could not load baseline outbound rows ({e}); continuing")
+
+    try:
+        inbound_result = post_json(
+            inbound_endpoint,
+            {
+                "phone_number": phone,
+                "message_id": inbound_message_id,
+                "message_type": "text",
+                "content": message,
+                "push_name": "Swarm Test",
+            },
+            timeout=10,
+        )
+    except urllib.error.HTTPError as e:
+        detail = f"HTTP {e.code}"
+        try:
+            raw = e.read().decode("utf-8")
+            if raw:
+                parsed = json.loads(raw)
+                detail = parsed.get("detail") or detail
+        except Exception:
+            pass
+        print_error(f"Failed to post inbound message to swarm: {detail}")
+        return False
+    except Exception as e:
+        print_error(f"Failed to post inbound message to swarm: {e}")
+        return False
+
+    print_success("Inbound message accepted by API")
+    print(f"  MessageId: {inbound_message_id}")
+    print(f"  Immediate response: {inbound_result.get('response')}")
+
+    deadline = time.time() + timeout
+    spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    spin_idx = 0
+
+    while time.time() < deadline:
+        params = {
+            "direction": "outbound",
+            "phone": phone,
+            "limit": "100",
+        }
+        url = f"{persisted_endpoint}?{urllib.parse.urlencode(params)}"
+
+        try:
+            data = fetch_json(url, timeout=3)
+        except Exception as e:
+            print_error(f"Failed to query persistence endpoint: {e}")
+            return False
+
+        items = data.get("items") or []
+        fresh = [
+            item for item in items if item.get("id") and item.get("id") not in known_outbound_ids
+        ]
+
+        if fresh:
+            latest = fresh[0]
+            print(" " * 120, end="\r")
+            print_success("Swarm produced outbound response persisted to PostgreSQL")
+            print(f"  Phone:     {latest.get('phoneNumber')}")
+            print(f"  CreatedAt: {latest.get('createdAt')}")
+            print(f"  Type:      {latest.get('messageType')}")
+            print(f"  Content:   {(latest.get('content') or '')[:120]}")
+            return True
+
+        icon = spinner[spin_idx % len(spinner)]
+        spin_idx += 1
+        remaining = int(deadline - time.time())
+        print(
+            f"{Miami.DIM}{icon} waiting for swarm outbound response... {remaining}s remaining"
+            f" (seen={len(items)} fresh={len(fresh)}){Miami.RESET}",
+            end="\r",
+            flush=True,
+        )
+        time.sleep(2)
+
+    print(" " * 120, end="\r")
+    print_error("No outbound swarm response persisted before timeout")
+    print_command("Tail swarm logs", "./nexthello logs swarm")
+    print_command("Tail API logs", "./nexthello logs api")
+    print_command(
+        "Inspect outbound rows",
+        f"curl '{persisted_endpoint}?direction=outbound&phone={phone}&limit=20'",
+    )
+    return False
+
+
 def run_whatsapp_session_test(timeout=180):
     """Manual test: verify Baileys session is persisted in PostgreSQL."""
     endpoint = "http://localhost:8001/admin/api/whatsapp/connector"
@@ -693,6 +822,7 @@ def print_help():
         ("connect", "Show WhatsApp QR via API"),
         ("whatsapp-test", "Verify fresh inbound message is in PostgreSQL"),
         ("whatsapp-outbound-test", "Send message and verify outbound row in PostgreSQL"),
+        ("swarm-response-test", "Simulate inbound and verify swarm outbound response"),
         ("whatsapp-session-test", "Verify Baileys session is in PostgreSQL"),
         ("worker", "Start background worker only"),
         ("status", "Check service status"),
@@ -810,6 +940,31 @@ def main():
             sys.exit(1)
 
         ok = run_whatsapp_outbound_persistence_test(phone=phone, timeout=timeout, message=message)
+        if not ok:
+            sys.exit(1)
+
+    elif command in ("swarm-response-test", "swarm-test"):
+        print_banner()
+        timeout = 180
+        phone = None
+        message = None
+        args = sys.argv[2:]
+        for idx, arg in enumerate(args):
+            if arg == "--timeout" and idx + 1 < len(args):
+                try:
+                    timeout = int(args[idx + 1])
+                except ValueError:
+                    pass
+            if arg == "--phone" and idx + 1 < len(args):
+                phone = args[idx + 1]
+            if arg == "--message" and idx + 1 < len(args):
+                message = args[idx + 1]
+
+        if not phone:
+            print_error("Missing required --phone argument")
+            sys.exit(1)
+
+        ok = run_swarm_response_test(phone=phone, timeout=timeout, message=message)
         if not ok:
             sys.exit(1)
 
