@@ -3,7 +3,8 @@ FROM node:20-alpine
 
 RUN apk add --no-cache \
     ca-certificates \
-    git
+    git \
+    ffmpeg
 
 WORKDIR /app
 

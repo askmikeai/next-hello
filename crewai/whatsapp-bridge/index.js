@@ -19,7 +19,12 @@ import pino from 'pino';
 import fs from 'fs';
 import path from 'path';
 import http from 'http';
+import os from 'os';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import PostgresSessionStore from './pg-store.js';
+
+const execFileAsync = promisify(execFile);
 
 const PYTHON_API_URL = process.env.PYTHON_API_URL || 'http://localhost:8001';
 const QR_OUTPUT_DIR = process.env.QR_OUTPUT_DIR || '/tmp';
@@ -31,6 +36,13 @@ const AUTH_ROOT = './auth_state';
 const AUTH_DIR = path.join(AUTH_ROOT, 'session');
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
+
+const TYPING_MIN_DELAY_MS = Number(process.env.TYPING_MIN_DELAY_MS || 1400);
+const TYPING_MAX_DELAY_MS = Number(process.env.TYPING_MAX_DELAY_MS || 5000);
+const TYPING_MS_PER_CHAR = Number(process.env.TYPING_MS_PER_CHAR || 65);
+const RECORDING_MIN_DELAY_MS = Number(process.env.RECORDING_MIN_DELAY_MS || 2500);
+const RECORDING_MAX_DELAY_MS = Number(process.env.RECORDING_MAX_DELAY_MS || 8000);
+const RECORDING_MS_PER_KB = Number(process.env.RECORDING_MS_PER_KB || 260);
 
 let sessionStore = null;
 let socket = null;
@@ -447,6 +459,7 @@ async function ensureSocketConnected() {
         if (result?.response && socket) {
           try {
             const replyJid = msg.key.remoteJid || msg.key.remoteJidAlt || toJid(phoneNumber);
+            await simulateTypingPresence(replyJid, String(result.response));
             await socket.sendMessage(replyJid, { text: result.response }, { quoted: msg });
           } catch (error) {
             logger.error({ error: error.message }, 'Failed to send auto-reply');
@@ -479,6 +492,90 @@ function parseJsonBody(req) {
 function sendJson(res, status, payload) {
   res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(payload));
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+async function simulateTypingPresence(jid, text = '') {
+  if (!socket || !isConnected) return;
+
+  const estimated = Math.round(String(text || '').length * TYPING_MS_PER_CHAR);
+  const delayMs = clamp(estimated, TYPING_MIN_DELAY_MS, TYPING_MAX_DELAY_MS);
+
+  try {
+    await socket.sendPresenceUpdate('composing', jid);
+    await sleep(delayMs);
+  } finally {
+    try {
+      await socket.sendPresenceUpdate('paused', jid);
+    } catch (_error) {
+      // ignore presence cleanup failure
+    }
+  }
+}
+
+async function simulateRecordingPresence(jid, audioBytes = 0) {
+  if (!socket || !isConnected) return;
+
+  const estimated = Math.round((audioBytes / 1024) * RECORDING_MS_PER_KB);
+  const delayMs = clamp(estimated, RECORDING_MIN_DELAY_MS, RECORDING_MAX_DELAY_MS);
+
+  try {
+    await socket.sendPresenceUpdate('recording', jid);
+    await sleep(delayMs);
+  } finally {
+    try {
+      await socket.sendPresenceUpdate('paused', jid);
+    } catch (_error) {
+      // ignore presence cleanup failure
+    }
+  }
+}
+
+async function convertAudioToWhatsAppVoice(audioBuffer) {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-voice-'));
+  const inputPath = path.join(tempDir, 'input.bin');
+  const outputPath = path.join(tempDir, 'output.ogg');
+
+  try {
+    fs.writeFileSync(inputPath, audioBuffer);
+
+    await execFileAsync('ffmpeg', [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-y',
+      '-i',
+      inputPath,
+      '-c:a',
+      'libopus',
+      '-ar',
+      '48000',
+      '-ac',
+      '1',
+      '-b:a',
+      '32k',
+      '-vbr',
+      'on',
+      '-application',
+      'voip',
+      outputPath,
+    ]);
+
+    return fs.readFileSync(outputPath);
+  } finally {
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    } catch (_error) {
+      // ignore cleanup errors
+    }
+  }
 }
 
 const server = http.createServer(async (req, res) => {
@@ -526,6 +623,7 @@ const server = http.createServer(async (req, res) => {
       }
 
       const jid = toJid(to);
+      await simulateTypingPresence(jid, String(message));
       const sendResult = await socket.sendMessage(jid, { text: String(message) });
       const messageId = sendResult?.key?.id || null;
 
@@ -573,11 +671,25 @@ const server = http.createServer(async (req, res) => {
         audioBuffer = Buffer.from(audioBase64, 'base64');
       }
 
+      // Force WhatsApp-compatible PTT format for Android/iOS playback.
+      const voiceBuffer = await convertAudioToWhatsAppVoice(audioBuffer);
+      await simulateRecordingPresence(jid, voiceBuffer.length);
+
       await socket.sendMessage(jid, {
-        audio: audioBuffer,
-        mimetype: mimeType || 'audio/ogg; codecs=opus',
+        audio: voiceBuffer,
+        mimetype: 'audio/ogg; codecs=opus',
         ptt: true,
       });
+
+      logger.info(
+        {
+          to: jid,
+          inputMimeType: mimeType || null,
+          inputBytes: audioBuffer.length,
+          outputBytes: voiceBuffer.length,
+        },
+        'Sent outbound WhatsApp voice note (opus/ogg)'
+      );
 
       sendJson(res, 200, { success: true, to: jid });
     } catch (error) {
