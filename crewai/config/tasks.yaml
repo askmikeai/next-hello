@@ -122,6 +122,61 @@ generate_follow_up_email:
     - Suggested call to action
   agent: personalization
 
+recommend_follow_up_strategy:
+  description: >
+    Build a clear follow-up strategy for this networking contact.
+
+    Contact Profile:
+    {contact_profile}
+
+    Conversation Summary:
+    {conversation_summary}
+
+    Research Summary:
+    {research_summary}
+
+    Current Context:
+    - Last contact at: {last_contact_at}
+    - Goal for this relationship: {follow_up_goal}
+    - Preferred channel: {preferred_channel}
+
+    Decide:
+    1) Priority score (0-100)
+    2) Why this follow-up matters now
+    3) Recommended next action
+    4) Recommended send window (today/48h/this week/later)
+    5) Risk to avoid (too salesy, too long, wrong CTA, etc)
+  expected_output: >
+    A concise strategy containing:
+    - Priority score (0-100)
+    - Priority band (high/medium/low)
+    - Reason to follow up now
+    - Recommended next action
+    - Send timing recommendation
+    - One risk to avoid
+  agent: qualification
+
+draft_follow_up_message:
+  description: >
+    Draft a personalized follow-up message for this contact.
+
+    Contact First Name: {first_name}
+    Event Context: {event_name}
+    Follow-up Goal: {follow_up_goal}
+    Conversation Summary: {conversation_summary}
+    Strategy Context: {strategy_context}
+
+    Requirements:
+    - Keep it concise (2-4 sentences)
+    - Sound human and specific, not generic
+    - Include one clear CTA
+    - Mention one relevant detail from conversation/research
+  expected_output: >
+    A WhatsApp-ready follow-up message plus:
+    - CTA used
+    - Why this phrasing fits the contact
+  agent: personalization
+
 # Video Tasks
 generate_heygen_video:
   description: >

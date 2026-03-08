@@ -659,6 +659,26 @@ class FullPipelineRequest(BaseModel):
     sync_to_crm: bool = Field(True, description="Sync to CRM")
 
 
+class FollowUpRecommendationRequest(BaseModel):
+    """Request to build follow-up recommendations and message draft."""
+
+    phone_number: str = Field(..., description="Contact's phone number")
+    first_name: Optional[str] = Field(None, description="First name")
+    last_name: Optional[str] = Field(None, description="Last name")
+    email: Optional[str] = Field(None, description="Email address")
+    linkedin_url: Optional[str] = Field(None, description="LinkedIn URL")
+    company_name: Optional[str] = Field(None, description="Company name")
+    contact_profile: Optional[dict] = Field(None, description="Additional profile context")
+    conversation_summary: str = Field("", description="Summary of recent conversation")
+    research_summary: str = Field("", description="Optional precomputed research summary")
+    follow_up_goal: str = Field(
+        "Strengthen relationship and propose a next step",
+        description="Primary desired outcome of this follow-up",
+    )
+    preferred_channel: str = Field("whatsapp", description="Preferred outreach channel")
+    last_contact_at: Optional[str] = Field(None, description="Last contact timestamp")
+
+
 class SendMessageRequest(BaseModel):
     """Request to send a WhatsApp message"""
 
@@ -1121,6 +1141,30 @@ async def full_pipeline(request: FullPipelineRequest):
             company_name=request.company_name,
             generate_video=request.generate_video,
             sync_to_crm=request.sync_to_crm,
+        )
+        return CrewResponse(success=True, result=str(result))
+    except Exception as e:
+        return CrewResponse(success=False, error=str(e))
+
+
+@app.post("/pipeline/follow-up-recommendation", response_model=CrewResponse)
+async def follow_up_recommendation(request: FollowUpRecommendationRequest):
+    """Research contact and generate follow-up strategy plus message draft."""
+    try:
+        crew = get_crew()
+        result = crew.recommend_follow_up(
+            phone_number=request.phone_number,
+            first_name=request.first_name,
+            last_name=request.last_name,
+            email=request.email,
+            linkedin_url=request.linkedin_url,
+            company_name=request.company_name,
+            contact_profile=request.contact_profile,
+            conversation_summary=request.conversation_summary,
+            research_summary=request.research_summary,
+            follow_up_goal=request.follow_up_goal,
+            preferred_channel=request.preferred_channel,
+            last_contact_at=request.last_contact_at,
         )
         return CrewResponse(success=True, result=str(result))
     except Exception as e:

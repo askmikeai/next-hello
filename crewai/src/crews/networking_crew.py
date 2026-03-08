@@ -10,7 +10,7 @@ Orchestrates multiple agents to handle networking follow-up tasks:
 """
 
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 import yaml
 from crewai import Crew, Process, Task
@@ -162,7 +162,9 @@ class NetworkingCrew:
             "company_name": company_name or "Unknown",
             "job_title": job_title or "Unknown",
             "owner_name": self.owner_name,
-            "include_calendly": "Include Calendly link at the end" if include_calendly else "Do not include scheduling link",
+            "include_calendly": "Include Calendly link at the end"
+            if include_calendly
+            else "Do not include scheduling link",
         }
 
         config = self._format_task_config("generate_welcome_message", variables)
@@ -319,7 +321,8 @@ class NetworkingCrew:
             "company_name": company_name or "",
             "job_title": job_title or "",
             "create_deal": create_deal,
-            "deal_name": deal_name or f"{first_name or 'New'} {last_name or 'Contact'} - {self.event_name}",
+            "deal_name": deal_name
+            or f"{first_name or 'New'} {last_name or 'Contact'} - {self.event_name}",
             "note": note or "",
         }
 
@@ -517,13 +520,98 @@ class NetworkingCrew:
             tasks.append(crm_task)
 
         # Build agent list (unique agents used)
-        agent_list = [agents_dict["research"], agents_dict["qualification"], agents_dict["personalization"]]
+        agent_list: list[Any] = [
+            agents_dict["research"],
+            agents_dict["qualification"],
+            agents_dict["personalization"],
+        ]
         if sync_to_crm:
             agent_list.append(agents_dict["crm"])
 
         crew = Crew(
-            agents=agent_list,
+            agents=cast(Any, agent_list),
             tasks=tasks,
+            process=Process.sequential,
+            verbose=True,
+        )
+
+        return crew.kickoff()
+
+    def recommend_follow_up(
+        self,
+        phone_number: str,
+        first_name: Optional[str] = None,
+        last_name: Optional[str] = None,
+        email: Optional[str] = None,
+        linkedin_url: Optional[str] = None,
+        company_name: Optional[str] = None,
+        contact_profile: Optional[dict] = None,
+        conversation_summary: str = "",
+        research_summary: str = "",
+        follow_up_goal: str = "Strengthen relationship and propose a next step",
+        preferred_channel: str = "whatsapp",
+        last_contact_at: Optional[str] = None,
+    ) -> Any:
+        """Generate research-backed follow-up strategy and draft message."""
+        agents_dict = self.agents.all_agents()
+
+        research_variables = {
+            "phone_number": phone_number,
+            "email": email or "Not provided",
+            "linkedin_url": linkedin_url or "Not provided",
+            "first_name": first_name or "",
+            "last_name": last_name or "",
+            "company_name": company_name or "Not provided",
+        }
+        research_config = self._format_task_config("research_contact", research_variables)
+        research_task = Task(
+            description=research_config["description"],
+            expected_output=research_config["expected_output"],
+            agent=agents_dict["research"],
+        )
+
+        strategy_variables = {
+            "contact_profile": str(contact_profile or {}),
+            "conversation_summary": conversation_summary or "No conversation summary provided",
+            "research_summary": research_summary or "Use findings from the research task",
+            "last_contact_at": last_contact_at or "Unknown",
+            "follow_up_goal": follow_up_goal,
+            "preferred_channel": preferred_channel,
+        }
+        strategy_config = self._format_task_config(
+            "recommend_follow_up_strategy", strategy_variables
+        )
+        strategy_task = Task(
+            description=strategy_config["description"],
+            expected_output=strategy_config["expected_output"],
+            agent=agents_dict["qualification"],
+            context=[research_task],
+        )
+
+        message_variables = {
+            "first_name": first_name or "there",
+            "event_name": self.event_name,
+            "follow_up_goal": follow_up_goal,
+            "conversation_summary": conversation_summary or "No conversation summary provided",
+            "strategy_context": "Use recommendation from the follow-up strategy task",
+        }
+        message_config = self._format_task_config("draft_follow_up_message", message_variables)
+        message_task = Task(
+            description=message_config["description"],
+            expected_output=message_config["expected_output"],
+            agent=agents_dict["personalization"],
+            context=[research_task, strategy_task],
+        )
+
+        agent_list: list[Any] = [
+            agents_dict["research"],
+            agents_dict["qualification"],
+            agents_dict["personalization"],
+        ]
+
+        crew = Crew(
+            agents=cast(Any, agent_list),
+            tasks=[research_task, strategy_task, message_task],
             process=Process.sequential,
             verbose=True,
         )
