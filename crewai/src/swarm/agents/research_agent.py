@@ -8,7 +8,7 @@ Publishes: research.completed, research.failed, qualification.needed
 import os
 import logging
 import json
-from typing import List
+from typing import Any, List
 from datetime import datetime
 
 import httpx
@@ -128,21 +128,25 @@ class ResearchAgent(AutonomousAgent):
                 await self.blackboard.update_contact(contact.phone_number, **updates)
 
                 # Publish research.completed
-                result_events.append(event.create_response(
-                    event_type=EventType.RESEARCH_COMPLETED,
-                    payload={
-                        "research_data": research_data,
-                        "source": "pdl",
-                    },
-                    source_agent=self.name,
-                ))
+                result_events.append(
+                    event.create_response(
+                        event_type=EventType.RESEARCH_COMPLETED,
+                        payload={
+                            "research_data": research_data,
+                            "source": "pdl",
+                        },
+                        source_agent=self.name,
+                    )
+                )
 
                 # Trigger qualification
-                result_events.append(event.create_response(
-                    event_type=EventType.QUALIFICATION_NEEDED,
-                    payload={},
-                    source_agent=self.name,
-                ))
+                result_events.append(
+                    event.create_response(
+                        event_type=EventType.QUALIFICATION_NEEDED,
+                        payload={},
+                        source_agent=self.name,
+                    )
+                )
 
                 logger.info(f"[{self.name}] Research completed for {contact.phone_number}")
 
@@ -153,11 +157,13 @@ class ResearchAgent(AutonomousAgent):
                     research_status="failed",
                 )
 
-                result_events.append(event.create_response(
-                    event_type=EventType.RESEARCH_FAILED,
-                    payload={"reason": "no_data_found"},
-                    source_agent=self.name,
-                ))
+                result_events.append(
+                    event.create_response(
+                        event_type=EventType.RESEARCH_FAILED,
+                        payload={"reason": "no_data_found"},
+                        source_agent=self.name,
+                    )
+                )
 
         except Exception as e:
             logger.error(f"[{self.name}] Research failed: {e}")
@@ -167,11 +173,13 @@ class ResearchAgent(AutonomousAgent):
                 research_status="failed",
             )
 
-            result_events.append(event.create_response(
-                event_type=EventType.RESEARCH_FAILED,
-                payload={"reason": str(e)},
-                source_agent=self.name,
-            ))
+            result_events.append(
+                event.create_response(
+                    event_type=EventType.RESEARCH_FAILED,
+                    payload={"reason": str(e)},
+                    source_agent=self.name,
+                )
+            )
 
         return result_events
 
@@ -181,6 +189,11 @@ class ResearchAgent(AutonomousAgent):
 
         Returns enrichment data or None if no match found.
         """
+        # Prefer delegated research via OpenClaw agent if configured.
+        openclaw_result = await self._enrich_via_openclaw(contact)
+        if openclaw_result:
+            return openclaw_result
+
         api_key = os.getenv("PDL_API_KEY")
         if not api_key:
             logger.warning("PDL_API_KEY not configured")
@@ -250,8 +263,12 @@ class ResearchAgent(AutonomousAgent):
                 if experience:
                     result["work_history"] = [
                         {
-                            "title": exp.get("title", {}).get("name") if isinstance(exp.get("title"), dict) else exp.get("title"),
-                            "company": exp.get("company", {}).get("name") if isinstance(exp.get("company"), dict) else exp.get("company"),
+                            "title": exp.get("title", {}).get("name")
+                            if isinstance(exp.get("title"), dict)
+                            else exp.get("title"),
+                            "company": exp.get("company", {}).get("name")
+                            if isinstance(exp.get("company"), dict)
+                            else exp.get("company"),
                             "start_date": exp.get("start_date"),
                             "end_date": exp.get("end_date"),
                         }
@@ -265,6 +282,69 @@ class ResearchAgent(AutonomousAgent):
             return None
         except Exception as e:
             logger.error(f"[{self.name}] PDL error: {e}")
+            return None
+
+    async def _enrich_via_openclaw(self, contact: ContactState) -> dict | None:
+        """Delegate contact research to an OpenClaw node over Tailscale."""
+        endpoint = os.getenv("OPENCLAW_RESEARCH_URL", "").strip()
+        if not endpoint:
+            return None
+
+        timeout = float(os.getenv("OPENCLAW_TIMEOUT_SECONDS", "20"))
+        api_key = os.getenv("OPENCLAW_API_KEY", "").strip()
+
+        payload = {
+            "phone_number": contact.phone_number,
+            "email": contact.email,
+            "linkedin_url": contact.linkedin_url,
+            "first_name": contact.first_name,
+            "last_name": contact.last_name,
+            "company_name": contact.company_name,
+            "source": "nexthello-swarm",
+        }
+
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(endpoint, json=payload, headers=headers)
+
+            if response.status_code != 200:
+                logger.warning(
+                    f"[{self.name}] OpenClaw research failed: HTTP {response.status_code}"
+                )
+                return None
+
+            body: dict[str, Any] = response.json()
+            data = body.get("research_data") if isinstance(body, dict) else None
+            if not isinstance(data, dict):
+                data = body if isinstance(body, dict) else None
+
+            if not data:
+                return None
+
+            # Keep only shape expected by downstream components.
+            return {
+                "full_name": data.get("full_name"),
+                "first_name": data.get("first_name"),
+                "last_name": data.get("last_name"),
+                "job_title": data.get("job_title"),
+                "company_name": data.get("company_name"),
+                "company_industry": data.get("company_industry"),
+                "company_size": data.get("company_size"),
+                "linkedin_url": data.get("linkedin_url"),
+                "work_email": data.get("work_email"),
+                "location": data.get("location"),
+                "skills": data.get("skills", [])[:10],
+                "experience_years": data.get("experience_years"),
+                "education": data.get("education", []),
+                "work_history": data.get("work_history", []),
+                "source": "openclaw",
+            }
+        except Exception as e:
+            logger.warning(f"[{self.name}] OpenClaw research unavailable: {e}")
             return None
 
     def _format_location(self, data: dict) -> str | None:

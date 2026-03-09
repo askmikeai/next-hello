@@ -1286,6 +1286,61 @@ async def admin_get_health():
     }
 
 
+@app.get("/admin/api/research/openclaw/health")
+async def admin_get_openclaw_health():
+    """Check OpenClaw research endpoint connectivity over Tailscale."""
+    endpoint = (os.getenv("OPENCLAW_RESEARCH_URL") or "").strip()
+    timeout_seconds = float(os.getenv("OPENCLAW_TIMEOUT_SECONDS", "20"))
+    api_key = (os.getenv("OPENCLAW_API_KEY") or "").strip()
+
+    if not endpoint:
+        return {
+            "configured": False,
+            "reachable": False,
+            "endpoint": None,
+            "healthUrl": None,
+            "statusCode": None,
+            "error": "OPENCLAW_RESEARCH_URL not configured",
+        }
+
+    health_url = (os.getenv("OPENCLAW_HEALTH_URL") or "").strip()
+    if not health_url:
+        if endpoint.endswith("/research"):
+            health_url = endpoint[: -len("/research")] + "/health"
+        else:
+            health_url = endpoint.rstrip("/") + "/health"
+
+    headers = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    result = {
+        "configured": True,
+        "reachable": False,
+        "endpoint": endpoint,
+        "healthUrl": health_url,
+        "statusCode": None,
+        "latencyMs": None,
+        "error": None,
+    }
+
+    try:
+        import time
+
+        start = time.time()
+        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+            response = await client.get(health_url, headers=headers)
+        result["latencyMs"] = int((time.time() - start) * 1000)
+        result["statusCode"] = response.status_code
+        result["reachable"] = response.status_code < 500
+        if response.status_code >= 500:
+            result["error"] = f"Health endpoint returned {response.status_code}"
+    except Exception as e:
+        result["error"] = str(e) or e.__class__.__name__
+
+    return result
+
+
 @app.get("/admin/api/whatsapp/connector")
 async def admin_get_whatsapp_connector():
     """Get WhatsApp connector status and current QR payload."""
