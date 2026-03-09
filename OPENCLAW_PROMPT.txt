@@ -1,0 +1,66 @@
+You are my integration engineer. Help me expose this Mac mini as a reliable OpenClaw research service for my NextHello CrewAI swarm.
+
+Context:
+- CrewAI calls OpenClaw via HTTP:
+  - POST /research
+  - GET /health
+- CrewAI is already configured to call:
+  - OPENCLAW_RESEARCH_URL=http://100.92.52.64:8000/research
+  - OPENCLAW_HEALTH_URL=http://100.92.52.64:8000/health
+- Current issue: requests time out from another machine on Tailscale.
+
+Your tasks:
+1) Diagnose connectivity end-to-end (service bind, firewall, tailscale reachability).
+2) Ensure OpenClaw listens on 0.0.0.0:8000, not localhost-only.
+3) Verify endpoints:
+   - GET /health returns 200 quickly
+   - POST /research accepts JSON and returns structured JSON
+4) Add/confirm Bearer auth support:
+   - Accept Authorization: Bearer <token>
+   - Return 401 for invalid/missing token (except optionally /health)
+5) Return exact commands I should run on this Mac mini and expected outputs.
+6) Provide a minimal curl smoke test suite for remote host validation.
+7) Provide a launchd or systemd-style persistent startup setup (for macOS use launchd).
+8) Include troubleshooting checklist for:
+   - Tailscale offline/relay issues
+   - Port blocked
+   - Process running but not reachable
+   - DNS/IP drift
+9) Keep output actionable and concise:
+   - "Run this"
+   - "Expected result"
+   - "If failed, do this"
+
+Research endpoint contract to support:
+Request JSON:
+{
+  "phone_number": "...",
+  "email": "...",
+  "linkedin_url": "...",
+  "first_name": "...",
+  "last_name": "...",
+  "company_name": "...",
+  "source": "nexthello-swarm"
+}
+
+Response JSON (shape required):
+{
+  "research_data": {
+    "full_name": "...",
+    "first_name": "...",
+    "last_name": "...",
+    "job_title": "...",
+    "company_name": "...",
+    "company_industry": "...",
+    "company_size": "...",
+    "linkedin_url": "...",
+    "work_email": "...",
+    "location": "...",
+    "skills": [],
+    "experience_years": 0,
+    "education": [],
+    "work_history": []
+  }
+}
+
+Start by asking me for only missing values (API token, exact OpenClaw run command/path), then give me a step-by-step fix plan.

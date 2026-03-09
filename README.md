@@ -253,6 +253,26 @@ Full interactive docs at http://localhost:8001/docs
 
 ---
 
+## UI Dashboard (CRM + Swarm Live)
+
+A React + ReactFlow dashboard is available in `ui/`.
+
+```bash
+cd ui
+npm install
+npm run dev
+```
+
+Open http://localhost:5173.
+
+Features:
+- CRM contacts list and detail panel
+- Trigger swarm actions (research, qualification, video, voice, crm)
+- Manual outbound WhatsApp send
+- Live swarm graph via SSE (`/admin/api/swarm/events`) rendered with ReactFlow
+
+---
+
 ## Development
 
 ### Local Development (without Docker)
