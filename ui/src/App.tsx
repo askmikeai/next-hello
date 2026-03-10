@@ -17,6 +17,7 @@ type Contact = {
   job_title?: string;
   qualification_tier?: string;
   status?: string;
+  total_turns?: number;
 };
 
 type Activity = {
@@ -62,6 +63,17 @@ const AGENTS = [
   "crm",
   "messaging",
 ];
+
+const AGENT_EMOJI: Record<string, string> = {
+  openclaw: "🦞",
+  research: "🔎",
+  qualification: "🎯",
+  personalization: "✨",
+  video: "🎬",
+  voice: "🎙️",
+  crm: "🗂️",
+  messaging: "💬",
+};
 
 const ACTIVE_WINDOW_MS = 12000;
 const DEMO_MODE = ["1", "true", "yes", "on"].includes(
@@ -135,6 +147,14 @@ export default function App() {
     () => contacts.find((c) => c.phone_number === selectedId || c.id === selectedId) ?? null,
     [contacts, selectedId]
   );
+
+  const turnsByPhone = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const s of states) {
+      map.set(s.phoneNumber, s.conversationTurns || 0);
+    }
+    return map;
+  }, [states]);
 
   const displayName = (contact: Contact): string => {
     if (!DEMO_MODE) {
@@ -285,22 +305,31 @@ export default function App() {
       {
         id: "coordinator",
         position: { x: 300, y: 40 },
-        data: { label: "Swarm Coordinator" },
+        data: { label: "🧠 Swarm Coordinator" },
         sourcePosition: Position.Bottom,
         targetPosition: Position.Top,
         className: `coordinator-node${coordinatorActive ? " coordinator-node--active" : ""}`,
-        style: { background: "#0b1220", color: "#f8fafc", borderRadius: 10, padding: 10, border: "1px solid #334155" },
+        style: {
+          background: "#0b1220",
+          color: "#f8fafc",
+          borderRadius: 12,
+          padding: 14,
+          border: "1px solid #334155",
+          minWidth: 190,
+          fontSize: 15,
+          fontWeight: 700,
+        },
       },
       ...AGENTS.map((name, idx) => ({
         id: name,
         position: { x: 70 + idx * 155, y: 220 },
         data: {
-          label: `${name}\n${activities.filter((a) => a.agentType === name).length} events`,
+          label: `${AGENT_EMOJI[name] || "🤖"} ${name}\n${activities.filter((a) => a.agentType === name).length} events`,
         },
         className: `agent-node${activeAgents.has(name) ? " agent-node--active" : ""}${failedAgents.has(name) ? " agent-node--failed" : ""}`,
         style: {
-          borderRadius: 10,
-          padding: 8,
+          borderRadius: 12,
+          padding: 12,
           background: failedAgents.has(name)
             ? "#7f1d1d"
             : activeAgents.has(name)
@@ -312,6 +341,9 @@ export default function App() {
             : activeAgents.has(name)
               ? "1px solid #38bdf8"
               : "1px solid #334155",
+          minWidth: 170,
+          fontSize: 14,
+          fontWeight: 700,
           boxShadow: activeAgents.has(name)
             ? "0 0 0 2px rgba(56, 189, 248, 0.35), 0 0 18px rgba(14, 165, 233, 0.45)"
             : "none",
@@ -320,18 +352,6 @@ export default function App() {
         sourcePosition: Position.Bottom,
       })),
     ];
-
-    const contactNodes: Node[] = states.slice(0, 8).map((s, idx) => ({
-      id: `contact-${s.phoneNumber}`,
-      position: { x: 50 + idx * 160, y: 420 },
-      data: {
-        label: `${
-          DEMO_MODE ? friendlyIdentity(s.phoneNumber ?? "unknown") : s.phoneNumber
-        }\nturns: ${s.conversationTurns}`,
-      },
-      style: { borderRadius: 10, padding: 8, background: "#0f172a", color: "#cbd5e1", border: "1px solid #334155" },
-      sourcePosition: Position.Top,
-    }));
 
     const baseEdges: Edge[] = AGENTS.map((name) => ({
       id: `coordinator-${name}`,
@@ -345,22 +365,7 @@ export default function App() {
       },
     }));
 
-    const dynamicEdges: Edge[] = activities.slice(0, 30).flatMap((a, idx) => {
-      const phone = states.find((s) => s.correlationId === a.correlationId)?.phoneNumber;
-      if (!phone || !AGENTS.includes(a.agentType)) return [];
-      return [
-        {
-          id: `evt-${idx}`,
-          source: `contact-${phone}`,
-          target: a.agentType,
-          animated: true,
-          style: { stroke: a.status === "failed" ? "#dc2626" : "#16a34a" },
-          markerEnd: { type: MarkerType.ArrowClosed },
-        },
-      ];
-    });
-
-    return { nodes: [...baseNodes, ...contactNodes], edges: [...baseEdges, ...dynamicEdges] };
+    return { nodes: baseNodes, edges: baseEdges };
   }, [activities, states, nowTs]);
 
   return (
@@ -396,7 +401,9 @@ export default function App() {
                   onClick={() => setSelectedId(c.phone_number)}
                 >
                   <span>{displayName(c)}</span>
-                  <small>{DEMO_MODE ? "🎭 Demo profile" : c.company_name || "Unknown company"}</small>
+                  <small>
+                    {DEMO_MODE ? "🎭 Demo profile" : c.company_name || "Unknown company"} · 💬 {turnsByPhone.get(c.phone_number) ?? c.total_turns ?? 0}
+                  </small>
                 </button>
               );
             })}
