@@ -72,6 +72,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 GREETING_VIDEO_DIR = PROJECT_ROOT / "storage" / "greeting-video"
 GREETING_VIDEO_METADATA_PATH = GREETING_VIDEO_DIR / "metadata.json"
 WHATSAPP_CONNECTOR_URL = os.getenv("WHATSAPP_CONNECTOR_URL", "http://whatsapp:3000")
+DEMO_MODE = str(os.getenv("DEMO_MODE", "false")).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 BAD_LANGUAGE_FALLBACK_PATTERNS = [
     "fuck",
     "shit",
@@ -1947,11 +1953,14 @@ async def admin_get_contact(contact_id: str):
 async def admin_get_contact_messages(
     contact_id: str,
     limit: int = Query(50, ge=1, le=500),
-    safe: bool = Query(True),
+    safe: Optional[bool] = Query(None),
 ):
     """Get messages for a single contact."""
     messages = await admin_get_messages(limit=limit, phone=contact_id)
-    if not safe:
+
+    # In demo mode, always return filtered content.
+    effective_safe = DEMO_MODE if safe is None else (safe or DEMO_MODE)
+    if not effective_safe:
         return messages
 
     try:

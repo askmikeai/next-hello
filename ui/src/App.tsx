@@ -63,6 +63,9 @@ const AGENTS = [
 ];
 
 const ACTIVE_WINDOW_MS = 12000;
+const DEMO_MODE = ["1", "true", "yes", "on"].includes(
+  String(import.meta.env.VITE_DEMO_MODE ?? "false").toLowerCase()
+);
 
 const FRIENDLY_ADJECTIVES = [
   "Sunny",
@@ -132,7 +135,19 @@ export default function App() {
     [contacts, selectedId]
   );
 
-  const redactedName = (phoneNumber?: string | null): string => friendlyIdentity(phoneNumber ?? "unknown");
+  const displayName = (contact: Contact): string => {
+    if (!DEMO_MODE) {
+      return [contact.first_name, contact.last_name].filter(Boolean).join(" ") || contact.phone_number;
+    }
+    return friendlyIdentity(contact.phone_number ?? "unknown");
+  };
+
+  const displayPhone = (phoneNumber?: string | null): string => {
+    if (!DEMO_MODE) {
+      return phoneNumber || "-";
+    }
+    return "🔒 Hidden for live demo";
+  };
 
   const refreshCRM = async () => {
     setLoading(true);
@@ -198,7 +213,7 @@ export default function App() {
 
       try {
         const next = await json<ContactMessage[]>(
-          `/admin/api/contacts/${encodeURIComponent(selected.phone_number)}/messages?limit=30&safe=true`
+          `/admin/api/contacts/${encodeURIComponent(selected.phone_number)}/messages?limit=30&safe=${DEMO_MODE ? "true" : "false"}`
         );
         setMessages(next);
       } catch {
@@ -308,7 +323,11 @@ export default function App() {
     const contactNodes: Node[] = states.slice(0, 8).map((s, idx) => ({
       id: `contact-${s.phoneNumber}`,
       position: { x: 50 + idx * 160, y: 420 },
-      data: { label: `${redactedName(s.phoneNumber)}\nturns: ${s.conversationTurns}` },
+      data: {
+        label: `${
+          DEMO_MODE ? friendlyIdentity(s.phoneNumber ?? "unknown") : s.phoneNumber
+        }\nturns: ${s.conversationTurns}`,
+      },
       style: { borderRadius: 10, padding: 8, background: "#0f172a", color: "#cbd5e1", border: "1px solid #334155" },
       sourcePosition: Position.Top,
     }));
@@ -346,7 +365,10 @@ export default function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <h1>NextHello CRM + Swarm Live</h1>
+        <div className="title-row">
+          <h1>NextHello CRM + Swarm Live</h1>
+          {DEMO_MODE ? <span className="demo-badge">DEMO MODE</span> : null}
+        </div>
         <div className="actions">
           <button onClick={refreshCRM} disabled={loading}>Refresh CRM</button>
           <button onClick={refreshSwarm}>Refresh Swarm</button>
@@ -372,8 +394,8 @@ export default function App() {
                   className={`contact ${active ? "active" : ""}`}
                   onClick={() => setSelectedId(c.phone_number)}
                 >
-                  <span>{redactedName(c.phone_number)}</span>
-                  <small>🎭 Demo profile</small>
+                  <span>{displayName(c)}</span>
+                  <small>{DEMO_MODE ? "🎭 Demo profile" : c.company_name || "Unknown company"}</small>
                 </button>
               );
             })}
@@ -384,11 +406,11 @@ export default function App() {
           <h2>Contact Detail</h2>
           {selected ? (
             <>
-              <p><b>Contact:</b> {redactedName(selected.phone_number)}</p>
-              <p><b>Phone:</b> 🔒 Hidden for live demo</p>
-              <p><b>Name:</b> 🔒 Redacted</p>
-              <p><b>Company:</b> 🔒 Redacted</p>
-              <p><b>Title:</b> 🔒 Redacted</p>
+              <p><b>Contact:</b> {DEMO_MODE ? friendlyIdentity(selected.phone_number) : displayName(selected)}</p>
+              <p><b>Phone:</b> {displayPhone(selected.phone_number)}</p>
+              <p><b>Name:</b> {DEMO_MODE ? "🔒 Redacted" : [selected.first_name, selected.last_name].filter(Boolean).join(" ") || "-"}</p>
+              <p><b>Company:</b> {DEMO_MODE ? "🔒 Redacted" : selected.company_name || "-"}</p>
+              <p><b>Title:</b> {DEMO_MODE ? "🔒 Redacted" : selected.job_title || "-"}</p>
               <p><b>Tier:</b> {selected.qualification_tier || "-"}</p>
               <div className="row">
                 <button onClick={() => trigger("research")}>Trigger Research</button>
@@ -407,7 +429,7 @@ export default function App() {
                 <button className="danger" onClick={deleteContact}>Delete Contact Data</button>
               </div>
               <div className="messages">
-                <h3>Conversation (filtered)</h3>
+                <h3>{DEMO_MODE ? "Conversation (filtered)" : "Conversation"}</h3>
                 <div className="message-list">
                   {messages.length ? (
                     messages.map((m) => (

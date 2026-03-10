@@ -1,0 +1,48 @@
+OpenClaw and Tailscale are already installed on this Mac mini. Configure OpenClaw as a private tailnet research API for remote Docker containers.
+
+Goals:
+- Remote machine-to-machine access over Tailscale
+- Keep Telegram behavior unchanged
+- Require auth
+- Return deterministic JSON-compatible responses
+
+Do this:
+
+1) Inspect and report current state
+- Show current Tailscale IP + MagicDNS name
+- Show OpenClaw gateway status, bind mode, port, auth mode
+- Show whether /v1/responses is enabled
+
+2) Configure OpenClaw gateway for tailnet access
+- Ensure gateway is reachable from tailnet peers (bind=tailnet or secure equivalent)
+- Ensure auth token/password is required
+- Enable HTTP endpoint: POST /v1/responses
+- Keep access private (no public exposure)
+
+3) Optional but recommended
+- Enable /hooks/agent with a dedicated hooks token for async jobs
+
+4) Restart and verify
+- Restart gateway cleanly
+- Test locally and via tailnet address:
+  - health/status endpoint
+  - authenticated /v1/responses call
+- Provide exact command outputs
+
+5) Deliver integration values for Docker callers
+Return:
+- OPENCLAW_BASE_URL (e.g., http://100.x.x.x:PORT)
+- OPENCLAW_GATEWAY_TOKEN (or password var name)
+- OPENCLAW_HOOKS_TOKEN (if hooks enabled)
+- Suggested timeout value
+- Copy-paste curl examples for:
+  - /v1/responses
+  - /hooks/agent (if enabled)
+
+6) Provide a brief troubleshooting checklist
+- If remote Docker container cannot connect directly over tailnet, include host relay fallback using host.docker.internal.
+
+Constraints:
+- Do not remove or break existing Telegram channel setup
+- Do not expose services to public internet
+- Show exact files edited and exact commands executed
