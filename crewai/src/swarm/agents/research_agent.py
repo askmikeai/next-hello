@@ -17,7 +17,7 @@ from ..agent_runner import AutonomousAgent
 from ..events import SwarmEvent, EventType
 from ..eventbus import EventBus
 from ..blackboard import Blackboard, ContactState
-from ..openclaw_client import post_openclaw_responses
+from ..openclaw_client import extract_output_text, post_openclaw_responses
 
 logger = logging.getLogger(__name__)
 
@@ -315,7 +315,7 @@ class ResearchAgent(AutonomousAgent):
                     timeout_seconds=float(os.getenv("OPENCLAW_TIMEOUT_SECONDS", "120")),
                 )
 
-                output_text = str(body.get("output_text") or "").strip()
+                output_text = extract_output_text(body)
                 if not output_text:
                     return None
 

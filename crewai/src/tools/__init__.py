@@ -19,6 +19,7 @@ from .pdl_tools import pdl_enrich_contact, pdl_search_company
 from .heygen_tools import heygen_generate_video, heygen_check_status
 from .elevenlabs_tools import elevenlabs_generate_voice, elevenlabs_list_voices
 from .hubspot_tools import hubspot_sync_contact, hubspot_create_deal, hubspot_add_note
+from .openclaw_tools import openclaw_research_contact
 from .supabase_tools import (
     get_contact_by_phone,
     update_contact,
@@ -45,6 +46,8 @@ __all__ = [
     "hubspot_sync_contact",
     "hubspot_create_deal",
     "hubspot_add_note",
+    # OpenClaw
+    "openclaw_research_contact",
     # Supabase
     "get_contact_by_phone",
     "update_contact",

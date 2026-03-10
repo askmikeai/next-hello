@@ -29,6 +29,8 @@ from ..tools import (
     hubspot_sync_contact,
     hubspot_create_deal,
     hubspot_add_note,
+    # OpenClaw
+    openclaw_research_contact,
     # Supabase
     get_contact_by_phone,
     update_contact,
@@ -122,6 +124,8 @@ class NetworkingAgents:
                 # Web search: Serper (cheap) with Perplexity fallback
                 web_search,
                 deep_research,
+                # OpenClaw relay research
+                openclaw_research_contact,
                 # Database
                 get_contact_by_phone,
                 save_research_data,
@@ -174,7 +178,12 @@ class NetworkingAgents:
             goal=config["goal"],
             backstory=config["backstory"],
             llm=self.llm,
-            tools=[heygen_generate_video, heygen_check_status, get_contact_by_phone, update_contact],
+            tools=[
+                heygen_generate_video,
+                heygen_check_status,
+                get_contact_by_phone,
+                update_contact,
+            ],
             allow_delegation=config.get("allow_delegation", False),
             verbose=config.get("verbose", True),
         )
@@ -187,7 +196,12 @@ class NetworkingAgents:
             goal=config["goal"],
             backstory=config["backstory"],
             llm=self.llm,
-            tools=[elevenlabs_generate_voice, elevenlabs_list_voices, get_contact_by_phone, update_contact],
+            tools=[
+                elevenlabs_generate_voice,
+                elevenlabs_list_voices,
+                get_contact_by_phone,
+                update_contact,
+            ],
             allow_delegation=config.get("allow_delegation", False),
             verbose=config.get("verbose", True),
         )
@@ -200,7 +214,13 @@ class NetworkingAgents:
             goal=config["goal"],
             backstory=config["backstory"],
             llm=self.llm,
-            tools=[hubspot_sync_contact, hubspot_create_deal, hubspot_add_note, get_contact_by_phone, update_contact],
+            tools=[
+                hubspot_sync_contact,
+                hubspot_create_deal,
+                hubspot_add_note,
+                get_contact_by_phone,
+                update_contact,
+            ],
             allow_delegation=config.get("allow_delegation", False),
             verbose=config.get("verbose", True),
         )
