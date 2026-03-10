@@ -108,7 +108,7 @@ class ResearchAgent(AutonomousAgent):
 
         try:
             # Call PDL API
-            research_data = await self._enrich_contact(contact)
+            research_data = await self._enrich_contact(contact, event.correlation_id)
 
             if research_data:
                 # Update contact with enrichment data
@@ -188,14 +188,14 @@ class ResearchAgent(AutonomousAgent):
 
         return result_events
 
-    async def _enrich_contact(self, contact: ContactState) -> dict | None:
+    async def _enrich_contact(self, contact: ContactState, correlation_id: str) -> dict | None:
         """
         Call PDL API to enrich contact.
 
         Returns enrichment data or None if no match found.
         """
         # Prefer delegated research via OpenClaw agent if configured.
-        openclaw_result = await self._enrich_via_openclaw(contact)
+        openclaw_result = await self._enrich_via_openclaw(contact, correlation_id)
         if openclaw_result:
             return openclaw_result
 
@@ -289,10 +289,17 @@ class ResearchAgent(AutonomousAgent):
             logger.error(f"[{self.name}] PDL error: {e}")
             return None
 
-    async def _enrich_via_openclaw(self, contact: ContactState) -> dict | None:
+    async def _enrich_via_openclaw(self, contact: ContactState, correlation_id: str) -> dict | None:
         """Delegate contact research to an OpenClaw node over Tailscale."""
         base_url = os.getenv("OPENCLAW_BASE_URL", "").strip()
         if base_url:
+            openclaw_activity_id = await self.blackboard.log_agent_activity_start(
+                agent_type="openclaw",
+                action="research.openclaw",
+                correlation_id=correlation_id,
+                started_at=datetime.utcnow(),
+            )
+            openclaw_started_at = datetime.utcnow()
             try:
                 known_data = {
                     "first_name": contact.first_name,
@@ -327,7 +334,7 @@ class ResearchAgent(AutonomousAgent):
                 if not isinstance(data, dict):
                     return None
 
-                return {
+                result = {
                     "full_name": data.get("full_name"),
                     "first_name": data.get("first_name"),
                     "last_name": data.get("last_name"),
@@ -344,8 +351,30 @@ class ResearchAgent(AutonomousAgent):
                     "work_history": data.get("work_history", []),
                     "source": "openclaw",
                 }
+                if openclaw_activity_id:
+                    duration_ms = int(
+                        (datetime.utcnow() - openclaw_started_at).total_seconds() * 1000
+                    )
+                    await self.blackboard.log_agent_activity_complete(
+                        activity_id=openclaw_activity_id,
+                        status="completed",
+                        completed_at=datetime.utcnow(),
+                        duration_ms=duration_ms,
+                    )
+                return result
             except Exception as e:
                 logger.warning(f"[{self.name}] OpenClaw gateway enrichment unavailable: {e}")
+                if openclaw_activity_id:
+                    duration_ms = int(
+                        (datetime.utcnow() - openclaw_started_at).total_seconds() * 1000
+                    )
+                    await self.blackboard.log_agent_activity_complete(
+                        activity_id=openclaw_activity_id,
+                        status="failed",
+                        completed_at=datetime.utcnow(),
+                        duration_ms=duration_ms,
+                        error_message=str(e)[:500],
+                    )
 
         endpoint = os.getenv("OPENCLAW_RESEARCH_URL", "").strip()
         if not endpoint:

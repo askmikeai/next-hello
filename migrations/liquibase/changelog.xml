@@ -35,4 +35,10 @@
     <!-- Add voice agent to agent_activity_log CHECK constraint -->
     <include file="changesets/010-agent-activity-voice.xml" relativeToChangelogFile="true"/>
 
+    <!-- Add openclaw and messaging to agent_activity_log CHECK constraint -->
+    <include file="changesets/011-agent-activity-openclaw-messaging.xml" relativeToChangelogFile="true"/>
+
+    <!-- OpenClaw LinkedIn connection flag -->
+    <include file="changesets/012-openclaw-linkedin-connected.xml" relativeToChangelogFile="true"/>
+
 </databaseChangeLog>

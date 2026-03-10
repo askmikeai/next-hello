@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+    xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.25.xsd">
+
+    <changeSet id="012-openclaw-linkedin-connected" author="opencode">
+        <comment>Add open_claw_linkedin_connected flag to networking_contacts</comment>
+        <sqlFile path="../sql/012_openclaw_linkedin_connected.sql" relativeToChangelogFile="true"/>
+    </changeSet>
+
+</databaseChangeLog>

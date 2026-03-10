@@ -70,6 +70,7 @@ class ContactState:
     last_message_text: Optional[str] = None
     welcomed: bool = False
     voice_mode: bool = False
+    open_claw_linkedin_connected: bool = False
 
     # Pending actions (for agents to claim)
     pending_actions: dict = field(default_factory=dict)
@@ -107,6 +108,7 @@ class ContactState:
             "last_message_text": self.last_message_text,
             "welcomed": self.welcomed,
             "voice_mode": self.voice_mode,
+            "open_claw_linkedin_connected": self.open_claw_linkedin_connected,
             "pending_actions": self.pending_actions,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -142,6 +144,7 @@ class ContactState:
             last_message_text=data.get("last_message_text"),
             welcomed=data.get("welcomed", False),
             voice_mode=data.get("voice_mode", False),
+            open_claw_linkedin_connected=data.get("open_claw_linkedin_connected", False),
             pending_actions=data.get("pending_actions", {}),
             created_at=data.get("created_at"),
             updated_at=data.get("updated_at"),
@@ -294,11 +297,11 @@ class Blackboard:
                         email, linkedin_url, company_name, job_title,
                         research_status, qualification_tier, qualification_score,
                         heygen_video_url, hubspot_contact_id,
-                        conversation_turns, welcomed, voice_mode,
+                        conversation_turns, welcomed, voice_mode, open_claw_linkedin_connected,
                         pending_actions, created_at, updated_at
                     ) VALUES (
                         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                        $11, $12, $13, $14, $15, $16, $17, $18, $19
+                        $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
                     )
                     ON CONFLICT (phone_number) DO UPDATE SET
                         first_name = COALESCE(EXCLUDED.first_name, networking_contacts.first_name),
@@ -316,6 +319,7 @@ class Blackboard:
                         conversation_turns = EXCLUDED.conversation_turns,
                         welcomed = EXCLUDED.welcomed,
                         voice_mode = EXCLUDED.voice_mode,
+                        open_claw_linkedin_connected = EXCLUDED.open_claw_linkedin_connected,
                         pending_actions = EXCLUDED.pending_actions,
                         updated_at = EXCLUDED.updated_at
                     """,
@@ -335,6 +339,7 @@ class Blackboard:
                     state.conversation_turns,
                     state.welcomed,
                     state.voice_mode,
+                    state.open_claw_linkedin_connected,
                     json.dumps(state.pending_actions),
                     created_at_db,
                     updated_at_db,
@@ -693,6 +698,7 @@ class Blackboard:
             conversation_turns=conversation_turns,
             welcomed=row.get("welcomed", False),
             voice_mode=row.get("voice_mode", False),
+            open_claw_linkedin_connected=row.get("open_claw_linkedin_connected", False),
             pending_actions=pending_actions,
             created_at=str(row.get("created_at")) if row.get("created_at") else None,
             updated_at=str(row.get("updated_at")) if row.get("updated_at") else None,

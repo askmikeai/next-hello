@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+    xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.25.xsd">
+
+    <changeSet id="011-agent-activity-openclaw-messaging" author="opencode">
+        <comment>Add openclaw and messaging to agent activity allowed values</comment>
+        <sqlFile path="../sql/011_agent_activity_openclaw_messaging.sql" relativeToChangelogFile="true"/>
+    </changeSet>
+
+</databaseChangeLog>

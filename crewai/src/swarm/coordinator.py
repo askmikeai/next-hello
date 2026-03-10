@@ -117,6 +117,14 @@ class SwarmCoordinator:
                 )
             )
 
+        # If contact is already connected on LinkedIn via OpenClaw, ignore inbound automation.
+        if contact.open_claw_linkedin_connected:
+            logger.info(
+                "Skipping swarm automation for LinkedIn-connected contact",
+                extra={"phone_number": phone_number},
+            )
+            return None
+
         # Extract entities from message
         entities = self._extract_entities(message_text)
 
