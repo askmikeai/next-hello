@@ -17,6 +17,7 @@ from ..agent_runner import AutonomousAgent
 from ..events import SwarmEvent, EventType
 from ..eventbus import EventBus
 from ..blackboard import Blackboard, ContactState
+from ..openclaw_client import post_openclaw_responses
 
 logger = logging.getLogger(__name__)
 
@@ -286,6 +287,62 @@ class ResearchAgent(AutonomousAgent):
 
     async def _enrich_via_openclaw(self, contact: ContactState) -> dict | None:
         """Delegate contact research to an OpenClaw node over Tailscale."""
+        base_url = os.getenv("OPENCLAW_BASE_URL", "").strip()
+        if base_url:
+            try:
+                known_data = {
+                    "first_name": contact.first_name,
+                    "last_name": contact.last_name,
+                    "email": contact.email,
+                    "linkedin_url": contact.linkedin_url,
+                    "company_name": contact.company_name,
+                }
+                prompt = (
+                    "Research this contact and return only minified JSON with this schema: "
+                    '{"first_name":string|null,"last_name":string|null,'
+                    '"full_name":string|null,"job_title":string|null,'
+                    '"company_name":string|null,"company_industry":string|null,'
+                    '"company_size":string|null,"linkedin_url":string|null,'
+                    '"work_email":string|null,"location":string|null,'
+                    '"skills":string[],"experience_years":number|null,'
+                    '"education":array,"work_history":array}. '
+                    f"Known data: {json.dumps(known_data, default=str)}"
+                )
+
+                body = await post_openclaw_responses(
+                    model="openclaw:main",
+                    input_text=prompt,
+                    timeout_seconds=float(os.getenv("OPENCLAW_TIMEOUT_SECONDS", "120")),
+                )
+
+                output_text = str(body.get("output_text") or "").strip()
+                if not output_text:
+                    return None
+
+                data = json.loads(output_text)
+                if not isinstance(data, dict):
+                    return None
+
+                return {
+                    "full_name": data.get("full_name"),
+                    "first_name": data.get("first_name"),
+                    "last_name": data.get("last_name"),
+                    "job_title": data.get("job_title"),
+                    "company_name": data.get("company_name"),
+                    "company_industry": data.get("company_industry"),
+                    "company_size": data.get("company_size"),
+                    "linkedin_url": data.get("linkedin_url"),
+                    "work_email": data.get("work_email"),
+                    "location": data.get("location"),
+                    "skills": (data.get("skills") or [])[:10],
+                    "experience_years": data.get("experience_years"),
+                    "education": data.get("education", []),
+                    "work_history": data.get("work_history", []),
+                    "source": "openclaw",
+                }
+            except Exception as e:
+                logger.warning(f"[{self.name}] OpenClaw gateway enrichment unavailable: {e}")
+
         endpoint = os.getenv("OPENCLAW_RESEARCH_URL", "").strip()
         if not endpoint:
             return None
