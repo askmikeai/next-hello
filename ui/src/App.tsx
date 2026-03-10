@@ -43,6 +43,15 @@ type SwarmSyncPayload = {
   };
 };
 
+type ContactMessage = {
+  id: string;
+  direction: "inbound" | "outbound";
+  content: string;
+  createdAt?: string;
+  messageType?: string;
+  moderation?: string;
+};
+
 const AGENTS = [
   "research",
   "qualification",
@@ -54,6 +63,50 @@ const AGENTS = [
 ];
 
 const ACTIVE_WINDOW_MS = 12000;
+
+const FRIENDLY_ADJECTIVES = [
+  "Sunny",
+  "Brave",
+  "Kind",
+  "Swift",
+  "Calm",
+  "Happy",
+  "Clever",
+  "Bright",
+  "Curious",
+  "Chill",
+];
+
+const FRIENDLY_ROLES = [
+  "Fox",
+  "Dolphin",
+  "Panda",
+  "Falcon",
+  "Otter",
+  "Koala",
+  "Tiger",
+  "Hawk",
+  "Bear",
+  "Comet",
+];
+
+const FRIENDLY_EMOJIS = ["🦊", "🐬", "🐼", "🦅", "🦦", "🐨", "🐯", "🌟", "🚀", "🎉"];
+
+const hashString = (value: string): number => {
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash * 31 + value.charCodeAt(i)) >>> 0;
+  }
+  return hash;
+};
+
+const friendlyIdentity = (key: string): string => {
+  const seed = hashString(key || "unknown");
+  const adjective = FRIENDLY_ADJECTIVES[seed % FRIENDLY_ADJECTIVES.length];
+  const role = FRIENDLY_ROLES[Math.floor(seed / 7) % FRIENDLY_ROLES.length];
+  const emoji = FRIENDLY_EMOJIS[Math.floor(seed / 13) % FRIENDLY_EMOJIS.length];
+  return `${emoji} ${adjective} ${role}`;
+};
 
 const json = async <T,>(path: string, init?: RequestInit): Promise<T> => {
   const res = await fetch(path, init);
@@ -70,6 +123,7 @@ export default function App() {
   const [states, setStates] = useState<SwarmState[]>([]);
   const [stats, setStats] = useState<Record<string, unknown> | null>(null);
   const [message, setMessage] = useState("");
+  const [messages, setMessages] = useState<ContactMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [nowTs, setNowTs] = useState<number>(() => Date.now());
 
@@ -77,6 +131,8 @@ export default function App() {
     () => contacts.find((c) => c.phone_number === selectedId || c.id === selectedId) ?? null,
     [contacts, selectedId]
   );
+
+  const redactedName = (phoneNumber?: string | null): string => friendlyIdentity(phoneNumber ?? "unknown");
 
   const refreshCRM = async () => {
     setLoading(true);
@@ -132,6 +188,26 @@ export default function App() {
     const timer = window.setInterval(() => setNowTs(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    const loadMessages = async () => {
+      if (!selected?.phone_number) {
+        setMessages([]);
+        return;
+      }
+
+      try {
+        const next = await json<ContactMessage[]>(
+          `/admin/api/contacts/${encodeURIComponent(selected.phone_number)}/messages?limit=30&safe=true`
+        );
+        setMessages(next);
+      } catch {
+        setMessages([]);
+      }
+    };
+
+    void loadMessages();
+  }, [selected?.phone_number, activities]);
 
   const sendMessage = async () => {
     if (!selected || !message.trim()) return;
@@ -232,7 +308,7 @@ export default function App() {
     const contactNodes: Node[] = states.slice(0, 8).map((s, idx) => ({
       id: `contact-${s.phoneNumber}`,
       position: { x: 50 + idx * 160, y: 420 },
-      data: { label: `${s.phoneNumber}\nturns: ${s.conversationTurns}` },
+      data: { label: `${redactedName(s.phoneNumber)}\nturns: ${s.conversationTurns}` },
       style: { borderRadius: 10, padding: 8, background: "#0f172a", color: "#cbd5e1", border: "1px solid #334155" },
       sourcePosition: Position.Top,
     }));
@@ -296,8 +372,8 @@ export default function App() {
                   className={`contact ${active ? "active" : ""}`}
                   onClick={() => setSelectedId(c.phone_number)}
                 >
-                  <span>{[c.first_name, c.last_name].filter(Boolean).join(" ") || c.phone_number}</span>
-                  <small>{c.company_name || "Unknown company"}</small>
+                  <span>{redactedName(c.phone_number)}</span>
+                  <small>🎭 Demo profile</small>
                 </button>
               );
             })}
@@ -308,10 +384,11 @@ export default function App() {
           <h2>Contact Detail</h2>
           {selected ? (
             <>
-              <p><b>Phone:</b> {selected.phone_number}</p>
-              <p><b>Name:</b> {[selected.first_name, selected.last_name].filter(Boolean).join(" ") || "-"}</p>
-              <p><b>Company:</b> {selected.company_name || "-"}</p>
-              <p><b>Title:</b> {selected.job_title || "-"}</p>
+              <p><b>Contact:</b> {redactedName(selected.phone_number)}</p>
+              <p><b>Phone:</b> 🔒 Hidden for live demo</p>
+              <p><b>Name:</b> 🔒 Redacted</p>
+              <p><b>Company:</b> 🔒 Redacted</p>
+              <p><b>Title:</b> 🔒 Redacted</p>
               <p><b>Tier:</b> {selected.qualification_tier || "-"}</p>
               <div className="row">
                 <button onClick={() => trigger("research")}>Trigger Research</button>
@@ -328,6 +405,21 @@ export default function App() {
                 />
                 <button onClick={sendMessage}>Send</button>
                 <button className="danger" onClick={deleteContact}>Delete Contact Data</button>
+              </div>
+              <div className="messages">
+                <h3>Conversation (filtered)</h3>
+                <div className="message-list">
+                  {messages.length ? (
+                    messages.map((m) => (
+                      <div key={m.id} className={`message ${m.direction === "inbound" ? "inbound" : "outbound"}`}>
+                        <span className="meta">{m.direction === "inbound" ? "Contact" : "Assistant"}</span>
+                        <p>{m.content || "-"}</p>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="message-empty">No messages yet.</p>
+                  )}
+                </div>
               </div>
             </>
           ) : (

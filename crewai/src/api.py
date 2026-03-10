@@ -13,6 +13,7 @@ import base64
 import json
 import logging
 import os
+import re
 import shutil
 import urllib.error
 import urllib.request
@@ -71,6 +72,43 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 GREETING_VIDEO_DIR = PROJECT_ROOT / "storage" / "greeting-video"
 GREETING_VIDEO_METADATA_PATH = GREETING_VIDEO_DIR / "metadata.json"
 WHATSAPP_CONNECTOR_URL = os.getenv("WHATSAPP_CONNECTOR_URL", "http://whatsapp:3000")
+BAD_LANGUAGE_FALLBACK_PATTERNS = [
+    "fuck",
+    "shit",
+    "bitch",
+    "asshole",
+    "bastard",
+    "dick",
+    "cunt",
+    "slut",
+    "whore",
+    "nigger",
+    "faggot",
+]
+
+BAD_LANGUAGE_FALLBACK_REGEX = [
+    re.compile(r"\bf+\W*u+\W*c+\W*k+\b", re.IGNORECASE),
+    re.compile(r"\bs+\W*h+\W*i+\W*t+\b", re.IGNORECASE),
+    re.compile(r"\bb+\W*i+\W*t+\W*c+\W*h+\b", re.IGNORECASE),
+    re.compile(r"\ba+\W*s+\W*s+\W*h+\W*o+\W*l+\W*e+\b", re.IGNORECASE),
+    re.compile(r"\bc+\W*u+\W*n+\W*t+\b", re.IGNORECASE),
+    re.compile(r"\bn+\W*i+\W*g+\W*g+\W*e+\W*r+\b", re.IGNORECASE),
+    re.compile(r"\bf+\W*a+\W*g+\W*g+\W*o+\W*t+\b", re.IGNORECASE),
+]
+
+LEETSPEAK_MAP = str.maketrans(
+    {
+        "0": "o",
+        "1": "i",
+        "3": "e",
+        "4": "a",
+        "5": "s",
+        "7": "t",
+        "@": "a",
+        "$": "s",
+        "!": "i",
+    }
+)
 
 
 def _fetch_connector_json(path: str) -> dict[str, Any]:
@@ -252,6 +290,111 @@ async def _persist_message_history(
                 "message_type": db_message_type,
             },
         )
+
+
+def _fallback_contains_bad_language(text: str) -> bool:
+    lowered = (text or "").lower()
+    if not lowered:
+        return False
+
+    normalized = lowered.translate(LEETSPEAK_MAP)
+    squashed = re.sub(r"[^a-z]+", "", normalized)
+
+    if any(token in normalized or token in squashed for token in BAD_LANGUAGE_FALLBACK_PATTERNS):
+        return True
+
+    return any(pattern.search(normalized) is not None for pattern in BAD_LANGUAGE_FALLBACK_REGEX)
+
+
+async def _llm_contains_bad_language(text: str) -> bool:
+    """Use LLM classification to decide whether message text should be hidden in demo UI."""
+    content = (text or "").strip()
+    if not content:
+        return False
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return _fallback_contains_bad_language(content)
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(
+                "https://api.openai.com/v1/responses",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": os.getenv("OPENAI_MODERATION_MODEL", "gpt-4o-mini"),
+                    "input": [
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are a strict content safety classifier. "
+                                'Return only JSON: {"hide": true|false}. '
+                                "Set hide=true if the text includes profanity, slurs, harassment, "
+                                "sexual explicit language, or threats."
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": content[:800],
+                        },
+                    ],
+                    "temperature": 0,
+                    "max_output_tokens": 20,
+                },
+            )
+
+        if response.status_code != 200:
+            logger.warning(
+                "LLM moderation failed; using fallback",
+                extra={"status_code": response.status_code},
+            )
+            return _fallback_contains_bad_language(content)
+
+        payload = response.json()
+        output_text = (payload.get("output_text") or "").strip()
+        if output_text:
+            try:
+                parsed = json.loads(output_text)
+                return bool(parsed.get("hide"))
+            except Exception:
+                pass
+
+        # Fallback parse if provider formatting changes.
+        serialized = json.dumps(payload).lower()
+        if '"hide": true' in serialized:
+            return True
+        if '"hide": false' in serialized:
+            return False
+
+        return _fallback_contains_bad_language(content)
+    except Exception as e:
+        logger.warning(f"LLM moderation error; using fallback: {e}")
+        return _fallback_contains_bad_language(content)
+
+
+async def _apply_demo_message_filter(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Redact unsafe message content for demo UI rendering."""
+    if not messages:
+        return messages
+
+    semaphore = asyncio.Semaphore(5)
+
+    async def _moderate_message(message: dict[str, Any]) -> dict[str, Any]:
+        content = str(message.get("content") or "")
+        async with semaphore:
+            hide = await _llm_contains_bad_language(content)
+        if not hide:
+            return message
+
+        sanitized = dict(message)
+        sanitized["content"] = "[Filtered for live demo safety]"
+        sanitized["moderation"] = "redacted"
+        return sanitized
+
+    return await asyncio.gather(*[_moderate_message(message) for message in messages])
 
 
 @asynccontextmanager
@@ -1801,9 +1944,21 @@ async def admin_get_contact(contact_id: str):
 
 
 @app.get("/admin/api/contacts/{contact_id}/messages")
-async def admin_get_contact_messages(contact_id: str, limit: int = Query(50, ge=1, le=500)):
+async def admin_get_contact_messages(
+    contact_id: str,
+    limit: int = Query(50, ge=1, le=500),
+    safe: bool = Query(True),
+):
     """Get messages for a single contact."""
-    return await admin_get_messages(limit=limit, phone=contact_id)
+    messages = await admin_get_messages(limit=limit, phone=contact_id)
+    if not safe:
+        return messages
+
+    try:
+        return await _apply_demo_message_filter(messages)
+    except Exception as e:
+        logger.warning(f"Message filter failed; returning raw messages: {e}")
+        return messages
 
 
 @app.get("/admin/api/contacts/{contact_id}/activities")
