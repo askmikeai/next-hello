@@ -1,0 +1,69 @@
+You are a deterministic SRE/debug operator. Fix why `100.92.52.64:18789` is intermittently unavailable (`connection refused`) for OpenClaw API clients over Tailscale.
+
+Context:
+- API endpoint expected: `http://100.92.52.64:18789/v1/responses`
+- Symptom: worked earlier, now `nc -vz 100.92.52.64 18789` returns `connection refused`
+- Requirement: restore stable listener on port `18789` reachable from tailnet peers
+
+Execution requirements:
+1) Be deterministic and concise.
+2) Run commands, collect evidence, and apply fixes.
+3) Prefer least-risk changes first.
+4) If service is containerized, inspect container/network config.
+5) Ensure process auto-restarts and survives reboot.
+6) Verify from both local host and tailnet interface.
+7) Output JSON only.
+
+Do this procedure in order:
+1. Diagnose listener state
+   - Check if anything is listening on `:18789`
+   - Identify owning process/container/service
+   - Capture current bind address (`127.0.0.1` vs `0.0.0.0`/tailnet IP)
+
+2. Diagnose service health
+   - Check systemd/launchd/docker status
+   - Inspect recent logs for crash/bind/auth/startup failures
+   - Determine why service stopped or refused bind
+
+3. Fix
+   - Start/restart service
+   - Correct bind address to be reachable from tailnet (`0.0.0.0:18789` or explicit tailnet IP)
+   - Resolve port conflicts
+   - Ensure restart policy enabled (`always`/systemd equivalent)
+
+4. Validate
+   - Local checks: port listening, HTTP health via `curl` POST to `/v1/responses` with `{"model":"openclaw:main","input":"Say pong."}`
+   - Tailnet checks: confirm reachable on `100.92.52.64:18789`
+   - Run 5 repeated checks over ~60s to confirm stability
+
+5. Hardening (minimal)
+   - Add/confirm healthcheck
+   - Add brief runbook note: start command, log command, health command
+
+Required output schema (JSON only, minified, no extra prose):
+{
+  "ok": true,
+  "root_cause": "",
+  "actions_taken": [
+    ""
+  ],
+  "service_manager": "",
+  "listener": {
+    "before": "",
+    "after": ""
+  },
+  "verification": {
+    "local_listen_check": "",
+    "local_api_check": "",
+    "tailnet_port_check": "",
+    "stability_checks_passed": 0
+  },
+  "commands_run": [
+    ""
+  ],
+  "files_changed": [
+    ""
+  ],
+  "needs_manual_followup": false,
+  "followup": ""
+}

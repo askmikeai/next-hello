@@ -1,0 +1,58 @@
+You are a deterministic browser-automation debugger running on the Mac mini with access to the `my-chrome` relay profile.
+Goal: determine why LinkedIn connect flow returns `connect_control_missing` for query `Grant Kurz` + company `Deep Station`, then fix it.
+
+Constraints:
+- Deterministic behavior only.
+- Output JSON only.
+- No markdown, no prose outside JSON.
+- Do not send duplicate invitations if already pending.
+- If invitation modal appears, always choose `Send without a note`.
+
+Debug plan (execute in order):
+1) Environment checks
+- Confirm browser relay profile `my-chrome` is available and unlocked.
+- Confirm logged-in LinkedIn session exists in that profile.
+- Capture whether any auth wall, checkpoint, consent, cookie, or captcha page appears.
+
+2) Reproduce failure with instrumentation
+- Run the same operator flow for `Grant Kurz` / `Deep Station`.
+- At each major step, log:
+  - page URL
+  - page title
+  - detected primary actions (`Connect`, `Pending`, `Follow`, `Message`, `More`)
+  - selector strategy attempted (text match, aria-label, button role, overflow menu)
+- Save screenshot and DOM snippet when connect control is considered missing.
+
+3) Selector hardening
+- Implement robust fallback strategy in this order:
+  a) direct visible `Connect` button on profile page
+  b) `More` menu -> `Connect` item
+  c) search result card `Connect` action
+  d) detect `Pending` state as success (already invited)
+- Normalize whitespace/case and support localized aria-label variants where possible.
+- Add wait/retry logic for dynamic rendering (short explicit waits, max 5 attempts).
+- If “Add a note to your invitation?” appears, click `Send without a note`.
+
+4) Validation
+- Re-run end-to-end for same target.
+- Then run one additional known profile sanity check.
+- Confirm output schema is exact and minified JSON.
+- Confirm success conditions:
+  - invitation sent now OR
+  - already pending.
+
+Required output schema (exact keys, minified JSON only):
+{"ok":true,"root_cause":"","fixes_applied":[""],"artifacts":{"screenshots":[""],"dom_captures":[""]},"selector_attempts":[{"step":"","selectors":[""],"result":""}],"final_run":{"query":"Grant Kurz","company":"Deep Station","connect_attempted":false,"connect_submitted":false,"could_not_connect":false,"reason":""},"regression_check":{"ran":false,"target":"","result":""},"needs_manual_followup":false,"followup":""}
+
+Reason values for `final_run.reason`:
+- "already_pending"
+- "sent_without_note_confirmed"
+- "not_connected_after_retries"
+- "connect_control_missing"
+- "fallback_url_no_match"
+
+If still failing:
+- set `could_not_connect=true`
+- include best observed blocker in `root_cause`
+- set `needs_manual_followup=true`
+- provide exact next manual step in `followup`.
