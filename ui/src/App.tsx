@@ -197,7 +197,7 @@ export default function App() {
         sourcePosition: Position.Bottom,
         targetPosition: Position.Top,
         className: `coordinator-node${coordinatorActive ? " coordinator-node--active" : ""}`,
-        style: { background: "#0f172a", color: "#fff", borderRadius: 10, padding: 10 },
+        style: { background: "#0b1220", color: "#f8fafc", borderRadius: 10, padding: 10, border: "1px solid #334155" },
       },
       ...AGENTS.map((name, idx) => ({
         id: name,
@@ -206,7 +206,24 @@ export default function App() {
           label: `${name}\n${activities.filter((a) => a.agentType === name).length} events`,
         },
         className: `agent-node${activeAgents.has(name) ? " agent-node--active" : ""}${failedAgents.has(name) ? " agent-node--failed" : ""}`,
-        style: { borderRadius: 10, padding: 8, background: "#eef2ff", border: "1px solid #c7d2fe" },
+        style: {
+          borderRadius: 10,
+          padding: 8,
+          background: failedAgents.has(name)
+            ? "#7f1d1d"
+            : activeAgents.has(name)
+              ? "#0c4a6e"
+              : "#111827",
+          color: failedAgents.has(name) ? "#fee2e2" : activeAgents.has(name) ? "#e0f2fe" : "#e2e8f0",
+          border: failedAgents.has(name)
+            ? "1px solid #dc2626"
+            : activeAgents.has(name)
+              ? "1px solid #38bdf8"
+              : "1px solid #334155",
+          boxShadow: activeAgents.has(name)
+            ? "0 0 0 2px rgba(56, 189, 248, 0.35), 0 0 18px rgba(14, 165, 233, 0.45)"
+            : "none",
+        },
         targetPosition: Position.Top,
         sourcePosition: Position.Bottom,
       })),
@@ -216,7 +233,7 @@ export default function App() {
       id: `contact-${s.phoneNumber}`,
       position: { x: 50 + idx * 160, y: 420 },
       data: { label: `${s.phoneNumber}\nturns: ${s.conversationTurns}` },
-      style: { borderRadius: 10, padding: 8, background: "#f8fafc", border: "1px solid #cbd5e1" },
+      style: { borderRadius: 10, padding: 8, background: "#0f172a", color: "#cbd5e1", border: "1px solid #334155" },
       sourcePosition: Position.Top,
     }));
 
@@ -322,7 +339,7 @@ export default function App() {
           <h2>Swarm (ReactFlow, Live SSE)</h2>
           <div className="flowwrap">
             <ReactFlow nodes={flow.nodes} edges={flow.edges} fitView>
-              <Background />
+              <Background color="#334155" gap={24} size={1.2} />
               <Controls />
             </ReactFlow>
           </div>

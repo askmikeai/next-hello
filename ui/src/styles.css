@@ -1,7 +1,7 @@
 :root {
   font-family: "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
-  color: #0f172a;
-  background: linear-gradient(160deg, #f8fafc 0%, #e2e8f0 100%);
+  color: #e2e8f0;
+  background: radial-gradient(circle at 20% 0%, #1f2937 0%, #0f172a 45%, #020617 100%);
 }
 
 * {
@@ -10,6 +10,8 @@
 
 body {
   margin: 0;
+  color: #e2e8f0;
+  background: radial-gradient(circle at 20% 0%, #1f2937 0%, #0f172a 45%, #020617 100%);
 }
 
 .app {
@@ -36,15 +38,16 @@ h1, h2 {
 }
 
 button {
-  border: 1px solid #cbd5e1;
-  background: #fff;
+  border: 1px solid #475569;
+  background: #1e293b;
+  color: #e2e8f0;
   border-radius: 8px;
   padding: 8px 10px;
   cursor: pointer;
 }
 
 button:hover {
-  background: #f1f5f9;
+  background: #334155;
 }
 
 button.danger {
@@ -53,7 +56,9 @@ button.danger {
 }
 
 input {
-  border: 1px solid #cbd5e1;
+  border: 1px solid #475569;
+  background: #0f172a;
+  color: #e2e8f0;
   border-radius: 8px;
   padding: 8px;
   min-width: 240px;
@@ -67,8 +72,8 @@ input {
 }
 
 .card {
-  border: 1px solid #cbd5e1;
-  background: #ffffffc0;
+  border: 1px solid #334155;
+  background: #0f172acc;
   border-radius: 10px;
   padding: 10px;
 }
@@ -80,8 +85,8 @@ input {
 }
 
 .panel {
-  background: #ffffffc8;
-  border: 1px solid #cbd5e1;
+  background: #0b1220cc;
+  border: 1px solid #334155;
   border-radius: 12px;
   padding: 10px;
 }
@@ -101,13 +106,14 @@ input {
 }
 
 .contact.active {
-  border-color: #6366f1;
-  background: #eef2ff;
+  border-color: #0ea5e9;
+  background: #0c4a6e;
 }
 
 .flowwrap {
   height: 58vh;
-  border: 1px solid #cbd5e1;
+  border: 1px solid #334155;
+  background: radial-gradient(circle at 50% 20%, #1e293b 0%, #0b1220 60%, #020617 100%);
   border-radius: 10px;
   overflow: hidden;
 }
@@ -125,7 +131,8 @@ input {
   gap: 8px;
   font-size: 12px;
   padding: 4px 6px;
-  background: #f8fafc;
+  background: #111827;
+  border: 1px solid #334155;
   border-radius: 8px;
 }
 
@@ -146,18 +153,37 @@ input {
 
 .react-flow__node.agent-node--active > div {
   border-color: #0ea5e9 !important;
-  background: #e0f2fe !important;
+  background: #0c4a6e !important;
+  color: #e0f2fe !important;
   animation: agentPulse 1.2s ease-out infinite;
 }
 
 .react-flow__node.agent-node--failed > div {
   border-color: #dc2626 !important;
-  background: #fee2e2 !important;
+  background: #7f1d1d !important;
+  color: #fee2e2 !important;
   animation: none;
 }
 
 .react-flow__node.coordinator-node--active > div {
-  box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.35);
+  box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.45);
+}
+
+.react-flow__controls {
+  border: 1px solid #334155;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.react-flow__controls button {
+  background: #0f172a;
+  color: #e2e8f0;
+  border-bottom: 1px solid #334155;
+}
+
+.react-flow__attribution {
+  background: #020617 !important;
+  color: #94a3b8 !important;
 }
 
 @media (max-width: 1200px) {
