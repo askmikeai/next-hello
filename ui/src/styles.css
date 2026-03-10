@@ -80,8 +80,21 @@ input {
 
 .layout {
   display: grid;
-  grid-template-columns: 280px 360px 1fr;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
   gap: 10px;
+}
+
+.flow {
+  grid-column: 1 / -1;
+  order: -1;
+}
+
+.layout > aside.panel {
+  grid-column: span 4;
+}
+
+.layout > .detail {
+  grid-column: span 8;
 }
 
 .panel {
@@ -118,11 +131,20 @@ input {
   overflow: hidden;
 }
 
+.flowgrid {
+  display: grid;
+  grid-template-columns: 8fr 4fr;
+  gap: 10px;
+  align-items: stretch;
+}
+
 .events {
-  margin-top: 8px;
+  margin-top: 0;
   display: flex;
   flex-direction: column;
   gap: 4px;
+  max-height: 58vh;
+  overflow: auto;
 }
 
 .event {
@@ -191,11 +213,26 @@ input {
     grid-template-columns: 1fr;
   }
 
+  .flow,
+  .layout > aside.panel,
+  .layout > .detail {
+    grid-column: auto;
+    order: 0;
+  }
+
   .stats {
     grid-template-columns: repeat(2, minmax(100px, 1fr));
   }
 
   .flowwrap {
     height: 50vh;
+  }
+
+  .flowgrid {
+    grid-template-columns: 1fr;
+  }
+
+  .events {
+    max-height: none;
   }
 }

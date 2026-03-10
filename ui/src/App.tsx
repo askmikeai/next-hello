@@ -337,20 +337,22 @@ export default function App() {
 
         <section className="panel flow">
           <h2>Swarm (ReactFlow, Live SSE)</h2>
-          <div className="flowwrap">
-            <ReactFlow nodes={flow.nodes} edges={flow.edges} fitView>
-              <Background color="#334155" gap={24} size={1.2} />
-              <Controls />
-            </ReactFlow>
-          </div>
-          <div className="events">
-            {activities.slice(0, 10).map((a) => (
-              <div key={a.id} className="event">
-                <span>{a.agentType}</span>
-                <span>{a.action}</span>
-                <span>{a.status}</span>
-              </div>
-            ))}
+          <div className="flowgrid">
+            <div className="flowwrap">
+              <ReactFlow nodes={flow.nodes} edges={flow.edges} fitView>
+                <Background color="#334155" gap={24} size={1.2} />
+                <Controls />
+              </ReactFlow>
+            </div>
+            <div className="events">
+              {activities.slice(0, 10).map((a) => (
+                <div key={a.id} className="event">
+                  <span>{a.agentType}</span>
+                  <span>{a.action}</span>
+                  <span>{a.status}</span>
+                </div>
+              ))}
+            </div>
           </div>
         </section>
       </main>
