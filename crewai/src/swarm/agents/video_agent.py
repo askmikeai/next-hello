@@ -65,9 +65,11 @@ class VideoAgent(AutonomousAgent):
             logger.debug(f"[{self.name}] Skipping - video generation in progress")
             return False
 
-        # Only generate for qualified leads
+        is_welcome_video = bool(event.payload.get("welcome_video"))
+
+        # Only generate for qualified leads unless this is a first-contact welcome video
         tier = contact.qualification_tier
-        if tier not in ["hot", "warm"]:
+        if not is_welcome_video and tier not in ["hot", "warm"]:
             logger.debug(f"[{self.name}] Skipping - tier {tier} not qualified for video")
             return False
 
@@ -108,14 +110,16 @@ class VideoAgent(AutonomousAgent):
                 )
 
                 # Publish video.started
-                result_events.append(event.create_response(
-                    event_type=EventType.VIDEO_STARTED,
-                    payload={
-                        "video_id": video_id,
-                        "script_length": len(script),
-                    },
-                    source_agent=self.name,
-                ))
+                result_events.append(
+                    event.create_response(
+                        event_type=EventType.VIDEO_STARTED,
+                        payload={
+                            "video_id": video_id,
+                            "script_length": len(script),
+                        },
+                        source_agent=self.name,
+                    )
+                )
 
                 logger.info(
                     f"[{self.name}] Video generation started for {contact.phone_number}: "

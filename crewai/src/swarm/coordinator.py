@@ -202,12 +202,40 @@ class SwarmCoordinator:
         # The Personalization Agent will handle actual responses via message.send
         if is_new_contact and not contact.welcomed:
             await self.blackboard.update_contact(phone_number, welcomed=True)
-            name = push_name or contact.first_name or "there"
+            name = contact.first_name or inferred_name.get("first_name") or push_name or "there"
             owner_name = os.getenv("OWNER_NAME", "I")
+            event_name = os.getenv("EVENT_NAME", "Open Claw Demos, Agent Swarms and workflows")
             welcome_text = (
-                f"Hey {name}! Great to connect with you. "
-                f"I'm {owner_name}'s assistant - happy to chat and help however I can. "
-                f"What brings you here today?"
+                f"Hey {name}! Nice to meet you at {event_name}. "
+                f"I'm {owner_name}'s assistant and excited to connect. "
+                "I will send you a quick welcome video shortly."
+            )
+
+            welcome_video_script = (
+                f"Hey {name}, nice to meet you at {event_name}. "
+                f"I am {owner_name}'s assistant and I am glad we connected. "
+                "Looking forward to learning more about what you are building and how we can help."
+            )
+
+            await self.eventbus.publish(
+                SwarmEvent(
+                    event_type=EventType.VIDEO_REQUESTED,
+                    contact_id=phone_number,
+                    payload={
+                        "script": welcome_video_script,
+                        "welcome_video": True,
+                    },
+                    source_agent="coordinator",
+                )
+            )
+
+            await self.eventbus.publish(
+                SwarmEvent(
+                    event_type=EventType.RESEARCH_NEEDED,
+                    contact_id=phone_number,
+                    payload={"source": "new_contact"},
+                    source_agent="coordinator",
+                )
             )
 
             # If they reached out by voice, send a voice version of the welcome too

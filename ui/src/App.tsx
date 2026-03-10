@@ -53,6 +53,7 @@ type ContactMessage = {
 };
 
 const AGENTS = [
+  "openclaw",
   "research",
   "qualification",
   "personalization",

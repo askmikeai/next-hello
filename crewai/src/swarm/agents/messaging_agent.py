@@ -1,7 +1,7 @@
 """
 Messaging Agent - Delivers outbound swarm messages to WhatsApp.
 
-Subscribes to: message.send
+Subscribes to: message.send, video.completed
 Publishes: message.sent
 """
 
@@ -33,13 +33,16 @@ class MessagingAgent(AutonomousAgent):
 
     @property
     def subscribed_events(self) -> List[EventType]:
-        return [EventType.MESSAGE_SEND]
+        return [EventType.MESSAGE_SEND, EventType.VIDEO_COMPLETED]
 
     @property
     def requires_lock(self) -> bool:
         return False
 
     async def should_act(self, event: SwarmEvent, contact: ContactState) -> bool:
+        if event.event_type == EventType.VIDEO_COMPLETED:
+            return bool(str(event.payload.get("video_url") or "").strip())
+
         if event.event_type != EventType.MESSAGE_SEND:
             return False
 
@@ -53,7 +56,10 @@ class MessagingAgent(AutonomousAgent):
         if message_type == "audio":
             return bool(media_url)
 
-        if message_type not in ("text", "audio"):
+        if message_type == "video":
+            return bool(media_url)
+
+        if message_type not in ("text", "audio", "video"):
             logger.warning(
                 "[messaging] Unsupported message_type for outbound send",
                 extra={"message_type": message_type, "contact_id": event.contact_id},
@@ -63,6 +69,17 @@ class MessagingAgent(AutonomousAgent):
         return False
 
     async def execute(self, event: SwarmEvent, contact: ContactState) -> List[SwarmEvent]:
+        if event.event_type == EventType.VIDEO_COMPLETED:
+            phone_number = "".join(
+                ch for ch in str(contact.phone_number or event.contact_id) if ch.isdigit()
+            )
+            video_url = str(event.payload.get("video_url") or "").strip()
+            if not phone_number or not video_url:
+                return []
+            name = contact.first_name or contact.push_name or "there"
+            caption = f"Hey {name}, here is your welcome video."
+            return await self._send_video(event, phone_number, video_url, caption)
+
         text = str(event.payload.get("text") or "").strip()
         message_type = str(event.payload.get("message_type") or "text").strip().lower()
         media_url = str(event.payload.get("media_url") or "").strip()
@@ -77,6 +94,9 @@ class MessagingAgent(AutonomousAgent):
         try:
             if message_type == "audio":
                 return await self._send_audio(event, phone_number, media_url, text)
+
+            if message_type == "video":
+                return await self._send_video(event, phone_number, media_url, text)
 
             return await self._send_text(event, phone_number, text)
         except Exception as e:
@@ -120,6 +140,53 @@ class MessagingAgent(AutonomousAgent):
                     "message_id": payload.get("messageId"),
                     "correlation_id": payload.get("correlationId"),
                     "via": payload.get("via"),
+                },
+                source_agent=self.name,
+            )
+        ]
+
+    async def _send_video(
+        self,
+        event: SwarmEvent,
+        phone_number: str,
+        media_url: str,
+        content: str,
+    ) -> List[SwarmEvent]:
+        url = f"{self._api_base_url}/send/immediate"
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                url,
+                json={
+                    "phone_number": phone_number,
+                    "message_type": "video",
+                    "content": content,
+                    "media_url": media_url,
+                },
+            )
+
+        if response.status_code != 200:
+            logger.error(
+                f"[messaging] Outbound video send failed: HTTP {response.status_code} {response.text[:200]}"
+            )
+            return []
+
+        payload = response.json()
+        logger.info(
+            "[messaging] Outbound video sent",
+            extra={
+                "phone_number": phone_number,
+                "message_id": payload.get("result", {}).get("messages", [{}])[0].get("id"),
+            },
+        )
+
+        return [
+            event.create_response(
+                event_type=EventType.MESSAGE_SENT,
+                payload={
+                    "phone_number": phone_number,
+                    "message_id": payload.get("result", {}).get("messages", [{}])[0].get("id"),
+                    "via": "immediate-video",
                 },
                 source_agent=self.name,
             )

@@ -1810,6 +1810,7 @@ async def admin_get_agent_stats():
     """Get agent execution statistics from event log"""
     if not _blackboard or not _blackboard._pool:
         return [
+            {"agentType": "openclaw", "executions": 0, "avgDurationMs": 0, "successRate": 1.0},
             {"agentType": "research", "executions": 0, "avgDurationMs": 0, "successRate": 1.0},
             {"agentType": "qualification", "executions": 0, "avgDurationMs": 0, "successRate": 1.0},
             {
@@ -1842,7 +1843,15 @@ async def admin_get_agent_stats():
                 "avgDurationMs": 0,
                 "successRate": 1.0,
             }
-            for agent in ["research", "qualification", "personalization", "video", "voice", "crm"]
+            for agent in [
+                "openclaw",
+                "research",
+                "qualification",
+                "personalization",
+                "video",
+                "voice",
+                "crm",
+            ]
         ]
     except Exception as e:
         logger.error(f"Error getting agent stats: {e}")

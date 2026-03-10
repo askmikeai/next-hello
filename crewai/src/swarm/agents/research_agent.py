@@ -73,6 +73,10 @@ class ResearchAgent(AutonomousAgent):
             logger.debug(f"[{self.name}] Skipping - research in progress")
             return False
 
+        # Explicit research requests should run even with sparse contact data.
+        if event.event_type == EventType.RESEARCH_NEEDED:
+            return True
+
         # Need at least email or LinkedIn to research
         if not (contact.email or contact.linkedin_url):
             logger.debug(f"[{self.name}] Skipping - no email or LinkedIn")

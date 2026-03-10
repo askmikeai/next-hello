@@ -329,6 +329,16 @@ curl http://localhost:8001/health
 ./nexthello logs api
 ```
 
+### OpenClaw helper setup
+
+Use the template and keep your tokenized helper local (gitignored):
+
+```bash
+cp openclaw_http_helpers.template.sh openclaw_http_helpers.sh
+chmod +x openclaw_http_helpers.sh
+# edit OPENCLAW_GATEWAY_TOKEN and OPENCLAW_HOOKS_TOKEN in openclaw_http_helpers.sh
+```
+
 ### Database issues
 
 ```bash

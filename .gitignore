@@ -44,3 +44,6 @@ __pycache__/
 
 # Config with personal info
 nexthello.config.json
+
+# Local OpenClaw helper with tokens
+openclaw_http_helpers.sh
