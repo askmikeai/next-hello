@@ -93,10 +93,14 @@ class SwarmCoordinator:
         contact = await self.blackboard.get_contact(phone_number)
         is_new_contact = contact is None
 
+        inferred_name = self._extract_name_from_push_name(push_name)
+
         if is_new_contact:
             contact = ContactState(
                 phone_number=phone_number,
                 push_name=push_name,
+                first_name=inferred_name.get("first_name"),
+                last_name=inferred_name.get("last_name"),
             )
             await self.blackboard.save_contact(contact)
 
@@ -134,6 +138,13 @@ class SwarmCoordinator:
         # Update push_name if we got it
         if push_name and not contact.push_name:
             updated_fields["push_name"] = push_name
+
+        # If profile name exists but contact name is missing, infer from push_name.
+        if push_name and not contact.first_name and not contact.last_name:
+            if inferred_name.get("first_name"):
+                updated_fields["first_name"] = inferred_name["first_name"]
+            if inferred_name.get("last_name"):
+                updated_fields["last_name"] = inferred_name["last_name"]
 
         # Increment conversation turns
         updated_fields["conversation_turns"] = contact.conversation_turns + 1
@@ -417,3 +428,24 @@ class SwarmCoordinator:
                 break
 
         return entities
+
+    def _extract_name_from_push_name(self, push_name: Optional[str]) -> dict:
+        """Best-effort first/last name parsing from WhatsApp push_name."""
+        if not push_name:
+            return {}
+
+        cleaned = re.sub(r"\s+", " ", str(push_name)).strip()
+        if not cleaned or any(ch.isdigit() for ch in cleaned):
+            return {}
+
+        parts = cleaned.split(" ")
+        if not parts:
+            return {}
+
+        if len(parts) == 1:
+            return {"first_name": parts[0]}
+
+        return {
+            "first_name": parts[0],
+            "last_name": " ".join(parts[1:]),
+        }

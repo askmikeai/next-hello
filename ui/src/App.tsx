@@ -26,6 +26,7 @@ type Activity = {
   action: string;
   status: string;
   startedAt: string;
+  completedAt?: string | null;
 };
 
 type SwarmState = {
@@ -52,6 +53,8 @@ const AGENTS = [
   "messaging",
 ];
 
+const ACTIVE_WINDOW_MS = 12000;
+
 const json = async <T,>(path: string, init?: RequestInit): Promise<T> => {
   const res = await fetch(path, init);
   if (!res.ok) {
@@ -68,6 +71,7 @@ export default function App() {
   const [stats, setStats] = useState<Record<string, unknown> | null>(null);
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
+  const [nowTs, setNowTs] = useState<number>(() => Date.now());
 
   const selected = useMemo(
     () => contacts.find((c) => c.phone_number === selectedId || c.id === selectedId) ?? null,
@@ -124,6 +128,11 @@ export default function App() {
     return () => sse.close();
   }, []);
 
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowTs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   const sendMessage = async () => {
     if (!selected || !message.trim()) return;
     await json("/admin/api/whatsapp/send", {
@@ -155,6 +164,31 @@ export default function App() {
   };
 
   const flow = useMemo(() => {
+    const recentByAgent = new Map<string, Activity>();
+    for (const activity of activities) {
+      if (!AGENTS.includes(activity.agentType)) continue;
+      const prev = recentByAgent.get(activity.agentType);
+      const prevTime = prev ? Date.parse(prev.startedAt) : 0;
+      const thisTime = Date.parse(activity.startedAt);
+      if (!prev || thisTime > prevTime) {
+        recentByAgent.set(activity.agentType, activity);
+      }
+    }
+
+    const activeAgents = new Set(
+      Array.from(recentByAgent.entries())
+        .filter(([, a]) => nowTs - Date.parse(a.startedAt) <= ACTIVE_WINDOW_MS)
+        .map(([agent]) => agent)
+    );
+
+    const failedAgents = new Set(
+      Array.from(recentByAgent.entries())
+        .filter(([, a]) => a.status === "failed" && nowTs - Date.parse(a.startedAt) <= ACTIVE_WINDOW_MS)
+        .map(([agent]) => agent)
+    );
+
+    const coordinatorActive = activeAgents.size > 0;
+
     const baseNodes: Node[] = [
       {
         id: "coordinator",
@@ -162,6 +196,7 @@ export default function App() {
         data: { label: "Swarm Coordinator" },
         sourcePosition: Position.Bottom,
         targetPosition: Position.Top,
+        className: `coordinator-node${coordinatorActive ? " coordinator-node--active" : ""}`,
         style: { background: "#0f172a", color: "#fff", borderRadius: 10, padding: 10 },
       },
       ...AGENTS.map((name, idx) => ({
@@ -170,6 +205,7 @@ export default function App() {
         data: {
           label: `${name}\n${activities.filter((a) => a.agentType === name).length} events`,
         },
+        className: `agent-node${activeAgents.has(name) ? " agent-node--active" : ""}${failedAgents.has(name) ? " agent-node--failed" : ""}`,
         style: { borderRadius: 10, padding: 8, background: "#eef2ff", border: "1px solid #c7d2fe" },
         targetPosition: Position.Top,
         sourcePosition: Position.Bottom,
@@ -188,8 +224,12 @@ export default function App() {
       id: `coordinator-${name}`,
       source: "coordinator",
       target: name,
+      animated: activeAgents.has(name),
       markerEnd: { type: MarkerType.ArrowClosed },
-      style: { stroke: "#64748b" },
+      style: {
+        stroke: failedAgents.has(name) ? "#dc2626" : activeAgents.has(name) ? "#0ea5e9" : "#64748b",
+        strokeWidth: activeAgents.has(name) ? 2.5 : 1.5,
+      },
     }));
 
     const dynamicEdges: Edge[] = activities.slice(0, 30).flatMap((a, idx) => {
@@ -208,7 +248,7 @@ export default function App() {
     });
 
     return { nodes: [...baseNodes, ...contactNodes], edges: [...baseEdges, ...dynamicEdges] };
-  }, [activities, states]);
+  }, [activities, states, nowTs]);
 
   return (
     <div className="app">
