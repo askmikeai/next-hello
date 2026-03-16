@@ -109,15 +109,14 @@ input {
 
 .flow {
   grid-column: 1 / -1;
-  order: -1;
 }
 
 .layout > aside.panel {
-  grid-column: span 4;
+  grid-column: span 6;
 }
 
 .layout > .detail {
-  grid-column: span 8;
+  grid-column: span 6;
 }
 
 .panel {
@@ -320,7 +319,7 @@ input {
   color: #94a3b8 !important;
 }
 
-@media (max-width: 1200px) {
+@media (max-width: 980px) {
   .layout {
     grid-template-columns: 1fr;
   }
