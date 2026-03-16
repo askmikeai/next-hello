@@ -206,35 +206,41 @@ class SwarmCoordinator:
             )
         )
 
-        # Generate immediate response for new contacts
-        # The Personalization Agent will handle actual responses via message.send
-        if is_new_contact and not contact.welcomed:
-            await self.blackboard.update_contact(phone_number, welcomed=True)
+        # Demo mode behavior: attempt one welcome video for every contact.
+        # VideoAgent safely ignores duplicates and failures are non-blocking.
+        if not contact.heygen_video_url and not contact.heygen_video_id:
             name = contact.first_name or inferred_name.get("first_name") or push_name or "there"
-            owner_name = os.getenv("OWNER_NAME", "I")
+            owner_name = os.getenv("OWNER_NAME", "Michael Friedberg")
             event_name = os.getenv("EVENT_NAME", "Open Claw Demos, Agent Swarms and workflows")
-            welcome_text = (
-                f"Hey {name}! Nice to meet you at {event_name}. "
-                f"I'm {owner_name}'s assistant and excited to connect. "
-                "I will send you a quick welcome video shortly."
-            )
-
-            welcome_video_script = (
+            demo_video_script = (
                 f"Hey {name}, nice to meet you at {event_name}. "
                 f"I am {owner_name}'s assistant and I am glad we connected. "
                 "Looking forward to learning more about what you are building and how we can help."
             )
-
             await self.eventbus.publish(
                 SwarmEvent(
                     event_type=EventType.VIDEO_REQUESTED,
                     contact_id=phone_number,
                     payload={
-                        "script": welcome_video_script,
+                        "script": demo_video_script,
                         "welcome_video": True,
+                        "source": "demo-all-contacts",
                     },
                     source_agent="coordinator",
                 )
+            )
+
+        # Generate immediate response for new contacts
+        # The Personalization Agent will handle actual responses via message.send
+        if is_new_contact and not contact.welcomed:
+            await self.blackboard.update_contact(phone_number, welcomed=True)
+            name = contact.first_name or inferred_name.get("first_name") or push_name or "there"
+            owner_name = os.getenv("OWNER_NAME", "Michael Friedberg")
+            event_name = os.getenv("EVENT_NAME", "Open Claw Demos, Agent Swarms and workflows")
+            welcome_text = (
+                f"Hey {name}! Nice to meet you at {event_name}. "
+                f"I'm {owner_name}'s assistant and excited to connect. "
+                "I will send you a quick welcome video shortly."
             )
 
             await self.eventbus.publish(
@@ -445,6 +451,8 @@ class SwarmCoordinator:
         # Company extraction
         company_patterns = [
             r"(?:i work at|i'?m (?:from|with)|at)\s+([A-Z][\w\s&]+?)(?:\.|,|$|\s+(?:as|and))",
+            r"(?:this is|i'?m|i am)\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?\s+from\s+([A-Z][\w\s&]+?)(?:\.|,|$|\s+(?:as|and))",
+            r"from\s+([A-Z][\w\s&]+?)(?:\.|,|$|\s+(?:as|and))",
             r"(?:company|organization|firm)(?:\s+is)?\s+([A-Z][\w\s&]+?)(?:\.|,|$)",
         ]
         for pattern in company_patterns:

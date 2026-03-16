@@ -10,6 +10,7 @@ Complete FastAPI application with:
 
 import asyncio
 import base64
+import io
 import json
 import logging
 import os
@@ -24,6 +25,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import httpx
+import qrcode
 from dotenv import load_dotenv
 from fastapi import (
     FastAPI,
@@ -73,6 +75,12 @@ GREETING_VIDEO_DIR = PROJECT_ROOT / "storage" / "greeting-video"
 GREETING_VIDEO_METADATA_PATH = GREETING_VIDEO_DIR / "metadata.json"
 WHATSAPP_CONNECTOR_URL = os.getenv("WHATSAPP_CONNECTOR_URL", "http://whatsapp:3000")
 DEMO_MODE = str(os.getenv("DEMO_MODE", "false")).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+MODERATION_MODE = str(os.getenv("MODERATION_MODE", "false")).strip().lower() in {
     "1",
     "true",
     "yes",
@@ -168,6 +176,32 @@ def _post_connector_json(path: str, payload: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=503, detail="WhatsApp connector is unavailable")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to parse connector response: {e}")
+
+
+def _extract_qr_payload(qr_value: Any) -> str:
+    if not isinstance(qr_value, str):
+        return ""
+
+    lines = [line.strip() for line in qr_value.splitlines()]
+    payload_parts: list[str] = []
+    for line in lines:
+        if not line:
+            continue
+        if line.startswith("=") and set(line) == {"="}:
+            continue
+
+        lowered = line.lower()
+        if lowered.startswith("scan this qr code with whatsapp"):
+            continue
+        if lowered.startswith("generated:"):
+            continue
+
+        payload_parts.append(line)
+
+    payload = "".join(payload_parts).strip()
+    if any(ch in payload for ch in ("█", "▀", "▄")):
+        return ""
+    return payload
 
 
 def _normalize_history_message_type(message_type: Optional[str]) -> str:
@@ -1510,6 +1544,24 @@ async def admin_get_whatsapp_connector():
     }
 
 
+@app.get("/admin/api/whatsapp/qr.png")
+async def admin_get_whatsapp_qr_png():
+    qr = _fetch_connector_json("/qr")
+    qr_payload = _extract_qr_payload(qr.get("qrPayload")) or _extract_qr_payload(qr.get("qrText"))
+
+    if not qr.get("available") or not qr_payload:
+        return Response(
+            content=json.dumps({"available": False, "error": "qr_unavailable"}),
+            status_code=404,
+            media_type="application/json",
+        )
+
+    image = qrcode.make(qr_payload)
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return Response(content=buffer.getvalue(), media_type="image/png")
+
+
 class AdminWhatsAppSendRequest(BaseModel):
     phone_number: str
     content: str
@@ -2320,15 +2372,27 @@ async def whatsapp_receive_message(request: WhatsAppConnectorMessageRequest):
         if not _swarm_coordinator:
             raise ValueError("Swarm coordinator not initialized")
 
-        # Process message through swarm coordinator
-        # This publishes events for agents and returns immediate response for new contacts
-        response = await _swarm_coordinator.handle_incoming_message(
-            phone_number=request.phone_number,
-            message_text=message_text,
-            message_type=request.message_type,
-            push_name=request.push_name,
-            message_id=request.message_id,
-        )
+        if MODERATION_MODE:
+            response = None
+            logger.info(
+                "Moderation mode enabled; skipping automatic inbound response",
+                extra={
+                    "phone_number": request.phone_number,
+                    "message_id": request.message_id,
+                },
+            )
+            if is_erasure_request and _blackboard:
+                await _blackboard.delete_contact_data(request.phone_number)
+        else:
+            # Process message through swarm coordinator
+            # This publishes events for agents and returns immediate response for new contacts
+            response = await _swarm_coordinator.handle_incoming_message(
+                phone_number=request.phone_number,
+                message_text=message_text,
+                message_type=request.message_type,
+                push_name=request.push_name,
+                message_id=request.message_id,
+            )
 
         if not is_erasure_request:
             await _persist_message_history(

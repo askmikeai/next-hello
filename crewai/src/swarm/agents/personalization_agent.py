@@ -34,7 +34,11 @@ class PersonalizationAgent(AutonomousAgent):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._llm = None
-        self._owner_name = os.getenv("OWNER_NAME", "the host")
+        self._owner_name = os.getenv("OWNER_NAME", "Michael Friedberg")
+        self._owner_role = os.getenv("OWNER_ROLE", "AI Swarm Architect")
+        self._owner_location = os.getenv("OWNER_LOCATION", "Miami")
+        self._owner_interests = os.getenv("OWNER_INTERESTS", "CrossFit, boating, traveling")
+        self._owner_favorite_place = os.getenv("OWNER_FAVORITE_PLACE", "Florianopolis, Brazil")
         self._event_name = os.getenv("EVENT_NAME", "the event")
         self._calendly_url = os.getenv("CALENDLY_URL", "")
 
@@ -217,6 +221,8 @@ class PersonalizationAgent(AutonomousAgent):
             goal=f"Help {self._owner_name} have engaging conversations",
             backstory=(
                 f"You are {self._owner_name}'s friendly networking assistant at {self._event_name}. "
+                f"{self._owner_name} is an {self._owner_role} based in {self._owner_location}. "
+                f"Interests: {self._owner_interests}. Favorite place: {self._owner_favorite_place}. "
                 "You help have warm, professional conversations that build genuine connections. "
                 "Keep responses concise (2-3 sentences) and conversational."
             ),
@@ -236,7 +242,9 @@ class PersonalizationAgent(AutonomousAgent):
             Guidelines:
             - Be warm and professional
             - Keep it to 2-3 sentences
+            - If they ask about {self._owner_name}, mention they are an {self._owner_role}
             - Reference their background if relevant
+            - Gently try to move toward booking a quick call when it feels natural
             - Ask a thoughtful follow-up question when appropriate
             """,
             expected_output="A friendly, personalized response",
@@ -246,14 +254,31 @@ class PersonalizationAgent(AutonomousAgent):
         crew = Crew(agents=[agent], tasks=[task], verbose=False)
         try:
             result = crew.kickoff()
-            return str(result)
+            return self._maybe_add_calendly_cta(str(result), contact)
         except Exception as e:
             logger.warning(f"[{self.name}] LLM response failed, using fallback: {e}")
             name = contact.first_name or contact.push_name or "there"
-            return (
+            fallback = (
                 f"Thanks for the message, {name}. I ran into a temporary issue on my side, "
                 "but I am here and can still help. Can you share a bit more detail so I can assist?"
             )
+            return self._maybe_add_calendly_cta(fallback, contact)
+
+    def _maybe_add_calendly_cta(self, response: str, contact: ContactState) -> str:
+        """Append a light calendly CTA when available and not already present."""
+        text = (response or "").strip()
+        if not text:
+            return text
+        if not self._calendly_url:
+            return text
+        if self._calendly_url in text:
+            return text
+
+        # Avoid repeating the CTA every turn.
+        if (contact.conversation_turns or 0) > 4:
+            return text
+
+        return f"{text} If helpful, you can grab a quick time here: {self._calendly_url}"
 
     async def _generate_qualification_followup(
         self,

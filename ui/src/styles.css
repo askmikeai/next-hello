@@ -146,6 +146,51 @@ input {
   background: #0c4a6e;
 }
 
+.whatsapp-qr {
+  margin-top: 10px;
+  border-top: 1px solid #334155;
+  padding-top: 10px;
+}
+
+.qr-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.qr-status {
+  margin: 6px 0;
+  font-size: 13px;
+}
+
+.qr-status.ok {
+  color: #86efac;
+}
+
+.qr-status.warn {
+  color: #fcd34d;
+}
+
+.qr-image {
+  display: block;
+  width: min(100%, 280px);
+  max-width: 100%;
+  height: auto;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid #334155;
+  background: #ffffff;
+  image-rendering: crisp-edges;
+  image-rendering: pixelated;
+}
+
+.qr-empty {
+  margin: 0;
+  color: #94a3b8;
+  font-size: 13px;
+}
+
 .flowwrap {
   height: 58vh;
   border: 1px solid #334155;

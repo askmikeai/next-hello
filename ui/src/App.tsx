@@ -53,6 +53,13 @@ type ContactMessage = {
   moderation?: string;
 };
 
+type WhatsAppConnectorStatus = {
+  available: boolean;
+  connected: boolean;
+  qrAvailable: boolean;
+  qrText: string | null;
+};
+
 const AGENTS = [
   "openclaw",
   "research",
@@ -140,6 +147,9 @@ export default function App() {
   const [stats, setStats] = useState<Record<string, unknown> | null>(null);
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState<ContactMessage[]>([]);
+  const [connector, setConnector] = useState<WhatsAppConnectorStatus | null>(null);
+  const [qrImageTick, setQrImageTick] = useState(() => Date.now());
+  const [qrImageErrored, setQrImageErrored] = useState(false);
   const [loading, setLoading] = useState(false);
   const [nowTs, setNowTs] = useState<number>(() => Date.now());
 
@@ -196,9 +206,35 @@ export default function App() {
     setStates(nextStates);
   };
 
+  const refreshConnector = async () => {
+    try {
+      const next = await json<WhatsAppConnectorStatus>("/admin/api/whatsapp/connector");
+      setConnector(next);
+      setQrImageErrored(false);
+      if (!next.connected) {
+        setQrImageTick(Date.now());
+      }
+    } catch {
+      setConnector(null);
+      setQrImageErrored(true);
+    }
+  };
+
+  const qrImageSrc = connector?.connected
+    ? "/admin/api/whatsapp/qr.png"
+    : `/admin/api/whatsapp/qr.png?t=${qrImageTick}`;
+
   useEffect(() => {
     void refreshCRM();
     void refreshSwarm();
+    void refreshConnector();
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void refreshConnector();
+    }, 5000);
+    return () => window.clearInterval(timer);
   }, []);
 
   useEffect(() => {
@@ -407,6 +443,27 @@ export default function App() {
                 </button>
               );
             })}
+          </div>
+
+          <div className="whatsapp-qr">
+            <div className="qr-head">
+              <h3>WhatsApp QR</h3>
+              <button onClick={refreshConnector}>Refresh QR</button>
+            </div>
+            <p className={`qr-status ${connector?.connected ? "ok" : "warn"}`}>
+              {connector?.connected ? "Connected" : "Not connected"}
+            </p>
+            {connector?.qrAvailable && !qrImageErrored ? (
+              <img
+                className="qr-image"
+                src={qrImageSrc}
+                alt="WhatsApp login QR"
+                onLoad={() => setQrImageErrored(false)}
+                onError={() => setQrImageErrored(true)}
+              />
+            ) : (
+              <p className="qr-empty">No QR available right now.</p>
+            )}
           </div>
         </aside>
 

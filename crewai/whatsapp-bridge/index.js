@@ -49,6 +49,7 @@ let socket = null;
 let isConnected = false;
 let isStarting = false;
 let backupTimer = null;
+let latestQrPayload = null;
 
 function serializeForLog(value, maxStringLength = 500) {
   const seen = new WeakSet();
@@ -203,7 +204,7 @@ async function initSessionStore() {
   }
 }
 
-function writeQrFile(qrText) {
+function writeQrFile(qrPayload, qrText) {
   const output = [
     '='.repeat(50),
     '  Scan this QR code with WhatsApp',
@@ -217,10 +218,12 @@ function writeQrFile(qrText) {
 
   fs.mkdirSync(QR_OUTPUT_DIR, { recursive: true });
   fs.writeFileSync(QR_FILE, output, 'utf8');
+  latestQrPayload = qrPayload;
 }
 
 function cleanupQrFile() {
   try {
+    latestQrPayload = null;
     if (fs.existsSync(QR_FILE)) {
       fs.unlinkSync(QR_FILE);
     }
@@ -316,7 +319,7 @@ async function ensureSocketConnected() {
         console.log('='.repeat(50));
         qrcode.generate(qr, { small: true }, (qrText) => {
           console.log(qrText);
-          writeQrFile(qrText);
+          writeQrFile(qr, qrText);
           console.log(`\nQR code saved to: ${QR_FILE}\n`);
         });
       }
@@ -604,6 +607,7 @@ const server = http.createServer(async (req, res) => {
     sendJson(res, 200, {
       available: hasQr,
       connected: isConnected,
+      qrPayload: hasQr ? latestQrPayload : null,
       qrText: hasQr ? fs.readFileSync(QR_FILE, 'utf8') : null,
     });
     return;
