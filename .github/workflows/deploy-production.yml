@@ -19,6 +19,34 @@ jobs:
     name: Deploy to OCI VM
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Sync application files to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: ${{ secrets.PROD_USER }}
+          key: ${{ secrets.PROD_SSH_KEY }}
+          port: ${{ secrets.PROD_PORT || 22 }}
+          source: "."
+          target: ${{ secrets.PROD_APP_DIR || '/opt/nexthello/app' }}
+          overwrite: true
+          strip_components: 0
+          rm: false
+          tar_dereference: true
+          exclude: >-
+            .git,
+            .github,
+            **/.DS_Store,
+            **/.env,
+            **/node_modules,
+            **/.venv,
+            **/__pycache__,
+            **/*.pyc,
+            ui/dist,
+            ui/tsconfig.tsbuildinfo
+
       - name: Deploy over SSH
         uses: appleboy/ssh-action@v1.2.0
         with:
@@ -31,10 +59,6 @@ jobs:
             set -euo pipefail
             APP_DIR="${{ secrets.PROD_APP_DIR || '/opt/nexthello/app' }}"
             cd "$APP_DIR"
-
-            git fetch origin main
-            git checkout main
-            git pull --ff-only origin main
 
             docker compose up -d postgres redis
             docker compose --profile migrations run --rm liquibase
