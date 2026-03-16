@@ -82,7 +82,7 @@ const AGENT_EMOJI: Record<string, string> = {
   messaging: "💬",
 };
 
-const ACTIVE_WINDOW_MS = 12000;
+const ACTIVE_WINDOW_MS = 30000;
 const DEMO_MODE = ["1", "true", "yes", "on"].includes(
   String(import.meta.env.VITE_DEMO_MODE ?? "false").toLowerCase()
 );
@@ -238,22 +238,51 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const sse = new EventSource("/admin/api/swarm/events");
-    sse.addEventListener("state:sync", (evt) => {
-      try {
-        const parsed = JSON.parse((evt as MessageEvent).data) as SwarmSyncPayload;
-        if (parsed.data?.activities) {
-          setActivities(parsed.data.activities);
-        }
-        if (parsed.data?.states) {
-          setStates(parsed.data.states);
-        }
-      } catch {
-        // ignore malformed events
-      }
-    });
+    let sse: EventSource | null = null;
+    let reconnectTimer: number | null = null;
 
-    return () => sse.close();
+    const connect = () => {
+      sse = new EventSource("/admin/api/swarm/events");
+      sse.addEventListener("state:sync", (evt) => {
+        try {
+          const parsed = JSON.parse((evt as MessageEvent).data) as SwarmSyncPayload;
+          if (parsed.data?.activities) {
+            setActivities(parsed.data.activities);
+          }
+          if (parsed.data?.states) {
+            setStates(parsed.data.states);
+          }
+        } catch {
+          // ignore malformed events
+        }
+      });
+      sse.onerror = () => {
+        sse?.close();
+        sse = null;
+        if (reconnectTimer == null) {
+          reconnectTimer = window.setTimeout(() => {
+            reconnectTimer = null;
+            connect();
+          }, 2000);
+        }
+      };
+    };
+
+    connect();
+
+    return () => {
+      if (reconnectTimer != null) {
+        window.clearTimeout(reconnectTimer);
+      }
+      sse?.close();
+    };
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void refreshSwarm();
+    }, 5000);
+    return () => window.clearInterval(timer);
   }, []);
 
   useEffect(() => {
