@@ -1,0 +1,42 @@
+name: Deploy Production
+
+on:
+  push:
+    branches:
+      - main
+      - fix/admin-contract
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy to OCI VM
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: ${{ secrets.PROD_USER }}
+          key: ${{ secrets.PROD_SSH_KEY }}
+          port: ${{ secrets.PROD_PORT || 22 }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+            APP_DIR="${{ secrets.PROD_APP_DIR || '/opt/nexthello/app' }}"
+            cd "$APP_DIR"
+
+            git fetch origin main
+            git checkout main
+            git pull --ff-only origin main
+
+            docker compose up -d postgres redis
+            docker compose --profile migrations run --rm liquibase
+            docker compose up -d --build api worker swarm whatsapp ui agent-log-monitor loki
+            docker compose ps
