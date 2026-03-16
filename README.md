@@ -34,6 +34,24 @@ cp crewai/.env.example crewai/.env
 
 ---
 
+## Production Deploy (GitHub Actions)
+
+This repo includes `.github/workflows/deploy-production.yml`.
+
+- Trigger: push to `main` (or manual `workflow_dispatch`)
+- Target: OCI VM over SSH
+- Action: pull latest code, run Liquibase migrations, rebuild and restart app services
+
+Set these GitHub repository secrets before enabling deploys:
+
+- `PROD_HOST` - public IP or hostname of your OCI server
+- `PROD_USER` - SSH user (for this setup: `ubuntu`)
+- `PROD_SSH_KEY` - private SSH key (multi-line PEM)
+- `PROD_PORT` - optional SSH port (`22` default)
+- `PROD_APP_DIR` - optional app path (`/opt/nexthello/app` default)
+
+---
+
 ## CLI Commands
 
 ```bash
