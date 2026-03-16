@@ -1,6 +1,7 @@
 # NextHello
 
 AI-powered networking assistant that turns event connections into booked meetings.
+This uses WhatsApp to connect people and AI to automate the process.
 
 Built with **CrewAI** multi-agent orchestration and **WhatsApp** via Baileys.
 
