@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - fix/admin-contract
+      - oci-terraform
   workflow_dispatch:
 
 permissions:
@@ -19,6 +20,23 @@ jobs:
     name: Deploy to OCI VM
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Sync application files to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: ${{ secrets.PROD_USER }}
+          key: ${{ secrets.PROD_SSH_KEY }}
+          port: ${{ secrets.PROD_PORT || 22 }}
+          source: "."
+          target: ${{ secrets.PROD_APP_DIR || '/opt/nexthello/app' }}
+          overwrite: true
+          strip_components: 0
+          rm: false
+          tar_dereference: true
+
       - name: Deploy over SSH
         uses: appleboy/ssh-action@v1.2.0
         with:
@@ -32,11 +50,11 @@ jobs:
             APP_DIR="${{ secrets.PROD_APP_DIR || '/opt/nexthello/app' }}"
             cd "$APP_DIR"
 
-            git fetch origin main
-            git checkout main
-            git pull --ff-only origin main
-
             docker compose up -d postgres redis
             docker compose --profile migrations run --rm liquibase
-            docker compose up -d --build api worker swarm whatsapp ui agent-log-monitor loki
+            SERVICES="api worker swarm whatsapp agent-log-monitor loki"
+            if docker compose config --services | grep -q '^ui$'; then
+              SERVICES="$SERVICES ui"
+            fi
+            docker compose up -d --build $SERVICES
             docker compose ps
