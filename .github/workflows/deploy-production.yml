@@ -63,5 +63,9 @@ jobs:
 
             docker compose up -d postgres redis
             docker compose --profile migrations run --rm liquibase
-            docker compose up -d --build api worker swarm whatsapp ui agent-log-monitor loki
+            SERVICES="api worker swarm whatsapp agent-log-monitor loki"
+            if docker compose config --services | grep -q '^ui$'; then
+              SERVICES="$SERVICES ui"
+            fi
+            docker compose up -d --build $SERVICES
             docker compose ps
