@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - fix/admin-contract
+      - oci-terraform
   workflow_dispatch:
 
 permissions:
