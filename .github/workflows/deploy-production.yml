@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Sync application files to server
         uses: appleboy/scp-action@v0.1.7
@@ -36,17 +36,6 @@ jobs:
           strip_components: 0
           rm: false
           tar_dereference: true
-          exclude: >-
-            .git,
-            .github,
-            **/.DS_Store,
-            **/.env,
-            **/node_modules,
-            **/.venv,
-            **/__pycache__,
-            **/*.pyc,
-            ui/dist,
-            ui/tsconfig.tsbuildinfo
 
       - name: Deploy over SSH
         uses: appleboy/ssh-action@v1.2.0
