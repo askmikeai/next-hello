@@ -11,6 +11,7 @@ import os
 import uuid
 import asyncio
 import logging
+from contextvars import ContextVar, Token
 from decimal import Decimal
 from datetime import datetime, timedelta
 from typing import Optional, Any, Dict, List
@@ -166,6 +167,12 @@ class Blackboard:
     LOCK_PREFIX = "swarm:lock:"
     LOCK_TTL = 30  # seconds
     CACHE_TTL = 3600  # 1 hour
+    DEFAULT_OWNER_ID = (
+        os.getenv("NEXTHELLO_SYSTEM_OWNER_ID")
+        or os.getenv("NEXTHELLO_DEFAULT_OWNER_ID")
+        or "askmikeai@gmail.com"
+    ).strip() or "askmikeai@gmail.com"
+    _owner_context: ContextVar[str] = ContextVar("blackboard_owner_id", default=DEFAULT_OWNER_ID)
 
     def __init__(
         self,
@@ -211,11 +218,34 @@ class Blackboard:
         """Get Redis key for contact state"""
         return f"{self.REDIS_PREFIX}{contact_id}"
 
+    def _normalize_owner_id(self, owner_id: Optional[str]) -> str:
+        candidate = (owner_id or self._owner_context.get() or "").strip().lower()
+        if not candidate:
+            return self.DEFAULT_OWNER_ID
+        return (
+            "".join(ch if ch.isalnum() or ch in "._-" else "-" for ch in candidate)[:80]
+            or self.DEFAULT_OWNER_ID
+        )
+
+    def set_owner_context(self, owner_id: Optional[str]) -> Token:
+        return self._owner_context.set(self._normalize_owner_id(owner_id))
+
+    def reset_owner_context(self, token: Token) -> None:
+        self._owner_context.reset(token)
+
+    def _scoped_cache_key(self, owner_id: str, contact_id: str) -> str:
+        return f"{self.REDIS_PREFIX}{owner_id}:{contact_id}"
+
+    def _scoped_lock_key(self, owner_id: str, contact_id: str) -> str:
+        return f"{self.LOCK_PREFIX}{owner_id}:{contact_id}"
+
     def _lock_key(self, contact_id: str) -> str:
         """Get Redis key for contact lock"""
         return f"{self.LOCK_PREFIX}{contact_id}"
 
-    async def get_contact(self, contact_id: str) -> Optional[ContactState]:
+    async def get_contact(
+        self, contact_id: str, owner_id: Optional[str] = None
+    ) -> Optional[ContactState]:
         """
         Get contact state from cache or database.
 
@@ -227,8 +257,10 @@ class Blackboard:
         """
         await self.connect()
 
+        owner = self._normalize_owner_id(owner_id)
+
         # Try cache first
-        cached = await self._redis.get(self._cache_key(contact_id))
+        cached = await self._redis.get(self._scoped_cache_key(owner, contact_id))
         if cached:
             return ContactState.from_dict(json.loads(cached))
 
@@ -238,15 +270,16 @@ class Blackboard:
                 row = await conn.fetchrow(
                     """
                     SELECT * FROM networking_contacts
-                    WHERE phone_number = $1
+                    WHERE owner_id = $1 AND phone_number = $2
                     """,
+                    owner,
                     contact_id,
                 )
                 if row:
                     state = self._row_to_state(dict(row))
                     # Cache it
                     await self._redis.setex(
-                        self._cache_key(contact_id),
+                        self._scoped_cache_key(owner, contact_id),
                         self.CACHE_TTL,
                         json.dumps(state.to_dict()),
                     )
@@ -254,7 +287,7 @@ class Blackboard:
 
         return None
 
-    async def save_contact(self, state: ContactState) -> None:
+    async def save_contact(self, state: ContactState, owner_id: Optional[str] = None) -> None:
         """
         Save contact state to cache and database.
 
@@ -263,6 +296,7 @@ class Blackboard:
         """
         await self.connect()
 
+        owner = self._normalize_owner_id(owner_id)
         now = datetime.utcnow().isoformat()
         if not state.created_at:
             state.created_at = now
@@ -287,13 +321,19 @@ class Blackboard:
             json.dumps(state.to_dict()),
         )
 
+        await self._redis.setex(
+            self._scoped_cache_key(owner, state.phone_number),
+            self.CACHE_TTL,
+            json.dumps(state.to_dict()),
+        )
+
         # Save to database
         if self._pool:
             async with self._pool.acquire() as conn:
                 await conn.execute(
                     """
                     INSERT INTO networking_contacts (
-                        phone_number, first_name, last_name, push_name,
+                        owner_id, phone_number, first_name, last_name, push_name,
                         email, linkedin_url, company_name, job_title,
                         research_status, qualification_tier, qualification_score,
                         heygen_video_url, hubspot_contact_id,
@@ -301,9 +341,9 @@ class Blackboard:
                         pending_actions, created_at, updated_at
                     ) VALUES (
                         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                        $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
+                        $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
                     )
-                    ON CONFLICT (phone_number) DO UPDATE SET
+                    ON CONFLICT (owner_id, phone_number) DO UPDATE SET
                         first_name = COALESCE(EXCLUDED.first_name, networking_contacts.first_name),
                         last_name = COALESCE(EXCLUDED.last_name, networking_contacts.last_name),
                         push_name = COALESCE(EXCLUDED.push_name, networking_contacts.push_name),
@@ -323,6 +363,7 @@ class Blackboard:
                         pending_actions = EXCLUDED.pending_actions,
                         updated_at = EXCLUDED.updated_at
                     """,
+                    owner,
                     state.phone_number,
                     state.first_name,
                     state.last_name,
@@ -348,6 +389,7 @@ class Blackboard:
     async def update_contact(
         self,
         contact_id: str,
+        owner_id: Optional[str] = None,
         **updates: Any,
     ) -> ContactState:
         """
@@ -358,7 +400,7 @@ class Blackboard:
         await self.connect()
 
         # Get current state
-        state = await self.get_contact(contact_id)
+        state = await self.get_contact(contact_id, owner_id=owner_id)
         if not state:
             state = ContactState(phone_number=contact_id)
 
@@ -368,13 +410,14 @@ class Blackboard:
                 setattr(state, key, value)
 
         # Save
-        await self.save_contact(state)
+        await self.save_contact(state, owner_id=owner_id)
         return state
 
     async def acquire_lock(
         self,
         contact_id: str,
         owner: str,
+        owner_id: Optional[str] = None,
         ttl: int = None,
     ) -> bool:
         """
@@ -390,28 +433,32 @@ class Blackboard:
         """
         await self.connect()
         ttl = ttl or self.LOCK_TTL
+        tenant = self._normalize_owner_id(owner_id)
         return await self._redis.set(
-            self._lock_key(contact_id),
+            self._scoped_lock_key(tenant, contact_id),
             owner,
             nx=True,
             ex=ttl,
         )
 
-    async def release_lock(self, contact_id: str, owner: str) -> bool:
+    async def release_lock(
+        self, contact_id: str, owner: str, owner_id: Optional[str] = None
+    ) -> bool:
         """
         Release a distributed lock.
 
         Only releases if owner matches.
         """
         await self.connect()
-        lock_key = self._lock_key(contact_id)
+        tenant = self._normalize_owner_id(owner_id)
+        lock_key = self._scoped_lock_key(tenant, contact_id)
         current_owner = await self._redis.get(lock_key)
         if current_owner == owner:
             await self._redis.delete(lock_key)
             return True
         return False
 
-    async def log_event(self, event: SwarmEvent) -> None:
+    async def log_event(self, event: SwarmEvent, owner_id: Optional[str] = None) -> None:
         """
         Log an event to PostgreSQL for debugging/auditing.
         """
@@ -422,10 +469,11 @@ class Blackboard:
             await conn.execute(
                 """
                 INSERT INTO swarm_event_log (
-                    event_id, event_type, source_agent, contact_id,
+                    owner_id, event_id, event_type, source_agent, contact_id,
                     payload, causation_id, correlation_id, created_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                 """,
+                self._normalize_owner_id(owner_id),
                 event.event_id,
                 event.event_type.value
                 if isinstance(event.event_type, EventType)
@@ -444,6 +492,7 @@ class Blackboard:
         action: str,
         correlation_id: str,
         started_at: datetime,
+        owner_id: Optional[str] = None,
     ) -> Optional[str]:
         """
         Insert a started row into agent_activity_log.
@@ -460,9 +509,10 @@ class Blackboard:
                 await conn.execute(
                     """
                     INSERT INTO agent_activity_log (
-                        id, correlation_id, agent_type, action, started_at, status
-                    ) VALUES ($1, $2, $3, $4, $5, 'started')
+                        owner_id, id, correlation_id, agent_type, action, started_at, status
+                    ) VALUES ($1, $2, $3, $4, $5, $6, 'started')
                     """,
+                    self._normalize_owner_id(owner_id),
                     activity_id,
                     correlation_id,
                     agent_type,
@@ -519,6 +569,7 @@ class Blackboard:
         self,
         agent_name: str,
         contact_id: str,
+        owner_id: Optional[str] = None,
     ) -> Optional[dict]:
         """Get agent-specific state for a contact"""
         if not self._pool:
@@ -528,8 +579,9 @@ class Blackboard:
             row = await conn.fetchrow(
                 """
                 SELECT * FROM swarm_agent_state
-                WHERE agent_name = $1 AND contact_id = $2
+                WHERE owner_id = $1 AND agent_name = $2 AND contact_id = $3
                 """,
+                self._normalize_owner_id(owner_id),
                 agent_name,
                 contact_id,
             )
@@ -541,6 +593,7 @@ class Blackboard:
         contact_id: str,
         state: str,
         event_id: Optional[str] = None,
+        owner_id: Optional[str] = None,
     ) -> None:
         """Save agent-specific state for a contact"""
         if not self._pool:
@@ -550,13 +603,14 @@ class Blackboard:
             await conn.execute(
                 """
                 INSERT INTO swarm_agent_state (
-                    agent_name, contact_id, state, current_event_id, last_action_at
-                ) VALUES ($1, $2, $3, $4, NOW())
-                ON CONFLICT (agent_name, contact_id) DO UPDATE SET
+                    owner_id, agent_name, contact_id, state, current_event_id, last_action_at
+                ) VALUES ($1, $2, $3, $4, $5, NOW())
+                ON CONFLICT (owner_id, agent_name, contact_id) DO UPDATE SET
                     state = EXCLUDED.state,
                     current_event_id = EXCLUDED.current_event_id,
                     last_action_at = NOW()
                 """,
+                self._normalize_owner_id(owner_id),
                 agent_name,
                 contact_id,
                 state,
@@ -568,17 +622,20 @@ class Blackboard:
         limit: int = 100,
         offset: int = 0,
         filters: Optional[dict] = None,
+        owner_id: Optional[str] = None,
     ) -> List[ContactState]:
         """List contacts with optional filtering"""
         if not self._pool:
             return []
 
         async with self._pool.acquire() as conn:
-            query = "SELECT * FROM networking_contacts ORDER BY updated_at DESC LIMIT $1 OFFSET $2"
-            rows = await conn.fetch(query, limit, offset)
+            query = "SELECT * FROM networking_contacts WHERE owner_id = $1 ORDER BY updated_at DESC LIMIT $2 OFFSET $3"
+            rows = await conn.fetch(query, self._normalize_owner_id(owner_id), limit, offset)
             return [self._row_to_state(dict(row)) for row in rows]
 
-    async def delete_contact_data(self, contact_id: str) -> dict[str, int]:
+    async def delete_contact_data(
+        self, contact_id: str, owner_id: Optional[str] = None
+    ) -> dict[str, int]:
         """Delete all stored data for a contact by phone number."""
         await self.connect()
 
@@ -586,9 +643,13 @@ class Blackboard:
         if not phone_number:
             return {"contacts": 0, "messages": 0, "events": 0, "agent_states": 0, "activities": 0}
 
+        owner = self._normalize_owner_id(owner_id)
+
         # Remove cached state/locks immediately.
         await self._redis.delete(self._cache_key(phone_number))
         await self._redis.delete(self._lock_key(phone_number))
+        await self._redis.delete(self._scoped_cache_key(owner, phone_number))
+        await self._redis.delete(self._scoped_lock_key(owner, phone_number))
 
         deleted = {
             "contacts": 0,
@@ -613,13 +674,15 @@ class Blackboard:
                 # Delete stream/state rows keyed by phone number.
                 deleted["agent_states"] = _rows_affected(
                     await conn.execute(
-                        "DELETE FROM swarm_agent_state WHERE contact_id = $1",
+                        "DELETE FROM swarm_agent_state WHERE owner_id = $1 AND contact_id = $2",
+                        owner,
                         phone_number,
                     )
                 )
                 deleted["events"] = _rows_affected(
                     await conn.execute(
-                        "DELETE FROM swarm_event_log WHERE contact_id = $1",
+                        "DELETE FROM swarm_event_log WHERE owner_id = $1 AND contact_id = $2",
+                        owner,
                         phone_number,
                     )
                 )
@@ -627,19 +690,22 @@ class Blackboard:
                 # Message history is keyed by phone_number in practice.
                 deleted["messages"] = _rows_affected(
                     await conn.execute(
-                        "DELETE FROM message_history WHERE phone_number = $1",
+                        "DELETE FROM message_history WHERE owner_id = $1 AND phone_number = $2",
+                        owner,
                         phone_number,
                     )
                 )
 
                 # Keep media audit trail but mark media rows as deleted.
                 await conn.execute(
-                    "UPDATE media_files SET deleted_at = NOW() WHERE phone_number = $1 AND deleted_at IS NULL",
+                    "UPDATE media_files SET deleted_at = NOW() WHERE owner_id = $1 AND phone_number = $2 AND deleted_at IS NULL",
+                    owner,
                     phone_number,
                 )
 
                 contact_row = await conn.fetchrow(
-                    "SELECT id FROM networking_contacts WHERE phone_number = $1",
+                    "SELECT id FROM networking_contacts WHERE owner_id = $1 AND phone_number = $2",
+                    owner,
                     phone_number,
                 )
                 if contact_row:
@@ -647,14 +713,16 @@ class Blackboard:
 
                     deleted["activities"] = _rows_affected(
                         await conn.execute(
-                            "DELETE FROM agent_activity_log WHERE contact_id = $1",
+                            "DELETE FROM agent_activity_log WHERE owner_id = $1 AND contact_id = $2",
+                            owner,
                             contact_uuid,
                         )
                     )
 
                     deleted["contacts"] = _rows_affected(
                         await conn.execute(
-                            "DELETE FROM networking_contacts WHERE id = $1",
+                            "DELETE FROM networking_contacts WHERE owner_id = $1 AND id = $2",
+                            owner,
                             contact_uuid,
                         )
                     )

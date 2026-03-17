@@ -117,6 +117,15 @@ class QualificationAgent(AutonomousAgent):
         """
         Execute contact qualification.
         """
+        # Load per-owner LLM config
+        cfg = await self.get_owner_config(event.owner_id)
+        llm_cfg = cfg.llm
+        primary = llm_cfg.get("primary_provider") or "anthropic/claude-sonnet-4-20250514"
+        if primary.startswith("anthropic/"):
+            self._llm = LLM(model=primary, max_tokens=1024, temperature=0.3)
+        else:
+            self._llm = LLM(model=primary, temperature=0.3)
+
         result_events = []
 
         try:
@@ -126,6 +135,7 @@ class QualificationAgent(AutonomousAgent):
             # Update contact
             await self.blackboard.update_contact(
                 contact.phone_number,
+                owner_id=event.owner_id,
                 qualification_score=score,
                 qualification_tier=tier,
                 qualification_data={
@@ -138,36 +148,41 @@ class QualificationAgent(AutonomousAgent):
             )
 
             # Publish qualification.completed
-            result_events.append(event.create_response(
-                event_type=EventType.QUALIFICATION_COMPLETED,
-                payload={
-                    "score": score,
-                    "tier": tier,
-                    "reasoning": reasoning,
-                },
-                source_agent=self.name,
-            ))
+            result_events.append(
+                event.create_response(
+                    event_type=EventType.QUALIFICATION_COMPLETED,
+                    payload={
+                        "score": score,
+                        "tier": tier,
+                        "reasoning": reasoning,
+                    },
+                    source_agent=self.name,
+                )
+            )
 
             # Trigger follow-up actions based on tier
             if tier in ["hot", "warm"]:
                 # Request video for high-value leads
                 if not contact.heygen_video_url:
-                    result_events.append(event.create_response(
-                        event_type=EventType.VIDEO_REQUESTED,
-                        payload={"tier": tier},
-                        source_agent=self.name,
-                    ))
+                    result_events.append(
+                        event.create_response(
+                            event_type=EventType.VIDEO_REQUESTED,
+                            payload={"tier": tier},
+                            source_agent=self.name,
+                        )
+                    )
 
                 # Request CRM sync
-                result_events.append(event.create_response(
-                    event_type=EventType.CRM_SYNC_NEEDED,
-                    payload={"tier": tier, "score": score},
-                    source_agent=self.name,
-                ))
+                result_events.append(
+                    event.create_response(
+                        event_type=EventType.CRM_SYNC_NEEDED,
+                        payload={"tier": tier, "score": score},
+                        source_agent=self.name,
+                    )
+                )
 
             logger.info(
-                f"[{self.name}] Qualified {contact.phone_number}: "
-                f"score={score}, tier={tier}"
+                f"[{self.name}] Qualified {contact.phone_number}: score={score}, tier={tier}"
             )
 
         except Exception as e:
@@ -243,7 +258,10 @@ class QualificationAgent(AutonomousAgent):
             return 20
 
         # Professional level (15 points)
-        if any(x in title_lower for x in ["engineer", "developer", "analyst", "consultant", "specialist"]):
+        if any(
+            x in title_lower
+            for x in ["engineer", "developer", "analyst", "consultant", "specialist"]
+        ):
             return 15
 
         # Associate/Entry level (10 points)

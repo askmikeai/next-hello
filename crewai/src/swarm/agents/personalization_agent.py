@@ -34,24 +34,77 @@ class PersonalizationAgent(AutonomousAgent):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._llm = None
-        self._owner_name = os.getenv("OWNER_NAME", "Michael Friedberg")
-        self._owner_role = os.getenv("OWNER_ROLE", "AI Swarm Architect")
-        self._owner_location = os.getenv("OWNER_LOCATION", "Miami")
-        self._owner_interests = os.getenv("OWNER_INTERESTS", "CrossFit, boating, traveling")
-        self._owner_favorite_place = os.getenv("OWNER_FAVORITE_PLACE", "Florianopolis, Brazil")
-        self._event_name = os.getenv("EVENT_NAME", "the event")
+        # These are process-level defaults; per-owner values are loaded at
+        # execution time via OwnerConfig and override these.
+        self._owner_name = os.getenv("OWNER_NAME", "")
+        self._owner_role = os.getenv("OWNER_ROLE", "")
+        self._owner_location = os.getenv("OWNER_LOCATION", "")
+        self._owner_interests = os.getenv("OWNER_INTERESTS", "")
+        self._owner_favorite_place = os.getenv("OWNER_FAVORITE_PLACE", "")
+        self._event_name = os.getenv("EVENT_NAME", "")
         self._calendly_url = os.getenv("CALENDLY_URL", "")
+
+    async def _load_identity(self, owner_id: str) -> None:
+        """Refresh identity fields from per-owner DB config."""
+        cfg = await self.get_owner_config(owner_id)
+        ident = cfg.identity
+        self._owner_name = ident.get("owner_name") or self._owner_name
+        self._owner_role = ident.get("owner_role") or self._owner_role
+        self._owner_location = ident.get("owner_location") or self._owner_location
+        self._owner_interests = ident.get("owner_interests") or self._owner_interests
+        self._owner_favorite_place = ident.get("owner_favorite_place") or self._owner_favorite_place
+        self._event_name = ident.get("event_name") or self._event_name
+        self._calendly_url = ident.get("calendly_url") or self._calendly_url
+
+        # LLM provider can also be per-owner
+        llm_cfg = cfg.llm
+        anthropic_key = llm_cfg.get("anthropic_api_key") or os.getenv("ANTHROPIC_API_KEY", "")
+        openai_key = llm_cfg.get("openai_api_key") or os.getenv("OPENAI_API_KEY", "")
+        primary = llm_cfg.get("primary_provider") or "anthropic/claude-sonnet-4-20250514"
+
+        # Rebuild LLMs based on per-owner config
+        if primary.startswith("anthropic/") and anthropic_key:
+            self._llm = LLM(model=primary, max_tokens=1024, temperature=0.8)
+        elif openai_key:
+            self._llm = LLM(model=primary, temperature=0.8)
+        else:
+            self._llm = LLM(
+                model="anthropic/claude-sonnet-4-20250514", max_tokens=1024, temperature=0.8
+            )
+
+        if not hasattr(self, "_fallback_llm"):
+            self._fallback_llm = None
+        if openai_key and primary.startswith("anthropic/"):
+            self._fallback_llm = LLM(model="openai/gpt-4o", temperature=0.8)
+        elif anthropic_key and not primary.startswith("anthropic/"):
+            self._fallback_llm = LLM(
+                model="anthropic/claude-sonnet-4-20250514", max_tokens=1024, temperature=0.8
+            )
+        else:
+            self._fallback_llm = None
 
     @property
     def llm(self) -> LLM:
-        """Get LLM instance for content generation"""
+        """Get primary LLM — Anthropic first."""
         if self._llm is None:
-            llm_provider = os.getenv("LLM_PROVIDER", "anthropic/claude-sonnet-4-20250514")
-            if llm_provider.startswith("anthropic/"):
-                self._llm = LLM(model=llm_provider, max_tokens=1024, temperature=0.8)
-            else:
-                self._llm = LLM(model=llm_provider, temperature=0.8)
+            self._llm = LLM(
+                model="anthropic/claude-sonnet-4-20250514",
+                max_tokens=1024,
+                temperature=0.8,
+            )
         return self._llm
+
+    @property
+    def fallback_llm(self) -> LLM | None:
+        """Get OpenAI fallback LLM when Anthropic fails."""
+        if not hasattr(self, "_fallback_llm"):
+            openai_key = os.getenv("OPENAI_API_KEY", "")
+            if openai_key:
+                llm_provider = os.getenv("LLM_PROVIDER", "openai/gpt-4o")
+                self._fallback_llm = LLM(model=llm_provider, temperature=0.8)
+            else:
+                self._fallback_llm = None
+        return self._fallback_llm
 
     @property
     def name(self) -> str:
@@ -116,6 +169,7 @@ class PersonalizationAgent(AutonomousAgent):
         """
         Execute content generation.
         """
+        await self._load_identity(event.owner_id)
         result_events = []
 
         try:
@@ -163,6 +217,7 @@ class PersonalizationAgent(AutonomousAgent):
                     # Update contact with script
                     await self.blackboard.update_contact(
                         contact.phone_number,
+                        owner_id=event.owner_id,
                         video_script=script,
                     )
 
@@ -255,8 +310,33 @@ class PersonalizationAgent(AutonomousAgent):
         try:
             result = crew.kickoff()
             return self._maybe_add_calendly_cta(str(result), contact)
-        except Exception as e:
-            logger.warning(f"[{self.name}] LLM response failed, using fallback: {e}")
+        except Exception as primary_err:
+            logger.warning(f"[{self.name}] Anthropic primary LLM failed: {primary_err}")
+
+            # Retry with OpenAI fallback if available
+            if self.fallback_llm:
+                try:
+                    logger.info(f"[{self.name}] Retrying with OpenAI fallback LLM")
+                    fallback_agent = Agent(
+                        role=agent.role,
+                        goal=agent.goal,
+                        backstory=agent.backstory,
+                        llm=self.fallback_llm,
+                        verbose=False,
+                    )
+                    fallback_task = Task(
+                        description=task.description,
+                        expected_output=task.expected_output,
+                        agent=fallback_agent,
+                    )
+                    fallback_crew = Crew(
+                        agents=[fallback_agent], tasks=[fallback_task], verbose=False
+                    )
+                    result = fallback_crew.kickoff()
+                    return self._maybe_add_calendly_cta(str(result), contact)
+                except Exception as fallback_err:
+                    logger.warning(f"[{self.name}] OpenAI fallback also failed: {fallback_err}")
+
             name = contact.first_name or contact.push_name or "there"
             fallback = (
                 f"Thanks for the message, {name}. I ran into a temporary issue on my side, "
@@ -372,9 +452,40 @@ class PersonalizationAgent(AutonomousAgent):
         )
 
         crew = Crew(agents=[agent], tasks=[task], verbose=False)
-        result = crew.kickoff()
+        try:
+            result = crew.kickoff()
+            return str(result)
+        except Exception as primary_err:
+            logger.warning(
+                f"[{self.name}] Anthropic primary LLM failed for video script: {primary_err}"
+            )
 
-        return str(result)
+            if self.fallback_llm:
+                try:
+                    logger.info(f"[{self.name}] Retrying video script with OpenAI fallback LLM")
+                    fallback_agent = Agent(
+                        role=agent.role,
+                        goal=agent.goal,
+                        backstory=agent.backstory,
+                        llm=self.fallback_llm,
+                        verbose=False,
+                    )
+                    fallback_task = Task(
+                        description=task.description,
+                        expected_output=task.expected_output,
+                        agent=fallback_agent,
+                    )
+                    fallback_crew = Crew(
+                        agents=[fallback_agent], tasks=[fallback_task], verbose=False
+                    )
+                    result = fallback_crew.kickoff()
+                    return str(result)
+                except Exception as fallback_err:
+                    logger.warning(
+                        f"[{self.name}] OpenAI fallback also failed for video script: {fallback_err}"
+                    )
+
+            return None
 
     def _build_contact_context(self, contact: ContactState) -> str:
         """Build context string about a contact"""

@@ -20,6 +20,7 @@ import urllib.error
 import urllib.request
 import uuid
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -37,7 +38,7 @@ from fastapi import (
     UploadFile,
     File,
 )
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from .crews import NetworkingCrew
@@ -55,7 +56,7 @@ from .queue.jobs import (
 from .swarm import SwarmCoordinator, EventBus, Blackboard
 
 # Load environment variables
-load_dotenv()
+load_dotenv(override=False)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -74,6 +75,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 GREETING_VIDEO_DIR = PROJECT_ROOT / "storage" / "greeting-video"
 GREETING_VIDEO_METADATA_PATH = GREETING_VIDEO_DIR / "metadata.json"
 WHATSAPP_CONNECTOR_URL = os.getenv("WHATSAPP_CONNECTOR_URL", "http://whatsapp:3000")
+WHATSAPP_CONNECTOR_MAP_JSON = os.getenv("WHATSAPP_CONNECTOR_MAP_JSON", "")
 DEMO_MODE = str(os.getenv("DEMO_MODE", "false")).strip().lower() in {
     "1",
     "true",
@@ -124,9 +126,129 @@ LEETSPEAK_MAP = str.maketrans(
     }
 )
 
+SYSTEM_OWNER_ID_RAW = (
+    os.getenv("NEXTHELLO_SYSTEM_OWNER_ID")
+    or os.getenv("NEXTHELLO_DEFAULT_OWNER_ID")
+    or "askmikeai@gmail.com"
+)
+DEFAULT_OWNER_ID = SYSTEM_OWNER_ID_RAW.strip() or "askmikeai@gmail.com"
+OWNER_HEADER_NAME = "x-nexthello-user"
+_request_owner_id: ContextVar[str] = ContextVar("request_owner_id", default=DEFAULT_OWNER_ID)
 
-def _fetch_connector_json(path: str) -> dict[str, Any]:
-    url = f"{WHATSAPP_CONNECTOR_URL}{path}"
+WHATSAPP_CONNECTOR_MAP: dict[str, str] = {}
+
+
+def _sanitize_owner_id(value: Optional[str]) -> str:
+    candidate = (value or "").strip().lower()
+    if not candidate:
+        return re.sub(r"[^a-z0-9._-]", "-", DEFAULT_OWNER_ID.lower())[:80] or "askmikeai-gmail.com"
+    return (
+        re.sub(r"[^a-z0-9._-]", "-", candidate)[:80]
+        or re.sub(r"[^a-z0-9._-]", "-", DEFAULT_OWNER_ID.lower())[:80]
+        or "askmikeai-gmail.com"
+    )
+
+
+try:
+    _raw_connector_map = (
+        json.loads(WHATSAPP_CONNECTOR_MAP_JSON) if WHATSAPP_CONNECTOR_MAP_JSON.strip() else {}
+    )
+except Exception:
+    _raw_connector_map = {}
+
+WHATSAPP_CONNECTOR_MAP = {
+    _sanitize_owner_id(str(owner)): str(url)
+    for owner, url in _raw_connector_map.items()
+    if str(url).strip()
+}
+
+
+def _extract_basic_auth_username(request: Request) -> Optional[str]:
+    auth_header = request.headers.get("Authorization", "")
+    encoded = ""
+    scheme, _, value = auth_header.partition(" ")
+    if scheme.lower() == "basic" and value:
+        encoded = value.strip()
+    else:
+        encoded = (request.query_params.get("basic_auth") or "").strip()
+
+    if not encoded:
+        return None
+
+    try:
+        decoded = base64.b64decode(encoded).decode("utf-8")
+    except Exception:
+        return None
+
+    username, _, _ = decoded.partition(":")
+    return username.strip() or None
+
+
+def _resolve_request_owner_id(request: Request) -> str:
+    explicit = request.headers.get(OWNER_HEADER_NAME)
+    if explicit:
+        return _sanitize_owner_id(explicit)
+
+    # Support owner scoping for browser image/event requests that cannot
+    # attach custom headers (e.g. <img src="..."> for QR PNG).
+    query_owner = request.query_params.get("owner") or request.query_params.get("user")
+    if query_owner:
+        return _sanitize_owner_id(query_owner)
+
+    basic_username = _extract_basic_auth_username(request)
+    if basic_username:
+        return _sanitize_owner_id(basic_username)
+
+    return DEFAULT_OWNER_ID
+
+
+def _current_owner_id() -> str:
+    return _request_owner_id.get()
+
+
+def _connector_url_for_owner(owner_id: Optional[str] = None) -> str:
+    owner = _sanitize_owner_id(owner_id or _current_owner_id())
+    return WHATSAPP_CONNECTOR_MAP.get(owner) or WHATSAPP_CONNECTOR_URL
+
+
+async def _owner_can_access_whatsapp_session(
+    session_id: Optional[str], owner_id: Optional[str] = None
+) -> bool:
+    session = (session_id or "").strip()
+    if not session:
+        return False
+
+    owner = _sanitize_owner_id(owner_id or _current_owner_id())
+    if not _blackboard or not _blackboard._pool:
+        return owner == _sanitize_owner_id(DEFAULT_OWNER_ID)
+
+    async with _blackboard._pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT owner_id FROM whatsapp_sessions WHERE session_id = $1 LIMIT 1",
+            session,
+        )
+
+    if not row:
+        return owner == _sanitize_owner_id(DEFAULT_OWNER_ID)
+
+    return (row.get("owner_id") or "") == owner
+
+
+async def _owner_has_any_whatsapp_session(owner_id: Optional[str] = None) -> bool:
+    owner = _sanitize_owner_id(owner_id or _current_owner_id())
+    if not _blackboard or not _blackboard._pool:
+        return owner == _sanitize_owner_id(DEFAULT_OWNER_ID)
+
+    async with _blackboard._pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT 1 FROM whatsapp_sessions WHERE owner_id = $1 LIMIT 1",
+            owner,
+        )
+    return bool(row)
+
+
+def _fetch_connector_json(path: str, owner_id: Optional[str] = None) -> dict[str, Any]:
+    url = f"{_connector_url_for_owner(owner_id)}{path}"
     try:
         with urllib.request.urlopen(url, timeout=3) as response:
             raw = response.read().decode("utf-8")
@@ -148,8 +270,13 @@ def _fetch_connector_json(path: str) -> dict[str, Any]:
         )
 
 
-def _post_connector_json(path: str, payload: dict[str, Any]) -> dict[str, Any]:
-    url = f"{WHATSAPP_CONNECTOR_URL}{path}"
+def _post_connector_json(
+    path: str,
+    payload: dict[str, Any],
+    timeout_seconds: int = 8,
+    owner_id: Optional[str] = None,
+) -> dict[str, Any]:
+    url = f"{_connector_url_for_owner(owner_id)}{path}"
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url,
@@ -159,7 +286,7 @@ def _post_connector_json(path: str, payload: dict[str, Any]) -> dict[str, Any]:
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=8) as response:
+        with urllib.request.urlopen(req, timeout=timeout_seconds) as response:
             raw = response.read().decode("utf-8")
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as e:
@@ -263,6 +390,7 @@ async def _persist_message_history(
     direction: str,
     message_type: str,
     content: str,
+    owner_id: Optional[str] = None,
 ) -> None:
     """Persist message to PostgreSQL message_history when available."""
     if not _blackboard or not _blackboard._pool:
@@ -279,6 +407,7 @@ async def _persist_message_history(
 
     db_direction = "inbound" if direction == "incoming" else "outbound"
     db_message_type = _normalize_history_message_type(message_type)
+    owner = _sanitize_owner_id(owner_id or _current_owner_id())
 
     try:
         logger.info(
@@ -293,7 +422,8 @@ async def _persist_message_history(
         )
         async with _blackboard._pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT id FROM networking_contacts WHERE phone_number = $1 LIMIT 1",
+                "SELECT id FROM networking_contacts WHERE owner_id = $1 AND phone_number = $2 LIMIT 1",
+                owner,
                 phone_number,
             )
             contact_id = row["id"] if row else None
@@ -301,10 +431,11 @@ async def _persist_message_history(
             await conn.execute(
                 """
                 INSERT INTO message_history (
-                    contact_id, phone_number, correlation_id,
+                    owner_id, contact_id, phone_number, correlation_id,
                     direction, channel, message_type, content
-                ) VALUES ($1, $2, $3, $4, 'whatsapp', $5, $6)
+                ) VALUES ($1, $2, $3, $4, $5, 'whatsapp', $6, $7)
                 """,
+                owner,
                 contact_id,
                 phone_number,
                 correlation_id,
@@ -495,6 +626,43 @@ app = FastAPI(
 )
 
 
+@app.middleware("http")
+async def owner_context_middleware(request: Request, call_next):
+    token = _request_owner_id.set(_resolve_request_owner_id(request))
+    try:
+        path = request.url.path or ""
+        if path.startswith("/admin/api") and not path.startswith("/admin/api/auth/"):
+            # Pending/unapproved users cannot access admin APIs.
+            if not _blackboard or not _blackboard._pool:
+                return JSONResponse(
+                    status_code=503,
+                    content={"error": "database not available"},
+                )
+
+            owner = _current_owner_id()
+            async with _blackboard._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT status FROM user_accounts WHERE owner_id = $1",
+                    owner,
+                )
+
+            if not row:
+                return JSONResponse(
+                    status_code=403,
+                    content={"error": "account not found"},
+                )
+
+            if row["status"] != "approved":
+                return JSONResponse(
+                    status_code=403,
+                    content={"error": "account pending approval"},
+                )
+
+        return await call_next(request)
+    finally:
+        _request_owner_id.reset(token)
+
+
 def get_crew() -> NetworkingCrew:
     """Get or create the crew instance"""
     global _crew
@@ -540,63 +708,60 @@ def _contact_response_from_redis(state: ConversationState) -> dict[str, Any]:
     }
 
 
-async def _get_db_contact_row(contact_id: str):
+async def _get_db_contact_row(contact_id: str, owner_id: Optional[str] = None):
     if not _blackboard or not _blackboard._pool:
         return None
+
+    owner = _sanitize_owner_id(owner_id or _current_owner_id())
 
     async with _blackboard._pool.acquire() as conn:
         return await conn.fetchrow(
             """
             SELECT *
             FROM networking_contacts
-            WHERE phone_number = $1 OR id::text = $1
+            WHERE owner_id = $1 AND (phone_number = $2 OR id::text = $2)
             LIMIT 1
             """,
+            owner,
             contact_id,
         )
 
 
-async def _get_contact_payload(contact_id: str) -> Optional[dict[str, Any]]:
+async def _get_contact_payload(
+    contact_id: str, owner_id: Optional[str] = None
+) -> Optional[dict[str, Any]]:
+    owner = _sanitize_owner_id(owner_id or _current_owner_id())
     if _blackboard:
-        blackboard_state = await _blackboard.get_contact(contact_id)
+        blackboard_state = await _blackboard.get_contact(contact_id, owner_id=owner)
         if blackboard_state:
             return _contact_response_from_blackboard(blackboard_state)
 
-    if _state_manager:
-        redis_state = await _state_manager.get_state(contact_id)
-        if redis_state:
-            return _contact_response_from_redis(redis_state)
-
-    row = await _get_db_contact_row(contact_id)
+    row = await _get_db_contact_row(contact_id, owner_id=owner)
     if row and _blackboard:
         return _contact_response_from_blackboard(_blackboard._row_to_state(dict(row)))
 
     return None
 
 
-async def _list_contacts_payload(limit: int) -> list[dict[str, Any]]:
+async def _list_contacts_payload(
+    limit: int, owner_id: Optional[str] = None
+) -> list[dict[str, Any]]:
+    owner = _sanitize_owner_id(owner_id or _current_owner_id())
     if _blackboard:
-        contacts = await _blackboard.list_contacts(limit=limit)
+        contacts = await _blackboard.list_contacts(limit=limit, owner_id=owner)
         if contacts:
             return [_contact_response_from_blackboard(contact) for contact in contacts]
-
-    if not _state_manager:
-        return []
-
-    phone_numbers = await _state_manager.list_active_conversations(limit)
-    contacts = []
-    for phone in phone_numbers:
-        state = await _state_manager.get_state(phone)
-        if state:
-            contacts.append(_contact_response_from_redis(state))
-    return contacts
+    return []
 
 
-async def _list_swarm_states_payload(limit: int = 50) -> list[dict[str, Any]]:
+async def _list_swarm_states_payload(
+    limit: int = 50, owner_id: Optional[str] = None
+) -> list[dict[str, Any]]:
     states = []
+    owner = _sanitize_owner_id(owner_id or _current_owner_id())
 
     if _blackboard:
-        contacts = await _blackboard.list_contacts(limit=limit)
+        contacts = await _blackboard.list_contacts(limit=limit, owner_id=owner)
         if contacts:
             for contact in contacts:
                 states.append(
@@ -615,28 +780,6 @@ async def _list_swarm_states_payload(limit: int = 50) -> list[dict[str, Any]]:
                 )
             return states
 
-    if not _state_manager:
-        return []
-
-    phone_numbers = await _state_manager.list_active_conversations(limit)
-    for phone in phone_numbers:
-        state = await _state_manager.get_state(phone)
-        if state:
-            states.append(
-                {
-                    "correlationId": phone,
-                    "phoneNumber": phone,
-                    "currentAgent": None,
-                    "conversationTurns": state.conversation_turns,
-                    "lastActivityAt": state.last_message_at
-                    or state.updated_at
-                    or state.created_at
-                    or "",
-                    "taskQueueLength": 0,
-                    "channel": "whatsapp",
-                }
-            )
-
     return states
 
 
@@ -644,12 +787,14 @@ async def _query_agent_activities(
     limit: int = 20,
     agent_type: Optional[str] = None,
     contact_id: Optional[str] = None,
+    owner_id: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     if not _blackboard or not _blackboard._pool:
         return []
 
-    params: list[Any] = []
-    conditions: list[str] = []
+    owner = _sanitize_owner_id(owner_id or _current_owner_id())
+    params: list[Any] = [owner]
+    conditions: list[str] = ["owner_id = $1"]
 
     if agent_type:
         params.append(agent_type)
@@ -658,7 +803,7 @@ async def _query_agent_activities(
     if contact_id:
         params.append(contact_id)
         conditions.append(
-            f"(correlation_id = ${len(params)} OR contact_id = (SELECT id FROM networking_contacts WHERE phone_number = ${len(params)} OR id::text = ${len(params)} LIMIT 1))"
+            f"(correlation_id = ${len(params)} OR contact_id = (SELECT id FROM networking_contacts WHERE owner_id = $1 AND (phone_number = ${len(params)} OR id::text = ${len(params)}) LIMIT 1))"
         )
 
     where_clause = ""
@@ -740,13 +885,14 @@ def _get_greeting_video_info() -> dict[str, Any]:
     }
 
 
-async def _build_swarm_snapshot() -> dict[str, Any]:
+async def _build_swarm_snapshot(owner_id: Optional[str] = None) -> dict[str, Any]:
+    owner = _sanitize_owner_id(owner_id or _current_owner_id())
     return {
         "type": "state:sync",
         "timestamp": datetime.utcnow().isoformat(),
         "data": {
-            "activities": await _query_agent_activities(limit=20),
-            "states": await _list_swarm_states_payload(limit=50),
+            "activities": await _query_agent_activities(limit=20, owner_id=owner),
+            "states": await _list_swarm_states_payload(limit=50, owner_id=owner),
         },
     }
 
@@ -1386,8 +1532,262 @@ async def set_llm_provider(provider: str):
 
 
 # ============================================================================
+# Auth endpoints (backend user accounts with approval)
+# ============================================================================
+
+
+@app.post("/admin/api/auth/signup")
+async def auth_signup(request: Request):
+    """Create a new user account (status=pending)."""
+    body = await request.json()
+    name = (body.get("name") or "").strip()
+    email = (body.get("email") or "").strip().lower()
+    password = (body.get("password") or "").strip()
+
+    if not email or not password or not name:
+        return {"success": False, "error": "Name, email, and password are required."}
+
+    owner_id = _sanitize_owner_id(email)
+
+    if not _blackboard or not _blackboard._pool:
+        return {"success": False, "error": "Database not available."}
+
+    try:
+        async with _blackboard._pool.acquire() as conn:
+            existing = await conn.fetchrow(
+                "SELECT id FROM user_accounts WHERE email = $1",
+                email,
+            )
+            if existing:
+                return {"success": False, "error": "An account with this email already exists."}
+
+            await conn.execute(
+                """
+                INSERT INTO user_accounts (owner_id, name, email, password, status, is_admin)
+                VALUES ($1, $2, $3, $4, 'pending', false)
+                """,
+                owner_id,
+                name,
+                email,
+                password,
+            )
+    except Exception as exc:
+        logger.error(f"Signup failed: {exc}")
+        return {"success": False, "error": "Server error during signup."}
+
+    return {"success": True, "status": "pending"}
+
+
+@app.post("/admin/api/auth/signin")
+async def auth_signin(request: Request):
+    """Authenticate a user and return their status."""
+    body = await request.json()
+    email = (body.get("email") or "").strip().lower()
+    password = (body.get("password") or "").strip()
+
+    if not email or not password:
+        return {"success": False, "error": "Email and password are required."}
+
+    if not _blackboard or not _blackboard._pool:
+        return {"success": False, "error": "Database not available."}
+
+    try:
+        async with _blackboard._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT name, email, password, status FROM user_accounts WHERE email = $1",
+                email,
+            )
+    except Exception as exc:
+        logger.error(f"Signin query failed: {exc}")
+        return {"success": False, "error": "Server error."}
+
+    if not row or row["password"] != password:
+        return {"success": False, "error": "Invalid email or password."}
+
+    return {
+        "success": True,
+        "name": row["name"],
+        "email": row["email"],
+        "status": row["status"],
+    }
+
+
+@app.get("/admin/api/auth/users")
+async def auth_list_users():
+    """List all user accounts (admin only)."""
+    if not _blackboard or not _blackboard._pool:
+        return []
+
+    owner = _current_owner_id()
+    async with _blackboard._pool.acquire() as conn:
+        admin_row = await conn.fetchrow(
+            "SELECT is_admin FROM user_accounts WHERE owner_id = $1",
+            owner,
+        )
+        if not admin_row or not admin_row["is_admin"]:
+            return {"error": "forbidden"}
+
+        rows = await conn.fetch(
+            "SELECT id, owner_id, name, email, status, is_admin, created_at FROM user_accounts ORDER BY created_at DESC",
+        )
+    return [dict(r) for r in rows]
+
+
+@app.post("/admin/api/auth/approve/{user_id}")
+async def auth_approve_user(user_id: str):
+    """Approve a pending user account (admin only)."""
+    if not _blackboard or not _blackboard._pool:
+        return {"error": "database not available"}
+
+    owner = _current_owner_id()
+    async with _blackboard._pool.acquire() as conn:
+        admin_row = await conn.fetchrow(
+            "SELECT is_admin FROM user_accounts WHERE owner_id = $1",
+            owner,
+        )
+        if not admin_row or not admin_row["is_admin"]:
+            return {"error": "forbidden"}
+
+        await conn.execute(
+            "UPDATE user_accounts SET status = 'approved', updated_at = NOW() WHERE id::text = $1",
+            user_id,
+        )
+    return {"success": True}
+
+
+@app.post("/admin/api/auth/reject/{user_id}")
+async def auth_reject_user(user_id: str):
+    """Reject a pending user account (admin only)."""
+    if not _blackboard or not _blackboard._pool:
+        return {"error": "database not available"}
+
+    owner = _current_owner_id()
+    async with _blackboard._pool.acquire() as conn:
+        admin_row = await conn.fetchrow(
+            "SELECT is_admin FROM user_accounts WHERE owner_id = $1",
+            owner,
+        )
+        if not admin_row or not admin_row["is_admin"]:
+            return {"error": "forbidden"}
+
+        await conn.execute(
+            "UPDATE user_accounts SET status = 'rejected', updated_at = NOW() WHERE id::text = $1",
+            user_id,
+        )
+    return {"success": True}
+
+
+@app.post("/admin/api/auth/change-password")
+async def auth_change_password(request: Request):
+    """Change password for the currently signed-in user."""
+    if not _blackboard or not _blackboard._pool:
+        return {"success": False, "error": "database not available"}
+
+    body = await request.json()
+    current_password = (body.get("current_password") or "").strip()
+    new_password = (body.get("new_password") or "").strip()
+
+    if not current_password or not new_password:
+        return {"success": False, "error": "current_password and new_password are required"}
+
+    owner = _current_owner_id()
+    async with _blackboard._pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id, password FROM user_accounts WHERE owner_id = $1",
+            owner,
+        )
+        if not row:
+            return {"success": False, "error": "account not found"}
+        if row["password"] != current_password:
+            return {"success": False, "error": "current password is incorrect"}
+
+        await conn.execute(
+            "UPDATE user_accounts SET password = $1, updated_at = NOW() WHERE id = $2",
+            new_password,
+            row["id"],
+        )
+
+    return {"success": True}
+
+
+@app.post("/admin/api/auth/admin-reset-password/{user_id}")
+async def auth_admin_reset_password(user_id: str, request: Request):
+    """Admin-only password reset for any account."""
+    if not _blackboard or not _blackboard._pool:
+        return {"success": False, "error": "database not available"}
+
+    body = await request.json()
+    new_password = (body.get("new_password") or "").strip()
+    if not new_password:
+        return {"success": False, "error": "new_password is required"}
+
+    owner = _current_owner_id()
+    async with _blackboard._pool.acquire() as conn:
+        admin_row = await conn.fetchrow(
+            "SELECT is_admin FROM user_accounts WHERE owner_id = $1",
+            owner,
+        )
+        if not admin_row or not admin_row["is_admin"]:
+            return {"success": False, "error": "forbidden"}
+
+        target = await conn.fetchrow(
+            "SELECT id FROM user_accounts WHERE id::text = $1",
+            user_id,
+        )
+        if not target:
+            return {"success": False, "error": "user not found"}
+
+        await conn.execute(
+            "UPDATE user_accounts SET password = $1, updated_at = NOW() WHERE id = $2",
+            new_password,
+            target["id"],
+        )
+
+    return {"success": True}
+
+
+# ============================================================================
 # Admin API Endpoints (for Frontend Dashboard)
 # ============================================================================
+
+
+# ---------------------------------------------------------------------------
+# Per-owner settings
+# ---------------------------------------------------------------------------
+
+from src.swarm.owner_config import (
+    OwnerConfig,
+    SETTINGS_SCHEMA,
+    load_owner_config,
+    save_owner_config,
+)
+
+
+@app.get("/admin/api/settings/schema")
+async def admin_get_settings_schema():
+    """Return the field definitions the UI needs to render the config form."""
+    return SETTINGS_SCHEMA
+
+
+@app.get("/admin/api/settings")
+async def admin_get_settings():
+    """Return the calling owner's config (secrets masked)."""
+    owner = _current_owner_id()
+    if not _blackboard or not _blackboard._pool:
+        return {"error": "database not available"}, 503
+    cfg = await load_owner_config(_blackboard._pool, owner)
+    return cfg.to_masked_dict()
+
+
+@app.put("/admin/api/settings")
+async def admin_put_settings(request: Request):
+    """Partial-merge update of the calling owner's config."""
+    owner = _current_owner_id()
+    if not _blackboard or not _blackboard._pool:
+        return {"error": "database not available"}, 503
+    body = await request.json()
+    cfg = await save_owner_config(_blackboard._pool, owner, body)
+    return cfg.to_masked_dict()
 
 
 @app.get("/admin/api/stats")
@@ -1530,11 +1930,27 @@ async def admin_get_whatsapp_connector():
     health = _fetch_connector_json("/health")
     session = _fetch_connector_json("/session/status")
     qr = _fetch_connector_json("/qr")
+    session_id = health.get("sessionId") or session.get("sessionId")
+    allowed = await _owner_can_access_whatsapp_session(session_id)
+    owner_has_session = await _owner_has_any_whatsapp_session()
+
+    if not allowed:
+        return {
+            "available": True,
+            "connected": False,
+            "sessionId": None,
+            "postgresConfigured": bool(session.get("postgresConfigured")),
+            "hasRemoteSession": bool(owner_has_session),
+            "remoteFormat": None,
+            "hasLocalSession": False,
+            "qrAvailable": bool(qr.get("available")),
+            "qrText": qr.get("qrText") if qr.get("available") else None,
+        }
 
     return {
         "available": True,
         "connected": bool(health.get("connected")),
-        "sessionId": health.get("sessionId") or session.get("sessionId"),
+        "sessionId": session_id,
         "postgresConfigured": bool(session.get("postgresConfigured")),
         "hasRemoteSession": bool(session.get("hasRemote")),
         "remoteFormat": session.get("remoteFormat"),
@@ -1544,8 +1960,38 @@ async def admin_get_whatsapp_connector():
     }
 
 
+@app.post("/admin/api/whatsapp/session/reset")
+async def admin_reset_whatsapp_session():
+    """Reset connector auth state and force a fresh QR flow."""
+    return _post_connector_json(
+        "/session/reset",
+        {"ownerId": _current_owner_id()},
+        timeout_seconds=45,
+    )
+
+
 @app.get("/admin/api/whatsapp/qr.png")
 async def admin_get_whatsapp_qr_png():
+    health = _fetch_connector_json("/health")
+    session = _fetch_connector_json("/session/status")
+    session_id = health.get("sessionId") or session.get("sessionId")
+    if not await _owner_can_access_whatsapp_session(session_id):
+        qr = _fetch_connector_json("/qr")
+        qr_payload = _extract_qr_payload(qr.get("qrPayload")) or _extract_qr_payload(
+            qr.get("qrText")
+        )
+        if qr.get("available") and qr_payload:
+            image = qrcode.make(qr_payload)
+            buffer = io.BytesIO()
+            image.save(buffer, format="PNG")
+            return Response(content=buffer.getvalue(), media_type="image/png")
+
+        return Response(
+            content=json.dumps({"available": False, "error": "forbidden"}),
+            status_code=404,
+            media_type="application/json",
+        )
+
     qr = _fetch_connector_json("/qr")
     qr_payload = _extract_qr_payload(qr.get("qrPayload")) or _extract_qr_payload(qr.get("qrText"))
 
@@ -1696,7 +2142,7 @@ async def admin_delete_contact_data(request: AdminDeleteContactRequest):
     if not _blackboard:
         raise HTTPException(status_code=503, detail="Blackboard is unavailable")
 
-    deleted = await _blackboard.delete_contact_data(phone_number)
+    deleted = await _blackboard.delete_contact_data(phone_number, owner_id=_current_owner_id())
     return {
         "success": True,
         "phoneNumber": phone_number,
@@ -1715,8 +2161,8 @@ async def admin_get_persisted_whatsapp_messages(
     if not _blackboard or not _blackboard._pool:
         raise HTTPException(status_code=503, detail="PostgreSQL persistence is unavailable")
 
-    clauses: list[str] = ["channel = 'whatsapp'"]
-    params: list[Any] = []
+    clauses: list[str] = ["owner_id = $1", "channel = 'whatsapp'"]
+    params: list[Any] = [_current_owner_id()]
 
     if phone:
         clauses.append(f"phone_number = ${len(params) + 1}")
@@ -1769,66 +2215,66 @@ async def admin_get_messages(
     phone: Optional[str] = None,
 ):
     """Get recent messages for dashboard"""
-    if not _state_manager:
+    if not _blackboard or not _blackboard._pool:
         return []
 
     try:
-        messages = []
+        owner = _current_owner_id()
+        params: list[Any] = [owner]
+        where_clauses = ["mh.owner_id = $1"]
 
         if phone:
-            # Get messages for specific contact
-            history = await _state_manager.get_message_history(phone, limit)
-            state = await _state_manager.get_state(phone)
-            contact_name = state.first_name if state else None
+            params.append(phone)
+            where_clauses.append(f"mh.phone_number = ${len(params)}")
 
-            for msg in history:
-                messages.append(
-                    {
-                        "id": msg.get("id", ""),
-                        "contactId": phone,
-                        "phoneNumber": phone,
-                        "correlationId": phone,
-                        "direction": "inbound"
-                        if msg.get("direction") == "incoming"
-                        else "outbound",
-                        "channel": "whatsapp",
-                        "messageType": msg.get("type", "text"),
-                        "content": msg.get("content"),
-                        "createdAt": msg.get("timestamp", ""),
-                        "contactName": contact_name,
-                    }
-                )
-        else:
-            # Get messages across all contacts
-            phone_numbers = await _state_manager.list_active_conversations(20)
-            for p in phone_numbers:
-                history = await _state_manager.get_message_history(p, 5)
-                state = await _state_manager.get_state(p)
-                contact_name = state.first_name if state else None
+        params.append(limit)
+        query = f"""
+            SELECT
+                mh.id,
+                mh.contact_id,
+                mh.phone_number,
+                mh.correlation_id,
+                mh.direction,
+                mh.channel,
+                mh.message_type,
+                mh.content,
+                mh.created_at,
+                nc.first_name,
+                nc.last_name
+            FROM message_history mh
+            LEFT JOIN networking_contacts nc
+              ON nc.id = mh.contact_id AND nc.owner_id = mh.owner_id
+            WHERE {" AND ".join(where_clauses)}
+            ORDER BY mh.created_at DESC
+            LIMIT ${len(params)}
+        """
 
-                for msg in history:
-                    messages.append(
-                        {
-                            "id": msg.get("id", ""),
-                            "contactId": p,
-                            "phoneNumber": p,
-                            "correlationId": p,
-                            "direction": "inbound"
-                            if msg.get("direction") == "incoming"
-                            else "outbound",
-                            "channel": "whatsapp",
-                            "messageType": msg.get("type", "text"),
-                            "content": msg.get("content"),
-                            "createdAt": msg.get("timestamp", ""),
-                            "contactName": contact_name,
-                        }
+        async with _blackboard._pool.acquire() as conn:
+            rows = await conn.fetch(query, *params)
+
+        payload: list[dict[str, Any]] = []
+        for row in rows:
+            payload.append(
+                {
+                    "id": str(row["id"]),
+                    "contactId": str(row["contact_id"])
+                    if row["contact_id"]
+                    else row["phone_number"],
+                    "phoneNumber": row["phone_number"],
+                    "correlationId": row["correlation_id"],
+                    "direction": row["direction"],
+                    "channel": row["channel"],
+                    "messageType": row["message_type"],
+                    "content": row["content"],
+                    "createdAt": str(row["created_at"]),
+                    "contactName": " ".join(
+                        part for part in [row["first_name"], row["last_name"]] if part
                     )
+                    or None,
+                }
+            )
 
-            # Sort by timestamp and limit
-            messages.sort(key=lambda x: x["createdAt"], reverse=True)
-            messages = messages[:limit]
-
-        return messages
+        return payload
     except Exception as e:
         logger.error(f"Error getting messages: {e}")
         return []
@@ -1882,9 +2328,11 @@ async def admin_get_agent_stats():
                 """
                 SELECT source_agent, COUNT(*) as count
                 FROM swarm_event_log
-                WHERE created_at > NOW() - INTERVAL '24 hours'
+                WHERE owner_id = $1
+                  AND created_at > NOW() - INTERVAL '24 hours'
                 GROUP BY source_agent
-                """
+                """,
+                _current_owner_id(),
             )
             stats = {row["source_agent"]: row["count"] for row in rows}
 
@@ -1921,7 +2369,7 @@ async def admin_get_recent_events(request: Request):
             if await request.is_disconnected():
                 break
 
-            payload = await _build_swarm_snapshot()
+            payload = await _build_swarm_snapshot(owner_id=_current_owner_id())
             yield f"event: state:sync\ndata: {json.dumps(payload)}\n\n"
             await asyncio.sleep(5)
 
@@ -1936,15 +2384,18 @@ async def admin_trigger_event(event_type: str, contact_id: str):
 
     try:
         if event_type == "research":
-            await _swarm_coordinator.request_research(contact_id)
+            await _swarm_coordinator.request_research(contact_id, owner_id=_current_owner_id())
         elif event_type == "qualification":
-            await _swarm_coordinator.request_qualification(contact_id)
+            await _swarm_coordinator.request_qualification(
+                contact_id,
+                owner_id=_current_owner_id(),
+            )
         elif event_type == "video":
-            await _swarm_coordinator.request_video(contact_id)
+            await _swarm_coordinator.request_video(contact_id, owner_id=_current_owner_id())
         elif event_type == "voice":
-            await _swarm_coordinator.request_voice(contact_id)
+            await _swarm_coordinator.request_voice(contact_id, owner_id=_current_owner_id())
         elif event_type == "crm":
-            await _swarm_coordinator.request_crm_sync(contact_id)
+            await _swarm_coordinator.request_crm_sync(contact_id, owner_id=_current_owner_id())
         else:
             return {"success": False, "error": f"Unknown event type: {event_type}"}
 
@@ -2053,10 +2504,11 @@ async def admin_get_contact_enrichment(contact_id: str):
             """
             SELECT *
             FROM pdl_person_enrichment
-            WHERE contact_id = $1
+            WHERE owner_id = $1 AND contact_id = $2
             ORDER BY enriched_at DESC NULLS LAST, created_at DESC
             LIMIT 1
             """,
+            _current_owner_id(),
             row["id"],
         )
 
@@ -2192,10 +2644,12 @@ async def admin_get_contact_media(contact_id: str):
             """
             SELECT id, storage_key, media_type, mime_type, size_bytes, source, source_url, created_at
             FROM media_files
-            WHERE (contact_id = $1 OR phone_number = $2)
+            WHERE owner_id = $1
+              AND (contact_id = $2 OR phone_number = $3)
               AND deleted_at IS NULL
             ORDER BY created_at DESC
             """,
+            _current_owner_id(),
             row["id"],
             row["phone_number"],
         )
@@ -2230,9 +2684,10 @@ async def admin_get_media_file(media_id: str):
             """
             SELECT storage_key, mime_type
             FROM media_files
-            WHERE id::text = $1 AND deleted_at IS NULL
+            WHERE owner_id = $1 AND id::text = $2 AND deleted_at IS NULL
             LIMIT 1
             """,
+            _current_owner_id(),
             media_id,
         )
 
@@ -2382,7 +2837,9 @@ async def whatsapp_receive_message(request: WhatsAppConnectorMessageRequest):
                 },
             )
             if is_erasure_request and _blackboard:
-                await _blackboard.delete_contact_data(request.phone_number)
+                await _blackboard.delete_contact_data(
+                    request.phone_number, owner_id=_current_owner_id()
+                )
         else:
             # Process message through swarm coordinator
             # This publishes events for agents and returns immediate response for new contacts
@@ -2392,6 +2849,7 @@ async def whatsapp_receive_message(request: WhatsAppConnectorMessageRequest):
                 message_type=request.message_type,
                 push_name=request.push_name,
                 message_id=request.message_id,
+                owner_id=_current_owner_id(),
             )
 
         if not is_erasure_request:

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+    xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.25.xsd">
+
+    <changeSet id="013-multi-user-tenancy" author="opencode">
+        <comment>Add owner_id columns and indexes for tenant data isolation</comment>
+        <sqlFile path="../sql/013_multi_user_tenancy.sql" relativeToChangelogFile="true"/>
+    </changeSet>
+
+</databaseChangeLog>

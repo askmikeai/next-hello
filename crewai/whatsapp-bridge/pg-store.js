@@ -19,6 +19,12 @@ import { execSync } from 'child_process';
 
 const { Pool } = pg;
 
+function normalizeOwnerId(value) {
+  const candidate = String(value || '').trim().toLowerCase();
+  if (!candidate) return 'askmikeai-gmail.com';
+  return candidate.replace(/[^a-z0-9._-]/g, '-').slice(0, 80) || 'askmikeai-gmail.com';
+}
+
 export class PostgresSessionStore {
   constructor(options = {}) {
     this.pool = new Pool({
@@ -27,6 +33,9 @@ export class PostgresSessionStore {
            (process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : false),
     });
     this.sessionId = options.sessionId || 'default';
+    this.ownerId = normalizeOwnerId(
+      options.ownerId || process.env.NEXTHELLO_SYSTEM_OWNER_ID || process.env.NEXTHELLO_DEFAULT_OWNER_ID
+    );
     this.localPath = options.localPath || './auth_state';
     this.sessionFormat = 'baileys-multifile-v1';
     this.logger = options.logger || console;
@@ -40,6 +49,7 @@ export class PostgresSessionStore {
     try {
       await client.query(`
         CREATE TABLE IF NOT EXISTS whatsapp_sessions (
+          owner_id TEXT NOT NULL,
           session_id TEXT PRIMARY KEY,
           session_data TEXT NOT NULL,
           session_format TEXT DEFAULT 'unknown',
@@ -50,7 +60,27 @@ export class PostgresSessionStore {
 
       await client.query(`
         ALTER TABLE whatsapp_sessions
+        ADD COLUMN IF NOT EXISTS owner_id TEXT
+      `);
+
+      await client.query(
+        `UPDATE whatsapp_sessions SET owner_id = $1 WHERE owner_id IS NULL OR owner_id = ''`,
+        [this.ownerId]
+      );
+
+      await client.query(`
+        ALTER TABLE whatsapp_sessions
+        ALTER COLUMN owner_id SET NOT NULL
+      `);
+
+      await client.query(`
+        ALTER TABLE whatsapp_sessions
         ADD COLUMN IF NOT EXISTS session_format TEXT DEFAULT 'unknown'
+      `);
+
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_whatsapp_sessions_owner_session
+        ON whatsapp_sessions(owner_id, session_id)
       `);
 
       this.logger.info({ sessionId: this.sessionId }, 'PostgreSQL session store initialized');
@@ -67,8 +97,8 @@ export class PostgresSessionStore {
   async hasRemoteSession() {
     try {
       const result = await this.pool.query(
-        'SELECT 1 FROM whatsapp_sessions WHERE session_id = $1',
-        [this.sessionId]
+        'SELECT 1 FROM whatsapp_sessions WHERE owner_id = $1 AND session_id = $2',
+        [this.ownerId, this.sessionId]
       );
       return result.rows.length > 0;
     } catch (err) {
@@ -83,8 +113,8 @@ export class PostgresSessionStore {
   async getRemoteSessionInfo() {
     try {
       const result = await this.pool.query(
-        'SELECT session_format, updated_at FROM whatsapp_sessions WHERE session_id = $1',
-        [this.sessionId]
+        'SELECT session_format, updated_at FROM whatsapp_sessions WHERE owner_id = $1 AND session_id = $2',
+        [this.ownerId, this.sessionId]
       );
 
       if (result.rows.length === 0) {
@@ -135,11 +165,11 @@ export class PostgresSessionStore {
 
       // Store in PostgreSQL
       await this.pool.query(`
-        INSERT INTO whatsapp_sessions (session_id, session_data, session_format, updated_at)
-        VALUES ($1, $2, $3, NOW())
+        INSERT INTO whatsapp_sessions (owner_id, session_id, session_data, session_format, updated_at)
+        VALUES ($1, $2, $3, $4, NOW())
         ON CONFLICT (session_id)
-        DO UPDATE SET session_data = $2, session_format = $3, updated_at = NOW()
-      `, [this.sessionId, base64Data, this.sessionFormat]);
+        DO UPDATE SET owner_id = EXCLUDED.owner_id, session_data = EXCLUDED.session_data, session_format = EXCLUDED.session_format, updated_at = NOW()
+      `, [this.ownerId, this.sessionId, base64Data, this.sessionFormat]);
 
       // Cleanup
       fs.unlinkSync(tarFile);
@@ -163,8 +193,8 @@ export class PostgresSessionStore {
   async restore() {
     try {
       const result = await this.pool.query(
-        'SELECT session_data, session_format, updated_at FROM whatsapp_sessions WHERE session_id = $1',
-        [this.sessionId]
+        'SELECT session_data, session_format, updated_at FROM whatsapp_sessions WHERE owner_id = $1 AND session_id = $2',
+        [this.ownerId, this.sessionId]
       );
 
       if (result.rows.length === 0) {
@@ -217,8 +247,8 @@ export class PostgresSessionStore {
   async delete() {
     try {
       await this.pool.query(
-        'DELETE FROM whatsapp_sessions WHERE session_id = $1',
-        [this.sessionId]
+        'DELETE FROM whatsapp_sessions WHERE owner_id = $1 AND session_id = $2',
+        [this.ownerId, this.sessionId]
       );
       this.logger.info({ sessionId: this.sessionId }, 'Session deleted from PostgreSQL');
       return true;

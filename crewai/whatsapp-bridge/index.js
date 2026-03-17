@@ -31,6 +31,10 @@ const QR_OUTPUT_DIR = process.env.QR_OUTPUT_DIR || '/tmp';
 const QR_FILE = path.join(QR_OUTPUT_DIR, 'whatsapp-qr.txt');
 const HTTP_PORT = Number(process.env.HTTP_PORT || 3000);
 const SESSION_ID = process.env.SESSION_ID || 'default';
+const DEFAULT_OWNER_ID =
+  process.env.NEXTHELLO_SYSTEM_OWNER_ID ||
+  process.env.NEXTHELLO_DEFAULT_OWNER_ID ||
+  'askmikeai@gmail.com';
 const DATABASE_URL = process.env.DATABASE_URL;
 const AUTH_ROOT = './auth_state';
 const AUTH_DIR = path.join(AUTH_ROOT, 'session');
@@ -48,8 +52,16 @@ let sessionStore = null;
 let socket = null;
 let isConnected = false;
 let isStarting = false;
+let isResettingSession = false;
 let backupTimer = null;
 let latestQrPayload = null;
+let currentOwnerId = DEFAULT_OWNER_ID;
+
+function normalizeOwnerId(value) {
+  const candidate = String(value || '').trim().toLowerCase();
+  if (!candidate) return DEFAULT_OWNER_ID;
+  return candidate.replace(/[^a-z0-9._@-]/g, '-').slice(0, 120) || DEFAULT_OWNER_ID;
+}
 
 function serializeForLog(value, maxStringLength = 500) {
   const seen = new WeakSet();
@@ -91,15 +103,33 @@ function fromJid(jid) {
   return String(jid || '').split('@')[0] || '';
 }
 
-function extractPhoneFromMessageKey(key = {}) {
-  const candidates = [key.remoteJidAlt, key.remoteJid, key.participantAlt, key.participant]
-    .filter(Boolean)
-    .map((value) => fromJid(value))
-    .map((value) => normalizePhone(value));
+function isPhoneJid(jid) {
+  // Only @s.whatsapp.net JIDs contain real phone numbers.
+  // @lid JIDs are internal Linked IDs and must be excluded.
+  return typeof jid === 'string' && jid.includes('@s.whatsapp.net');
+}
 
-  for (const candidate of candidates) {
-    if (candidate && candidate.length >= 7) {
-      return candidate;
+function extractPhoneFromMessageKey(key = {}) {
+  // Prioritize real phone JIDs (@s.whatsapp.net) over LID JIDs (@lid)
+  const allJids = [key.remoteJid, key.remoteJidAlt, key.participant, key.participantAlt].filter(
+    Boolean
+  );
+
+  // First pass: only @s.whatsapp.net JIDs (real phone numbers)
+  for (const jid of allJids) {
+    if (isPhoneJid(jid)) {
+      const phone = normalizePhone(fromJid(jid));
+      if (phone && phone.length >= 7) {
+        return phone;
+      }
+    }
+  }
+
+  // Fallback: any JID that yields a numeric candidate (should rarely be needed)
+  for (const jid of allJids) {
+    const phone = normalizePhone(fromJid(jid));
+    if (phone && phone.length >= 7) {
+      return phone;
     }
   }
 
@@ -138,7 +168,10 @@ async function forwardToPython(endpoint, data) {
   try {
     const response = await fetch(`${PYTHON_API_URL}${endpoint}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-NextHello-User': currentOwnerId,
+      },
       body: JSON.stringify(data),
     });
     const payload = await response.json().catch(() => ({}));
@@ -175,6 +208,11 @@ async function forwardToPython(endpoint, data) {
 }
 
 async function initSessionStore() {
+  if (sessionStore) {
+    await sessionStore.close();
+    sessionStore = null;
+  }
+
   if (!DATABASE_URL) {
     logger.info('DATABASE_URL not set - using local auth state only');
     return;
@@ -183,6 +221,7 @@ async function initSessionStore() {
   sessionStore = new PostgresSessionStore({
     connectionString: DATABASE_URL,
     sessionId: SESSION_ID,
+    ownerId: currentOwnerId,
     localPath: AUTH_ROOT,
     logger,
   });
@@ -338,7 +377,7 @@ async function ensureSocketConnected() {
 
         logger.warn({ statusCode, shouldReconnect }, 'WhatsApp disconnected');
 
-        if (shouldReconnect) {
+        if (shouldReconnect && !isResettingSession) {
           socket = null;
           setTimeout(() => {
             ensureSocketConnected().catch((error) => {
@@ -475,6 +514,45 @@ async function ensureSocketConnected() {
   }
 }
 
+async function resetSession() {
+  isResettingSession = true;
+  try {
+    if (backupTimer) {
+      clearTimeout(backupTimer);
+      backupTimer = null;
+    }
+
+    try {
+      socket?.ws?.close();
+    } catch (_error) {
+      // ignore close errors
+    }
+
+    socket = null;
+    isConnected = false;
+    cleanupQrFile();
+
+    if (sessionStore) {
+      await sessionStore.delete();
+    }
+
+    if (fs.existsSync(AUTH_DIR)) {
+      fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+    }
+    fs.mkdirSync(AUTH_DIR, { recursive: true });
+
+    await initSessionStore();
+
+    await ensureSocketConnected();
+    return true;
+  } catch (error) {
+    logger.error({ error: error.message }, 'Failed to reset WhatsApp session');
+    return false;
+  } finally {
+    isResettingSession = false;
+  }
+}
+
 function parseJsonBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
@@ -597,6 +675,7 @@ const server = http.createServer(async (req, res) => {
       status: 'ok',
       connected: isConnected,
       sessionId: SESSION_ID,
+      ownerId: currentOwnerId,
       hasPostgres: !!sessionStore,
     });
     return;
@@ -726,6 +805,23 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === 'POST' && req.url === '/session/reset') {
+    try {
+      const body = await parseJsonBody(req);
+      currentOwnerId = normalizeOwnerId(body?.ownerId || currentOwnerId);
+    } catch (_error) {
+      currentOwnerId = normalizeOwnerId(currentOwnerId);
+    }
+
+    const success = await resetSession();
+    sendJson(res, success ? 200 : 500, {
+      success,
+      ownerId: currentOwnerId,
+      message: success ? 'Session reset; scan new QR to connect.' : 'Failed to reset session',
+    });
+    return;
+  }
+
   if (req.method === 'GET' && req.url === '/session/status') {
     const remote = sessionStore
       ? await sessionStore.getRemoteSessionInfo()
@@ -733,6 +829,7 @@ const server = http.createServer(async (req, res) => {
 
     sendJson(res, 200, {
       sessionId: SESSION_ID,
+      ownerId: currentOwnerId,
       hasLocal: sessionStore?.hasLocalSession() ?? fs.existsSync(AUTH_DIR),
       hasRemote: remote.exists,
       remoteFormat: remote.format,
@@ -767,6 +864,7 @@ async function main() {
   console.log('Starting WhatsApp connector (Baileys)...');
   console.log(`Python API: ${PYTHON_API_URL}`);
   console.log(`Session ID: ${SESSION_ID}`);
+  console.log(`Session Owner: ${currentOwnerId}`);
   console.log(`PostgreSQL: ${DATABASE_URL ? 'configured' : 'not configured'}`);
 
   await initSessionStore();

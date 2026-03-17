@@ -18,8 +18,15 @@ from datetime import datetime
 from .events import SwarmEvent, EventType
 from .eventbus import EventBus
 from .blackboard import Blackboard, ContactState
+from .owner_config import load_owner_config
 
 logger = logging.getLogger(__name__)
+
+SYSTEM_OWNER_ID = (
+    os.getenv("NEXTHELLO_SYSTEM_OWNER_ID")
+    or os.getenv("NEXTHELLO_DEFAULT_OWNER_ID")
+    or "askmikeai@gmail.com"
+)
 
 
 class SwarmCoordinator:
@@ -43,6 +50,9 @@ class SwarmCoordinator:
         self.eventbus = eventbus
         self.blackboard = blackboard
 
+    def _owner(self, owner_id: Optional[str]) -> str:
+        return (owner_id or SYSTEM_OWNER_ID).strip() or SYSTEM_OWNER_ID
+
     async def connect(self) -> None:
         """Connect to Redis and database"""
         await self.eventbus.connect()
@@ -60,6 +70,7 @@ class SwarmCoordinator:
         message_type: str = "text",
         push_name: Optional[str] = None,
         message_id: Optional[str] = None,
+        owner_id: Optional[str] = None,
     ) -> Optional[str]:
         """
         Handle an incoming WhatsApp message.
@@ -83,14 +94,14 @@ class SwarmCoordinator:
         logger.info(f"Processing message from {phone_number}: {message_text[:50]}...")
 
         if self.is_erasure_request(message_text):
-            await self.blackboard.delete_contact_data(phone_number)
+            await self.blackboard.delete_contact_data(phone_number, owner_id=owner_id)
             return (
                 "Understood. I deleted your stored information from this system now. "
                 "If you message again later, we will treat it as a new conversation."
             )
 
         # Get or create contact state
-        contact = await self.blackboard.get_contact(phone_number)
+        contact = await self.blackboard.get_contact(phone_number, owner_id=owner_id)
         is_new_contact = contact is None
 
         inferred_name = self._extract_name_from_push_name(push_name)
@@ -102,13 +113,14 @@ class SwarmCoordinator:
                 first_name=inferred_name.get("first_name"),
                 last_name=inferred_name.get("last_name"),
             )
-            await self.blackboard.save_contact(contact)
+            await self.blackboard.save_contact(contact, owner_id=owner_id)
 
             # Publish contact.created event
             await self.eventbus.publish(
                 SwarmEvent(
                     event_type=EventType.CONTACT_CREATED,
                     contact_id=phone_number,
+                    owner_id=self._owner(owner_id),
                     payload={
                         "push_name": push_name,
                         "source": "whatsapp",
@@ -168,7 +180,11 @@ class SwarmCoordinator:
             updated_fields["voice_mode"] = True
 
         if updated_fields:
-            contact = await self.blackboard.update_contact(phone_number, **updated_fields)
+            contact = await self.blackboard.update_contact(
+                phone_number,
+                owner_id=owner_id,
+                **updated_fields,
+            )
 
             # If contact info changed, publish update event
             if any(
@@ -178,6 +194,7 @@ class SwarmCoordinator:
                     SwarmEvent(
                         event_type=EventType.CONTACT_UPDATED,
                         contact_id=phone_number,
+                        owner_id=self._owner(owner_id),
                         payload={
                             "updated_fields": list(updated_fields.keys()),
                             "entities": entities,
@@ -194,6 +211,7 @@ class SwarmCoordinator:
             SwarmEvent(
                 event_type=EventType.MESSAGE_RECEIVED,
                 contact_id=phone_number,
+                owner_id=self._owner(owner_id),
                 payload={
                     "text": message_text,
                     "message_type": message_type,
@@ -206,21 +224,28 @@ class SwarmCoordinator:
             )
         )
 
+        # Load per-owner identity for welcome messages
+        _cfg = None
+        if self.blackboard and self.blackboard._pool:
+            _cfg = await load_owner_config(self.blackboard._pool, self._owner(owner_id))
+        _ident = _cfg.identity if _cfg else {}
+        _owner_name = _ident.get("owner_name") or os.getenv("OWNER_NAME", "")
+        _event_name = _ident.get("event_name") or os.getenv("EVENT_NAME", "the event")
+
         # Demo mode behavior: attempt one welcome video for every contact.
         # VideoAgent safely ignores duplicates and failures are non-blocking.
         if not contact.heygen_video_url and not contact.heygen_video_id:
             name = contact.first_name or inferred_name.get("first_name") or push_name or "there"
-            owner_name = os.getenv("OWNER_NAME", "Michael Friedberg")
-            event_name = os.getenv("EVENT_NAME", "Open Claw Demos, Agent Swarms and workflows")
             demo_video_script = (
-                f"Hey {name}, nice to meet you at {event_name}. "
-                f"I am {owner_name}'s assistant and I am glad we connected. "
+                f"Hey {name}, nice to meet you at {_event_name}. "
+                f"I am {_owner_name}'s assistant and I am glad we connected. "
                 "Looking forward to learning more about what you are building and how we can help."
             )
             await self.eventbus.publish(
                 SwarmEvent(
                     event_type=EventType.VIDEO_REQUESTED,
                     contact_id=phone_number,
+                    owner_id=self._owner(owner_id),
                     payload={
                         "script": demo_video_script,
                         "welcome_video": True,
@@ -233,13 +258,11 @@ class SwarmCoordinator:
         # Generate immediate response for new contacts
         # The Personalization Agent will handle actual responses via message.send
         if is_new_contact and not contact.welcomed:
-            await self.blackboard.update_contact(phone_number, welcomed=True)
+            await self.blackboard.update_contact(phone_number, owner_id=owner_id, welcomed=True)
             name = contact.first_name or inferred_name.get("first_name") or push_name or "there"
-            owner_name = os.getenv("OWNER_NAME", "Michael Friedberg")
-            event_name = os.getenv("EVENT_NAME", "Open Claw Demos, Agent Swarms and workflows")
             welcome_text = (
-                f"Hey {name}! Nice to meet you at {event_name}. "
-                f"I'm {owner_name}'s assistant and excited to connect. "
+                f"Hey {name}! Nice to meet you at {_event_name}. "
+                f"I'm {_owner_name}'s assistant and excited to connect. "
                 "I will send you a quick welcome video shortly."
             )
 
@@ -247,6 +270,7 @@ class SwarmCoordinator:
                 SwarmEvent(
                     event_type=EventType.RESEARCH_NEEDED,
                     contact_id=phone_number,
+                    owner_id=self._owner(owner_id),
                     payload={"source": "new_contact"},
                     source_agent="coordinator",
                 )
@@ -259,6 +283,7 @@ class SwarmCoordinator:
                     SwarmEvent(
                         event_type=EventType.VOICE_REQUESTED,
                         contact_id=phone_number,
+                        owner_id=self._owner(owner_id),
                         payload={"script": welcome_text},
                         source_agent="coordinator",
                     )
@@ -274,6 +299,7 @@ class SwarmCoordinator:
         text: str,
         message_type: str = "text",
         media_url: Optional[str] = None,
+        owner_id: Optional[str] = None,
     ) -> None:
         """
         Request to send a message to a contact.
@@ -284,6 +310,7 @@ class SwarmCoordinator:
             SwarmEvent(
                 event_type=EventType.MESSAGE_SEND,
                 contact_id=phone_number,
+                owner_id=self._owner(owner_id),
                 payload={
                     "text": text,
                     "message_type": message_type,
@@ -293,56 +320,73 @@ class SwarmCoordinator:
             )
         )
 
-    async def request_research(self, phone_number: str) -> None:
+    async def request_research(self, phone_number: str, owner_id: Optional[str] = None) -> None:
         """Request research for a contact"""
         await self.eventbus.publish(
             SwarmEvent(
                 event_type=EventType.RESEARCH_NEEDED,
                 contact_id=phone_number,
+                owner_id=self._owner(owner_id),
                 payload={},
                 source_agent="coordinator",
             )
         )
 
-    async def request_qualification(self, phone_number: str) -> None:
+    async def request_qualification(
+        self, phone_number: str, owner_id: Optional[str] = None
+    ) -> None:
         """Request qualification for a contact"""
         await self.eventbus.publish(
             SwarmEvent(
                 event_type=EventType.QUALIFICATION_NEEDED,
                 contact_id=phone_number,
+                owner_id=self._owner(owner_id),
                 payload={},
                 source_agent="coordinator",
             )
         )
 
-    async def request_video(self, phone_number: str, script: Optional[str] = None) -> None:
+    async def request_video(
+        self,
+        phone_number: str,
+        script: Optional[str] = None,
+        owner_id: Optional[str] = None,
+    ) -> None:
         """Request video generation for a contact"""
         await self.eventbus.publish(
             SwarmEvent(
                 event_type=EventType.VIDEO_REQUESTED,
                 contact_id=phone_number,
+                owner_id=self._owner(owner_id),
                 payload={"script": script} if script else {},
                 source_agent="coordinator",
             )
         )
 
-    async def request_voice(self, phone_number: str, script: Optional[str] = None) -> None:
+    async def request_voice(
+        self,
+        phone_number: str,
+        script: Optional[str] = None,
+        owner_id: Optional[str] = None,
+    ) -> None:
         """Request voice generation for a contact"""
         await self.eventbus.publish(
             SwarmEvent(
                 event_type=EventType.VOICE_REQUESTED,
                 contact_id=phone_number,
+                owner_id=self._owner(owner_id),
                 payload={"script": script} if script else {},
                 source_agent="coordinator",
             )
         )
 
-    async def request_crm_sync(self, phone_number: str) -> None:
+    async def request_crm_sync(self, phone_number: str, owner_id: Optional[str] = None) -> None:
         """Request CRM sync for a contact"""
         await self.eventbus.publish(
             SwarmEvent(
                 event_type=EventType.CRM_SYNC_NEEDED,
                 contact_id=phone_number,
+                owner_id=self._owner(owner_id),
                 payload={},
                 source_agent="coordinator",
             )

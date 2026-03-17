@@ -103,12 +103,15 @@ class ResearchAgent(AutonomousAgent):
         # Mark research as in progress
         await self.blackboard.update_contact(
             contact.phone_number,
+            owner_id=event.owner_id,
             research_status="in_progress",
         )
 
         try:
             # Call PDL API
-            research_data = await self._enrich_contact(contact, event.correlation_id)
+            research_data = await self._enrich_contact(
+                contact, event.correlation_id, event.owner_id
+            )
 
             if research_data:
                 # Update contact with enrichment data
@@ -130,7 +133,11 @@ class ResearchAgent(AutonomousAgent):
                 if research_data.get("linkedin_url") and not contact.linkedin_url:
                     updates["linkedin_url"] = research_data["linkedin_url"]
 
-                await self.blackboard.update_contact(contact.phone_number, **updates)
+                await self.blackboard.update_contact(
+                    contact.phone_number,
+                    owner_id=event.owner_id,
+                    **updates,
+                )
 
                 # Publish research.completed
                 result_events.append(
@@ -159,6 +166,7 @@ class ResearchAgent(AutonomousAgent):
                 # No data found
                 await self.blackboard.update_contact(
                     contact.phone_number,
+                    owner_id=event.owner_id,
                     research_status="failed",
                 )
 
@@ -175,6 +183,7 @@ class ResearchAgent(AutonomousAgent):
 
             await self.blackboard.update_contact(
                 contact.phone_number,
+                owner_id=event.owner_id,
                 research_status="failed",
             )
 
@@ -188,18 +197,22 @@ class ResearchAgent(AutonomousAgent):
 
         return result_events
 
-    async def _enrich_contact(self, contact: ContactState, correlation_id: str) -> dict | None:
+    async def _enrich_contact(
+        self, contact: ContactState, correlation_id: str, owner_id: str = ""
+    ) -> dict | None:
         """
         Call PDL API to enrich contact.
 
         Returns enrichment data or None if no match found.
         """
+        cfg = await self.get_owner_config(owner_id)
+
         # Prefer delegated research via OpenClaw agent if configured.
-        openclaw_result = await self._enrich_via_openclaw(contact, correlation_id)
+        openclaw_result = await self._enrich_via_openclaw(contact, correlation_id, cfg)
         if openclaw_result:
             return openclaw_result
 
-        api_key = os.getenv("PDL_API_KEY")
+        api_key = cfg.get("research", "pdl_api_key") or os.getenv("PDL_API_KEY")
         if not api_key:
             logger.warning("PDL_API_KEY not configured")
             return None
@@ -289,10 +302,13 @@ class ResearchAgent(AutonomousAgent):
             logger.error(f"[{self.name}] PDL error: {e}")
             return None
 
-    async def _enrich_via_openclaw(self, contact: ContactState, correlation_id: str) -> dict | None:
+    async def _enrich_via_openclaw(
+        self, contact: ContactState, correlation_id: str, cfg=None
+    ) -> dict | None:
         """Delegate contact research to an OpenClaw node over Tailscale."""
-        base_url = os.getenv("OPENCLAW_BASE_URL", "").strip()
-        if base_url:
+        oc = cfg.openclaw if cfg else {}
+        base_url = (oc.get("base_url") or os.getenv("OPENCLAW_BASE_URL", "")).strip()
+        if base_url and oc.get("enabled", True) is not False:
             openclaw_activity_id = await self.blackboard.log_agent_activity_start(
                 agent_type="openclaw",
                 action="research.openclaw",
@@ -323,7 +339,11 @@ class ResearchAgent(AutonomousAgent):
                 body = await post_openclaw_responses(
                     model="openclaw:main",
                     input_text=prompt,
-                    timeout_seconds=float(os.getenv("OPENCLAW_TIMEOUT_SECONDS", "120")),
+                    timeout_seconds=float(
+                        oc.get("timeout_seconds") or os.getenv("OPENCLAW_TIMEOUT_SECONDS", "120")
+                    ),
+                    base_url=base_url,
+                    gateway_token=oc.get("gateway_token") or None,
                 )
 
                 output_text = extract_output_text(body)
@@ -376,12 +396,12 @@ class ResearchAgent(AutonomousAgent):
                         error_message=str(e)[:500],
                     )
 
-        endpoint = os.getenv("OPENCLAW_RESEARCH_URL", "").strip()
+        endpoint = (oc.get("research_url") or os.getenv("OPENCLAW_RESEARCH_URL", "")).strip()
         if not endpoint:
             return None
 
-        timeout = float(os.getenv("OPENCLAW_TIMEOUT_SECONDS", "20"))
-        api_key = os.getenv("OPENCLAW_API_KEY", "").strip()
+        timeout = float(oc.get("timeout_seconds") or os.getenv("OPENCLAW_TIMEOUT_SECONDS", "20"))
+        api_key = (oc.get("api_key") or os.getenv("OPENCLAW_API_KEY", "")).strip()
 
         payload = {
             "phone_number": contact.phone_number,

@@ -41,4 +41,16 @@
     <!-- OpenClaw LinkedIn connection flag -->
     <include file="changesets/012-openclaw-linkedin-connected.xml" relativeToChangelogFile="true"/>
 
+    <!-- Multi-tenant owner scoping for data isolation -->
+    <include file="changesets/013-multi-user-tenancy.xml" relativeToChangelogFile="true"/>
+
+    <!-- Reassign legacy default tenant rows and enforce explicit owner usage -->
+    <include file="changesets/014-explicit-owner-enforcement.xml" relativeToChangelogFile="true"/>
+
+    <!-- Per-owner settings / config table -->
+    <include file="changesets/015-owner-settings.xml" relativeToChangelogFile="true"/>
+
+    <!-- Backend user accounts with admin approval workflow -->
+    <include file="changesets/016-user-accounts.xml" relativeToChangelogFile="true"/>
+
 </databaseChangeLog>

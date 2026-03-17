@@ -18,6 +18,12 @@ from ..blackboard import Blackboard, ContactState
 
 logger = logging.getLogger(__name__)
 
+SYSTEM_OWNER_ID = (
+    os.getenv("NEXTHELLO_SYSTEM_OWNER_ID")
+    or os.getenv("NEXTHELLO_DEFAULT_OWNER_ID")
+    or "askmikeai@gmail.com"
+)
+
 
 class VideoAgent(AutonomousAgent):
     """
@@ -98,14 +104,17 @@ class VideoAgent(AutonomousAgent):
             logger.error(f"[{self.name}] No script available for {contact.phone_number}")
             return result_events
 
+        cfg = await self.get_owner_config(event.owner_id)
+
         try:
             # Generate video
-            video_id = await self._generate_video(contact.phone_number, script)
+            video_id = await self._generate_video(contact.phone_number, script, cfg)
 
             if video_id:
                 # Update contact with video ID (URL will come via webhook)
                 await self.blackboard.update_contact(
                     contact.phone_number,
+                    owner_id=event.owner_id,
                     heygen_video_id=video_id,
                 )
 
@@ -135,19 +144,22 @@ class VideoAgent(AutonomousAgent):
         self,
         phone_number: str,
         script: str,
+        cfg=None,
     ) -> str | None:
         """
         Generate a HeyGen video.
 
         Returns video_id or None on failure.
         """
-        api_key = os.getenv("HEYGEN_API_KEY")
+        hg = cfg.heygen if cfg else {}
+        beh = cfg.behavior if cfg else {}
+        api_key = hg.get("api_key") or os.getenv("HEYGEN_API_KEY")
         if not api_key:
             logger.warning("HEYGEN_API_KEY not configured")
             return None
 
-        avatar_id = os.getenv("HEYGEN_AVATAR_ID")
-        voice_id = os.getenv("HEYGEN_VOICE_ID")
+        avatar_id = hg.get("avatar_id") or os.getenv("HEYGEN_AVATAR_ID")
+        voice_id = hg.get("voice_id") or os.getenv("HEYGEN_VOICE_ID")
 
         if not avatar_id or not voice_id:
             logger.warning("HEYGEN_AVATAR_ID and HEYGEN_VOICE_ID must be set")
@@ -155,7 +167,7 @@ class VideoAgent(AutonomousAgent):
 
         # Build webhook URL
         webhook_url = None
-        base_url = os.getenv("WEBHOOK_BASE_URL")
+        base_url = beh.get("webhook_base_url") or os.getenv("WEBHOOK_BASE_URL")
         if base_url:
             webhook_url = f"{base_url}/webhooks/networking-event/heygen"
 
@@ -216,6 +228,7 @@ class VideoAgent(AutonomousAgent):
         video_id: str,
         video_url: str,
         callback_id: str,
+        owner_id: str = SYSTEM_OWNER_ID,
     ) -> List[SwarmEvent]:
         """
         Handle HeyGen webhook callback when video is ready.
@@ -225,6 +238,7 @@ class VideoAgent(AutonomousAgent):
         # Update contact with video URL
         await self.blackboard.update_contact(
             callback_id,
+            owner_id=owner_id,
             heygen_video_url=video_url,
         )
 
@@ -232,6 +246,7 @@ class VideoAgent(AutonomousAgent):
         event = SwarmEvent(
             event_type=EventType.VIDEO_COMPLETED,
             contact_id=callback_id,
+            owner_id=owner_id,
             payload={
                 "video_id": video_id,
                 "video_url": video_url,

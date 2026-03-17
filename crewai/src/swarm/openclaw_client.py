@@ -4,12 +4,12 @@ from typing import Any, Optional
 import httpx
 
 
-def _normalized_base_url() -> str:
-    return os.getenv("OPENCLAW_BASE_URL", "").strip().rstrip("/")
+def _normalized_base_url(override: Optional[str] = None) -> str:
+    return (override or os.getenv("OPENCLAW_BASE_URL", "")).strip().rstrip("/")
 
 
-def _candidate_base_urls() -> list[str]:
-    base_url = _normalized_base_url()
+def _candidate_base_urls(override: Optional[str] = None) -> list[str]:
+    base_url = _normalized_base_url(override)
     if not base_url:
         return []
 
@@ -53,8 +53,10 @@ async def post_openclaw_responses(
     model: str,
     input_text: str,
     timeout_seconds: Optional[float] = None,
+    base_url: Optional[str] = None,
+    gateway_token: Optional[str] = None,
 ) -> dict[str, Any]:
-    token = os.getenv("OPENCLAW_GATEWAY_TOKEN", "").strip()
+    token = (gateway_token or os.getenv("OPENCLAW_GATEWAY_TOKEN", "")).strip()
     if not token:
         raise ValueError("OPENCLAW_GATEWAY_TOKEN is required")
 
@@ -69,11 +71,11 @@ async def post_openclaw_responses(
     }
 
     last_error: Exception | None = None
-    for base_url in _candidate_base_urls():
+    for url in _candidate_base_urls(base_url):
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(
-                    f"{base_url}/v1/responses",
+                    f"{url}/v1/responses",
                     json=payload,
                     headers=headers,
                 )
@@ -90,8 +92,10 @@ def post_openclaw_responses_sync(
     model: str,
     input_text: str,
     timeout_seconds: Optional[float] = None,
+    base_url: Optional[str] = None,
+    gateway_token: Optional[str] = None,
 ) -> dict[str, Any]:
-    token = os.getenv("OPENCLAW_GATEWAY_TOKEN", "").strip()
+    token = (gateway_token or os.getenv("OPENCLAW_GATEWAY_TOKEN", "")).strip()
     if not token:
         raise ValueError("OPENCLAW_GATEWAY_TOKEN is required")
 
@@ -106,11 +110,11 @@ def post_openclaw_responses_sync(
     }
 
     last_error: Exception | None = None
-    for base_url in _candidate_base_urls():
+    for url in _candidate_base_urls(base_url):
         try:
             with httpx.Client(timeout=timeout) as client:
                 response = client.post(
-                    f"{base_url}/v1/responses",
+                    f"{url}/v1/responses",
                     json=payload,
                     headers=headers,
                 )
@@ -129,8 +133,10 @@ async def post_openclaw_hook_agent(
     deliver: bool = False,
     wake_mode: str = "next-heartbeat",
     timeout_seconds: Optional[float] = None,
+    base_url: Optional[str] = None,
+    hooks_token: Optional[str] = None,
 ) -> dict[str, Any]:
-    token = os.getenv("OPENCLAW_HOOKS_TOKEN", "").strip()
+    token = (hooks_token or os.getenv("OPENCLAW_HOOKS_TOKEN", "")).strip()
     if not token:
         raise ValueError("OPENCLAW_HOOKS_TOKEN is required")
 
@@ -147,11 +153,11 @@ async def post_openclaw_hook_agent(
     }
 
     last_error: Exception | None = None
-    for base_url in _candidate_base_urls():
+    for url in _candidate_base_urls(base_url):
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(
-                    f"{base_url}/hooks/agent",
+                    f"{url}/hooks/agent",
                     json=payload,
                     headers=headers,
                 )

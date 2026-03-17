@@ -20,8 +20,15 @@ import uuid
 from .events import SwarmEvent, EventType, STREAM_NAMES
 from .eventbus import EventBus
 from .blackboard import Blackboard, ContactState
+from .owner_config import OwnerConfig, load_owner_config
 
 logger = logging.getLogger(__name__)
+
+SYSTEM_OWNER_ID = (
+    os.getenv("NEXTHELLO_SYSTEM_OWNER_ID")
+    or os.getenv("NEXTHELLO_DEFAULT_OWNER_ID")
+    or "askmikeai@gmail.com"
+)
 
 
 class AutonomousAgent(ABC):
@@ -73,6 +80,12 @@ class AutonomousAgent(ABC):
     def requires_lock(self) -> bool:
         """Whether this agent requires per-contact lock coordination."""
         return True
+
+    async def get_owner_config(self, owner_id: str) -> OwnerConfig:
+        """Load per-owner config from DB (cached)."""
+        if self.blackboard and self.blackboard._pool:
+            return await load_owner_config(self.blackboard._pool, owner_id)
+        return OwnerConfig(owner_id=owner_id)
 
     def get_streams(self) -> List[str]:
         """Get Redis stream names for subscribed events"""
@@ -136,16 +149,21 @@ class AutonomousAgent(ABC):
 
         activity_id: Optional[str] = None
         started_at: Optional[datetime] = None
+        owner_token = None
 
         try:
+            owner_id = event.owner_id or SYSTEM_OWNER_ID
+            owner_token = self.blackboard.set_owner_context(owner_id)
+
             # Get contact state from blackboard
-            contact = await self.blackboard.get_contact(event.contact_id)
+            contact = await self.blackboard.get_contact(event.contact_id, owner_id=owner_id)
             if not contact:
                 contact = ContactState(phone_number=event.contact_id)
 
             # Check if we should act
             if not await self.should_act(event, contact):
                 logger.debug(f"[{self.name}] Skipping event for {event.contact_id}")
+                self.blackboard.reset_owner_context(owner_token)
                 return True  # Acknowledge but don't process
 
             lock_acquired = True
@@ -154,9 +172,11 @@ class AutonomousAgent(ABC):
                 lock_acquired = await self.blackboard.acquire_lock(
                     event.contact_id,
                     self.consumer_name,
+                    owner_id=owner_id,
                 )
                 if not lock_acquired:
                     logger.debug(f"[{self.name}] Could not acquire lock for {event.contact_id}")
+                    self.blackboard.reset_owner_context(owner_token)
                     return False  # Don't ack - will retry
 
             try:
@@ -166,6 +186,7 @@ class AutonomousAgent(ABC):
                     event.contact_id,
                     "processing",
                     event.event_id,
+                    owner_id=owner_id,
                 )
 
                 # Record activity start
@@ -180,6 +201,7 @@ class AutonomousAgent(ABC):
                     action=action,
                     correlation_id=event.correlation_id,
                     started_at=started_at,
+                    owner_id=owner_id,
                 )
 
                 # Execute the agent's logic
@@ -188,12 +210,14 @@ class AutonomousAgent(ABC):
 
                 # Publish result events
                 for result_event in result_events:
+                    if not getattr(result_event, "owner_id", None):
+                        result_event.owner_id = owner_id
                     await self.eventbus.publish(result_event)
                     logger.info(f"[{self.name}] Published {result_event.event_type}")
 
                 # Best-effort bookkeeping (should not fail message processing)
                 try:
-                    await self.blackboard.log_event(event)
+                    await self.blackboard.log_event(event, owner_id=owner_id)
                 except Exception as e:
                     logger.warning(f"[{self.name}] Failed to log event: {e}")
 
@@ -216,11 +240,13 @@ class AutonomousAgent(ABC):
                         event.contact_id,
                         "completed",
                         event.event_id,
+                        owner_id=owner_id,
                     )
                 except Exception as e:
                     logger.warning(f"[{self.name}] Failed to update agent state: {e}")
 
                 logger.info(f"[{self.name}] Completed for {event.contact_id}")
+                self.blackboard.reset_owner_context(owner_token)
                 return True
 
             finally:
@@ -229,6 +255,7 @@ class AutonomousAgent(ABC):
                     await self.blackboard.release_lock(
                         event.contact_id,
                         self.consumer_name,
+                        owner_id=owner_id,
                     )
 
         except Exception as e:
@@ -256,10 +283,13 @@ class AutonomousAgent(ABC):
                     event.contact_id,
                     f"failed: {str(e)[:100]}",
                     event.event_id,
+                    owner_id=event.owner_id or SYSTEM_OWNER_ID,
                 )
             except Exception:
                 pass
 
+            if owner_token is not None:
+                self.blackboard.reset_owner_context(owner_token)
             return False  # Don't ack - will retry
 
     async def start(self) -> None:

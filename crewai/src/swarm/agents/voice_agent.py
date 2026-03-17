@@ -101,14 +101,17 @@ class VoiceAgent(AutonomousAgent):
             logger.error(f"[{self.name}] No script available for {contact.phone_number}")
             return result_events
 
+        cfg = await self.get_owner_config(event.owner_id)
+
         try:
             # Generate voice
-            audio_url = await self._generate_voice(contact.phone_number, script)
+            audio_url = await self._generate_voice(contact.phone_number, script, cfg)
 
             if audio_url:
                 # Update contact
                 await self.blackboard.update_contact(
                     contact.phone_number,
+                    owner_id=event.owner_id,
                     voice_audio_url=audio_url,
                 )
 
@@ -148,18 +151,20 @@ class VoiceAgent(AutonomousAgent):
         self,
         phone_number: str,
         script: str,
+        cfg=None,
     ) -> str | None:
         """
         Generate a voice message using ElevenLabs.
 
         Returns the path/URL to the audio file or None on failure.
         """
-        api_key = os.getenv("ELEVENLABS_API_KEY")
+        el = cfg.elevenlabs if cfg else {}
+        api_key = el.get("api_key") or os.getenv("ELEVENLABS_API_KEY")
         if not api_key:
             logger.warning("ELEVENLABS_API_KEY not configured")
             return None
 
-        voice_id = os.getenv("ELEVENLABS_VOICE_ID")
+        voice_id = el.get("voice_id") or os.getenv("ELEVENLABS_VOICE_ID")
         if not voice_id:
             logger.warning("ELEVENLABS_VOICE_ID not configured")
             return None

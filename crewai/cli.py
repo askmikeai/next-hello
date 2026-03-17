@@ -17,6 +17,7 @@ Usage:
 import os
 import sys
 import subprocess
+import shutil
 import time
 import signal
 import json
@@ -166,8 +167,17 @@ def check_api():
 
 def check_bridge():
     """Check if WhatsApp connector is running"""
-    result = subprocess.run(["pgrep", "-f", "whatsapp"], capture_output=True)
-    return result.returncode == 0
+    try:
+        if shutil.which("pgrep"):
+            result = subprocess.run(["pgrep", "-f", "whatsapp"], capture_output=True)
+            return result.returncode == 0
+
+        result = subprocess.run(["ps", "-ef"], capture_output=True, text=True)
+        if result.returncode != 0:
+            return False
+        return "whatsapp" in (result.stdout or "").lower()
+    except Exception:
+        return False
 
 
 def fetch_json(url, timeout=3):

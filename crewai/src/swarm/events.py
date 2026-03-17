@@ -11,6 +11,15 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime
 import uuid
 import json
+import re
+import os
+
+
+SYSTEM_OWNER_ID = (
+    os.getenv("NEXTHELLO_SYSTEM_OWNER_ID")
+    or os.getenv("NEXTHELLO_DEFAULT_OWNER_ID")
+    or "askmikeai@gmail.com"
+)
 
 
 class EventType(str, Enum):
@@ -66,8 +75,9 @@ class SwarmEvent:
         timestamp: When the event was created
     """
 
-    event_type: EventType
+    event_type: EventType | str
     contact_id: str
+    owner_id: str = SYSTEM_OWNER_ID
     payload: dict = field(default_factory=dict)
     source_agent: str = "system"
     event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
@@ -79,12 +89,26 @@ class SwarmEvent:
         """Set correlation_id to event_id if not provided"""
         if not self.correlation_id:
             self.correlation_id = self.event_id
+        self.owner_id = self._sanitize_owner_id(self.owner_id)
+
+    @staticmethod
+    def _sanitize_owner_id(value: Optional[str]) -> str:
+        candidate = (value or "").strip().lower()
+        fallback = (
+            re.sub(r"[^a-z0-9._-]", "-", SYSTEM_OWNER_ID.lower())[:80] or "askmikeai-gmail.com"
+        )
+        if not candidate:
+            return fallback
+        return re.sub(r"[^a-z0-9._-]", "-", candidate)[:80] or fallback
 
     def to_dict(self) -> dict:
         """Convert event to dictionary for serialization"""
         return {
-            "event_type": self.event_type.value if isinstance(self.event_type, EventType) else self.event_type,
+            "event_type": self.event_type.value
+            if isinstance(self.event_type, EventType)
+            else self.event_type,
             "contact_id": self.contact_id,
+            "owner_id": self.owner_id,
             "payload": self.payload,
             "source_agent": self.source_agent,
             "event_id": self.event_id,
@@ -110,6 +134,7 @@ class SwarmEvent:
         return cls(
             event_type=event_type,
             contact_id=data.get("contact_id", ""),
+            owner_id=data.get("owner_id", SYSTEM_OWNER_ID),
             payload=data.get("payload", {}),
             source_agent=data.get("source_agent", "system"),
             event_id=data.get("event_id", str(uuid.uuid4())),
@@ -143,6 +168,7 @@ class SwarmEvent:
         return SwarmEvent(
             event_type=event_type,
             contact_id=self.contact_id,
+            owner_id=self.owner_id,
             payload=payload,
             source_agent=source_agent,
             correlation_id=self.correlation_id,  # Maintain correlation
