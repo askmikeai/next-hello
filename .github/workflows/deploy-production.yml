@@ -38,7 +38,8 @@ jobs:
           username: ${{ secrets.PROD_USER }}
           key: ${{ secrets.PROD_SSH_KEY }}
           port: ${{ secrets.PROD_PORT || 22 }}
-          source: "."
+          # Avoid copying .git metadata to server (can fail on perms)
+          source: "./*"
           target: ${{ secrets.PROD_APP_DIR || '/opt/nexthello/app' }}
           overwrite: true
           strip_components: 0
@@ -80,7 +81,8 @@ jobs:
               SERVICES="$SERVICES ui"
             fi
 
-            docker compose up -d --build $SERVICES
+            # Recreate running services from fresh images and clean orphans.
+            docker compose up -d --build --force-recreate --remove-orphans $SERVICES
 
             # If UI is served by a standalone nginx container, force-refresh assets.
             if docker ps -a --format '{{.Names}}' | grep -q '^nexthello-ui$'; then
@@ -94,5 +96,9 @@ jobs:
               cp -R "$APP_DIR/ui/dist/." /var/www/html/
               (systemctl reload nginx || true)
             fi
+
+            # Keep disk usage in check by removing dangling images/build cache.
+            docker image prune -f || true
+            docker builder prune -f || true
 
             docker compose ps
