@@ -60,6 +60,16 @@ jobs:
 
             docker compose up -d postgres redis
             docker compose --profile migrations run --rm liquibase
+
+            # Always rebuild UI on the server so deployed assets match HEAD.
+            if [ -d "ui" ]; then
+              cd ui
+              npm cache clean --force || true
+              npm ci
+              npm run build
+              cd "$APP_DIR"
+            fi
+
             SERVICES="api worker swarm whatsapp agent-log-monitor loki"
 
             # Optional services based on branch/environment compose config.
@@ -71,4 +81,18 @@ jobs:
             fi
 
             docker compose up -d --build $SERVICES
+
+            # If UI is served by a standalone nginx container, force-refresh assets.
+            if docker ps -a --format '{{.Names}}' | grep -q '^nexthello-ui$'; then
+              docker cp "$APP_DIR/ui/dist/." nexthello-ui:/usr/share/nginx/html/
+              docker restart nexthello-ui
+            fi
+
+            # If UI is served directly by host nginx, refresh /var/www/html when present.
+            if [ -d "/var/www/html" ] && [ -d "$APP_DIR/ui/dist" ]; then
+              rm -rf /var/www/html/*
+              cp -R "$APP_DIR/ui/dist/." /var/www/html/
+              (systemctl reload nginx || true)
+            fi
+
             docker compose ps
