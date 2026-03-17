@@ -38,12 +38,12 @@ jobs:
           username: ${{ secrets.PROD_USER }}
           key: ${{ secrets.PROD_SSH_KEY }}
           port: ${{ secrets.PROD_PORT || 22 }}
-          # Avoid copying .git metadata to server (can fail on perms)
-          source: "./*"
-          target: ${{ secrets.PROD_APP_DIR || '/opt/nexthello/app' }}
+          source: "."
+          # Copy to a clean temp dir first, then sync into APP_DIR over SSH.
+          target: ${{ secrets.PROD_SYNC_DIR || '/tmp/nexthello-sync' }}
           overwrite: true
           strip_components: 0
-          rm: false
+          rm: true
           tar_dereference: true
 
       - name: Deploy over SSH
@@ -57,6 +57,17 @@ jobs:
           script: |
             set -euo pipefail
             APP_DIR="${{ secrets.PROD_APP_DIR || '/opt/nexthello/app' }}"
+            SYNC_DIR="${{ secrets.PROD_SYNC_DIR || '/tmp/nexthello-sync' }}"
+
+            mkdir -p "$APP_DIR"
+            if command -v rsync >/dev/null 2>&1; then
+              rsync -a --delete --exclude '.git' --exclude '.env' "$SYNC_DIR"/ "$APP_DIR"/
+            else
+              find "$APP_DIR" -mindepth 1 -maxdepth 1 ! -name '.env' -exec rm -rf {} +
+              cp -R "$SYNC_DIR"/. "$APP_DIR"/
+              rm -rf "$APP_DIR/.git"
+            fi
+
             cd "$APP_DIR"
 
             docker compose up -d postgres redis
