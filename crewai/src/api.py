@@ -397,6 +397,12 @@ async def _persist_message_history(
     message_type: str,
     content: str,
     owner_id: Optional[str] = None,
+    chat_jid: Optional[str] = None,
+    is_group: bool = False,
+    group_jid: Optional[str] = None,
+    group_subject: Optional[str] = None,
+    participant_jid: Optional[str] = None,
+    bot_is_group_admin: Optional[bool] = None,
 ) -> None:
     """Persist message to PostgreSQL message_history when available."""
     if not _blackboard or not _blackboard._pool:
@@ -438,8 +444,10 @@ async def _persist_message_history(
                 """
                 INSERT INTO message_history (
                     owner_id, contact_id, phone_number, correlation_id,
-                    direction, channel, message_type, content
-                ) VALUES ($1, $2, $3, $4, $5, 'whatsapp', $6, $7)
+                    direction, channel, message_type, content,
+                    chat_jid, is_group, group_jid, group_subject,
+                    participant_jid, bot_is_group_admin
+                ) VALUES ($1, $2, $3, $4, $5, 'whatsapp', $6, $7, $8, $9, $10, $11, $12, $13)
                 """,
                 owner,
                 contact_id,
@@ -448,6 +456,12 @@ async def _persist_message_history(
                 db_direction,
                 db_message_type,
                 content,
+                chat_jid,
+                bool(is_group),
+                group_jid,
+                group_subject,
+                participant_jid,
+                bot_is_group_admin,
             )
         logger.info(
             "Persisted message_history row",
@@ -467,6 +481,154 @@ async def _persist_message_history(
                 "message_type": db_message_type,
             },
         )
+
+
+def _normalize_group_member_phone(jid: Optional[str]) -> Optional[str]:
+    digits = "".join(ch for ch in str(jid or "").split("@")[0] if ch.isdigit())
+    return digits or None
+
+
+async def _upsert_whatsapp_groups(
+    groups: list[dict[str, Any]], owner_id: Optional[str] = None
+) -> None:
+    if not _blackboard or not _blackboard._pool or not groups:
+        return
+
+    owner = _sanitize_owner_id(owner_id or _current_owner_id())
+
+    try:
+        async with _blackboard._pool.acquire() as conn:
+            async with conn.transaction():
+                for group in groups:
+                    group_jid = str(group.get("jid") or "").strip()
+                    if not group_jid:
+                        continue
+
+                    subject = str(group.get("subject") or "").strip() or group_jid
+                    participant_count = int(group.get("participantCount") or 0)
+                    bot_is_member = bool(group.get("botIsMember", True))
+                    bot_is_admin = bool(group.get("botIsAdmin", False))
+                    members = group.get("members") or []
+
+                    metadata_json = json.dumps(
+                        {
+                            "source": "connector",
+                            "participantCount": participant_count,
+                        }
+                    )
+
+                    group_row = await conn.fetchrow(
+                        """
+                        INSERT INTO whatsapp_groups (
+                            owner_id, group_jid, subject, participant_count,
+                            bot_is_member, bot_is_admin, last_seen_at, updated_at, metadata
+                        ) VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW(), $7::jsonb)
+                        ON CONFLICT (owner_id, group_jid) DO UPDATE SET
+                            subject = EXCLUDED.subject,
+                            participant_count = EXCLUDED.participant_count,
+                            bot_is_member = EXCLUDED.bot_is_member,
+                            bot_is_admin = EXCLUDED.bot_is_admin,
+                            last_seen_at = NOW(),
+                            updated_at = NOW(),
+                            metadata = COALESCE(whatsapp_groups.metadata, '{}'::jsonb) || EXCLUDED.metadata
+                        RETURNING id
+                        """,
+                        owner,
+                        group_jid,
+                        subject,
+                        participant_count,
+                        bot_is_member,
+                        bot_is_admin,
+                        metadata_json,
+                    )
+                    group_id = group_row["id"]
+
+                    for member in members:
+                        member_jid = str(member.get("jid") or "").strip()
+                        if not member_jid:
+                            continue
+
+                        await conn.execute(
+                            """
+                            INSERT INTO whatsapp_group_members (
+                                group_id, owner_id, group_jid, member_jid, phone_number,
+                                display_name, is_admin, is_superadmin, last_seen_at, updated_at, metadata
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW(), $9::jsonb)
+                            ON CONFLICT (owner_id, group_jid, member_jid) DO UPDATE SET
+                                phone_number = EXCLUDED.phone_number,
+                                display_name = COALESCE(EXCLUDED.display_name, whatsapp_group_members.display_name),
+                                is_admin = EXCLUDED.is_admin,
+                                is_superadmin = EXCLUDED.is_superadmin,
+                                last_seen_at = NOW(),
+                                updated_at = NOW(),
+                                metadata = COALESCE(whatsapp_group_members.metadata, '{}'::jsonb) || EXCLUDED.metadata
+                            """,
+                            group_id,
+                            owner,
+                            group_jid,
+                            member_jid,
+                            _normalize_group_member_phone(member_jid),
+                            member.get("displayName"),
+                            bool(member.get("isAdmin", False)),
+                            bool(member.get("isSuperAdmin", False)),
+                            json.dumps({"source": "connector"}),
+                        )
+    except Exception:
+        logger.exception(
+            "Failed to upsert WhatsApp groups",
+            extra={"owner_id": owner, "group_count": len(groups)},
+        )
+
+
+async def _get_persisted_whatsapp_groups(owner_id: Optional[str] = None) -> list[dict[str, Any]]:
+    if not _blackboard or not _blackboard._pool:
+        return []
+
+    owner = _sanitize_owner_id(owner_id or _current_owner_id())
+
+    async with _blackboard._pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                g.group_jid,
+                g.subject,
+                g.participant_count,
+                g.bot_is_member,
+                g.bot_is_admin,
+                COALESCE(
+                    jsonb_agg(
+                        jsonb_build_object(
+                            'jid', m.member_jid,
+                            'phoneNumber', m.phone_number,
+                            'displayName', m.display_name,
+                            'isAdmin', m.is_admin,
+                            'isSuperAdmin', m.is_superadmin
+                        )
+                        ORDER BY m.is_superadmin DESC, m.is_admin DESC, m.member_jid ASC
+                    ) FILTER (WHERE m.id IS NOT NULL),
+                    '[]'::jsonb
+                ) AS members
+            FROM whatsapp_groups g
+            LEFT JOIN whatsapp_group_members m
+                ON m.group_id = g.id
+            WHERE g.owner_id = $1
+            GROUP BY g.id
+            ORDER BY g.subject ASC, g.updated_at DESC
+            """,
+            owner,
+        )
+
+    return [
+        {
+            "jid": row["group_jid"],
+            "subject": row["subject"] or row["group_jid"],
+            "participantCount": row["participant_count"] or 0,
+            "botIsMember": bool(row["bot_is_member"]),
+            "botIsAdmin": bool(row["bot_is_admin"]),
+            "members": list(row["members"] or []),
+        }
+        for row in rows
+    ]
 
 
 def _fallback_contains_bad_language(text: str) -> bool:
@@ -2035,12 +2197,28 @@ async def admin_get_whatsapp_groups():
     health = _fetch_connector_json("/health")
     session = _fetch_connector_json("/session/status")
     session_id = health.get("sessionId") or session.get("sessionId")
+    owner = _current_owner_id()
 
     if not await _owner_can_access_whatsapp_session(session_id):
         return []
 
-    groups = _fetch_connector_json("/groups")
-    return groups.get("groups") or []
+    connector_groups: list[dict[str, Any]] = []
+    try:
+        groups_payload = _fetch_connector_json("/groups")
+        connector_groups = groups_payload.get("groups") or []
+        if connector_groups:
+            await _upsert_whatsapp_groups(connector_groups, owner_id=owner)
+    except Exception:
+        logger.warning(
+            "Failed to fetch live WhatsApp groups; falling back to persisted data",
+            extra={"owner_id": owner},
+        )
+
+    persisted_groups = await _get_persisted_whatsapp_groups(owner_id=owner)
+    if persisted_groups:
+        return persisted_groups
+
+    return connector_groups
 
 
 @app.post("/admin/api/whatsapp/session/reset")
@@ -2896,6 +3074,12 @@ class WhatsAppConnectorMessageRequest(BaseModel):
     media_id: Optional[str] = None
     audio_base64: Optional[str] = None
     audio_mime_type: Optional[str] = None
+    chat_jid: Optional[str] = None
+    is_group: bool = False
+    group_jid: Optional[str] = None
+    group_subject: Optional[str] = None
+    participant_jid: Optional[str] = None
+    bot_is_group_admin: Optional[bool] = None
 
 
 @app.post("/whatsapp/message")
@@ -2916,8 +3100,25 @@ async def whatsapp_receive_message(request: WhatsAppConnectorMessageRequest):
             "message_id": request.message_id,
             "message_type": request.message_type,
             "content_length": len(request.content or ""),
+            "is_group": request.is_group,
+            "group_jid": request.group_jid,
         },
     )
+
+    if request.group_jid:
+        await _upsert_whatsapp_groups(
+            [
+                {
+                    "jid": request.group_jid,
+                    "subject": request.group_subject or request.group_jid,
+                    "participantCount": 0,
+                    "botIsMember": True,
+                    "botIsAdmin": bool(request.bot_is_group_admin),
+                    "members": [],
+                }
+            ],
+            owner_id=_current_owner_id(),
+        )
 
     message_text = request.content or ""
     if request.message_type == "audio" and not message_text.strip() and request.audio_base64:
@@ -2976,6 +3177,13 @@ async def whatsapp_receive_message(request: WhatsAppConnectorMessageRequest):
                 direction="incoming",
                 message_type=request.message_type,
                 content=message_text,
+                owner_id=_current_owner_id(),
+                chat_jid=request.chat_jid or request.group_jid,
+                is_group=request.is_group,
+                group_jid=request.group_jid,
+                group_subject=request.group_subject,
+                participant_jid=request.participant_jid,
+                bot_is_group_admin=request.bot_is_group_admin,
             )
             logger.info(
                 "Inbound message persistence call completed",
@@ -3031,6 +3239,13 @@ async def whatsapp_receive_message(request: WhatsAppConnectorMessageRequest):
                 direction="outgoing",
                 message_type="text",
                 content=response,
+                owner_id=_current_owner_id(),
+                chat_jid=request.chat_jid or request.group_jid,
+                is_group=request.is_group,
+                group_jid=request.group_jid,
+                group_subject=request.group_subject,
+                participant_jid=request.participant_jid,
+                bot_is_group_admin=request.bot_is_group_admin,
             )
 
         logger.info(

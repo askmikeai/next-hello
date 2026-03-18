@@ -53,4 +53,7 @@
     <!-- Backend user accounts with admin approval workflow -->
     <include file="changesets/016-user-accounts.xml" relativeToChangelogFile="true"/>
 
+    <!-- WhatsApp group persistence and group message context -->
+    <include file="changesets/017-whatsapp-groups.xml" relativeToChangelogFile="true"/>
+
 </databaseChangeLog>

@@ -193,6 +193,20 @@ function isGroupAdminParticipant(participant = {}) {
   return participant?.admin === 'admin' || participant?.admin === 'superadmin' || participant?.isAdmin === true;
 }
 
+function isGroupSuperAdminParticipant(participant = {}) {
+  return participant?.admin === 'superadmin' || participant?.isSuperAdmin === true;
+}
+
+function summarizeGroupParticipant(participant = {}) {
+  const memberJid = String(participant?.id || participant?.jid || participant?.lid || '');
+  return {
+    jid: memberJid,
+    phoneNumber: normalizePhone(fromJid(memberJid)) || null,
+    isAdmin: isGroupAdminParticipant(participant),
+    isSuperAdmin: isGroupSuperAdminParticipant(participant),
+  };
+}
+
 function buildGroupSummary(metadata, session) {
   const identities = getSessionIdentitySet(session);
   const participants = Array.isArray(metadata?.participants) ? metadata.participants : [];
@@ -207,6 +221,7 @@ function buildGroupSummary(metadata, session) {
     participantCount: participants.length,
     botIsMember: !!botParticipant,
     botIsAdmin: !!botParticipant && isGroupAdminParticipant(botParticipant),
+    members: participants.map((participant) => summarizeGroupParticipant(participant)),
   };
 }
 
@@ -233,6 +248,28 @@ async function listSessionGroups(session, forceRefresh = false) {
 
   if (!forceRefresh && session.groupsCache.groups.length && Date.now() - session.groupsCache.updatedAt < GROUP_LIST_TTL_MS) {
     return session.groupsCache.groups;
+  }
+
+  try {
+    const rawGroups = await session.socket.groupFetchAllParticipating();
+    const groups = Object.values(rawGroups || {})
+      .map((metadata) => buildGroupSummary(metadata, session))
+      .filter((group) => group?.jid)
+      .sort((a, b) => a.subject.localeCompare(b.subject));
+
+    session.groupsCache = { groups, updatedAt: Date.now() };
+    for (const metadata of Object.values(rawGroups || {})) {
+      if (metadata?.id) {
+        session.knownGroupJids.add(metadata.id);
+        session.groupMetadataCache.set(metadata.id, { metadata, updatedAt: Date.now() });
+      }
+    }
+
+    if (groups.length) {
+      return groups;
+    }
+  } catch (error) {
+    logger.warn({ ownerId: session.ownerId, error: error.message }, 'Failed to fetch full WhatsApp group list');
   }
 
   const fallbackGroups = await Promise.all(
@@ -486,7 +523,7 @@ async function simulateRecordingPresence(session, jid, audioBytes = 0) {
 async function ensureSocketConnected(ownerId) {
   const session = getOrCreateSession(ownerId);
 
-  if (session.socket && session.isConnected) {
+  if (session.socket) {
     return session;
   }
 
@@ -680,6 +717,7 @@ async function ensureSocketConnected(ownerId) {
             audio_mime_type: audioMimeType,
             push_name: msg.pushName || null,
             media_id: null,
+            chat_jid: msg.key.remoteJid || msg.key.remoteJidAlt || null,
             is_group: groupContext.isGroup,
             group_jid: groupContext.groupJid,
             group_subject: groupContext.groupSubject,
