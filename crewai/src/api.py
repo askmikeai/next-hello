@@ -1751,6 +1751,69 @@ async def auth_admin_reset_password(user_id: str, request: Request):
 # ============================================================================
 
 
+@app.post("/admin/api/auth/delete-account")
+async def auth_delete_own_account(request: Request):
+    """Delete the calling user's account and ALL associated data (GDPR erasure)."""
+    if not _blackboard or not _blackboard._pool:
+        return {"success": False, "error": "database not available"}
+
+    body = await request.json()
+    confirm_password = (body.get("password") or "").strip()
+    if not confirm_password:
+        return {"success": False, "error": "password confirmation is required"}
+
+    owner = _current_owner_id()
+
+    async with _blackboard._pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id, email, password FROM user_accounts WHERE owner_id = $1",
+            owner,
+        )
+        if not row:
+            return {"success": False, "error": "account not found"}
+        if row["password"] != confirm_password:
+            return {"success": False, "error": "password is incorrect"}
+
+    # Delete all contact data for every phone this owner has
+    contact_phones = []
+    async with _blackboard._pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT phone_number FROM networking_contacts WHERE owner_id = $1",
+            owner,
+        )
+        contact_phones = [r["phone_number"] for r in rows]
+
+    erasure_summary = {}
+    for phone in contact_phones:
+        result = await _blackboard.delete_contact_data(phone, owner_id=owner)
+        erasure_summary[phone] = result
+
+    # Delete any remaining orphaned data for this owner
+    async with _blackboard._pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("DELETE FROM message_history WHERE owner_id = $1", owner)
+            await conn.execute("DELETE FROM swarm_event_log WHERE owner_id = $1", owner)
+            await conn.execute("DELETE FROM swarm_agent_state WHERE owner_id = $1", owner)
+            await conn.execute("DELETE FROM agent_activity_log WHERE owner_id = $1", owner)
+            await conn.execute("DELETE FROM pdl_person_enrichment WHERE owner_id = $1", owner)
+            await conn.execute("DELETE FROM pdl_company_enrichment WHERE owner_id = $1", owner)
+            await conn.execute(
+                "UPDATE media_files SET deleted_at = NOW() WHERE owner_id = $1 AND deleted_at IS NULL",
+                owner,
+            )
+            await conn.execute("DELETE FROM owner_settings WHERE owner_id = $1", owner)
+            await conn.execute("DELETE FROM whatsapp_sessions WHERE owner_id = $1", owner)
+            await conn.execute("DELETE FROM user_accounts WHERE owner_id = $1", owner)
+
+    logger.info(f"Account {owner} fully erased (GDPR deletion)")
+
+    return {
+        "success": True,
+        "erased_contacts": len(contact_phones),
+        "details": erasure_summary,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Per-owner settings
 # ---------------------------------------------------------------------------

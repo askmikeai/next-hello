@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: nexthello
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      containers:
+        - name: worker
+          image: OCIR_REGION.ocir.io/OCIR_NAMESPACE/nexthello-api:latest
+          command: ["python", "-m", "arq", "src.queue.worker.WorkerSettings"]
+          envFrom:
+            - configMapRef:
+                name: nexthello-config
+            - secretRef:
+                name: nexthello-secrets
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+      imagePullSecrets:
+        - name: ocir-pull-secret

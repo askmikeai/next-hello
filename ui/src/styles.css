@@ -447,3 +447,18 @@ textarea {
   font-size: 12px;
   padding: 6px 10px;
 }
+
+.danger-zone {
+  border-color: #dc2626;
+  margin-top: 16px;
+}
+
+.danger-zone legend {
+  color: #fca5a5;
+}
+
+.danger-zone p {
+  color: #fca5a5;
+  font-size: 13px;
+  margin: 0;
+}

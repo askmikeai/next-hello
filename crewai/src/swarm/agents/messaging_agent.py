@@ -68,6 +68,13 @@ class MessagingAgent(AutonomousAgent):
 
         return False
 
+    def _owner_headers(self, event: SwarmEvent) -> dict:
+        """Build headers with tenant context for internal API calls."""
+        owner = event.owner_id or ""
+        if owner:
+            return {"X-NextHello-User": owner}
+        return {}
+
     async def execute(self, event: SwarmEvent, contact: ContactState) -> List[SwarmEvent]:
         if event.event_type == EventType.VIDEO_COMPLETED:
             phone_number = "".join(
@@ -113,6 +120,7 @@ class MessagingAgent(AutonomousAgent):
                     "phone_number": phone_number,
                     "content": text,
                 },
+                headers=self._owner_headers(event),
             )
 
         if response.status_code != 200:
@@ -163,6 +171,7 @@ class MessagingAgent(AutonomousAgent):
                     "content": content,
                     "media_url": media_url,
                 },
+                headers=self._owner_headers(event),
             )
 
         if response.status_code != 200:
@@ -220,6 +229,7 @@ class MessagingAgent(AutonomousAgent):
                     "mime_type": mime_type,
                     "content": content,
                 },
+                headers=self._owner_headers(event),
             )
 
         if response.status_code != 200:

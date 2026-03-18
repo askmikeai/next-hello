@@ -1,0 +1,67 @@
+name: Build & Push Images to OCIR
+
+on:
+  push:
+    branches: [main, fix/admin-contract]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  OCIR_REGION: ${{ secrets.OCI_REGION }}        # e.g. iad
+  OCIR_ENDPOINT: ${{ secrets.OCI_REGION }}.ocir.io
+  OCIR_NAMESPACE: ${{ secrets.OCIR_NAMESPACE }} # tenancy object-storage namespace
+  OCIR_USER: ${{ secrets.OCIR_USER }}           # e.g. tenancy/username or oracleidentitycloudservice/user@email
+  OCIR_TOKEN: ${{ secrets.OCIR_TOKEN }}         # auth token (not password)
+
+jobs:
+  build:
+    name: Build & push container images
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Log in to OCIR
+        run: echo "$OCIR_TOKEN" | docker login "$OCIR_ENDPOINT" -u "$OCIR_USER" --password-stdin
+
+      - name: Set image tag
+        id: tag
+        run: echo "TAG=${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
+
+      # ── API image (also used by worker + swarm) ──
+      - name: Build API image
+        run: |
+          docker build -t $OCIR_ENDPOINT/$OCIR_NAMESPACE/nexthello-api:${{ steps.tag.outputs.TAG }} \
+                        -t $OCIR_ENDPOINT/$OCIR_NAMESPACE/nexthello-api:latest \
+                        ./crewai
+
+      - name: Push API image
+        run: |
+          docker push $OCIR_ENDPOINT/$OCIR_NAMESPACE/nexthello-api:${{ steps.tag.outputs.TAG }}
+          docker push $OCIR_ENDPOINT/$OCIR_NAMESPACE/nexthello-api:latest
+
+      # ── WhatsApp connector image ──
+      - name: Build WhatsApp image
+        run: |
+          docker build -t $OCIR_ENDPOINT/$OCIR_NAMESPACE/nexthello-whatsapp:${{ steps.tag.outputs.TAG }} \
+                        -t $OCIR_ENDPOINT/$OCIR_NAMESPACE/nexthello-whatsapp:latest \
+                        ./crewai/whatsapp-bridge
+
+      - name: Push WhatsApp image
+        run: |
+          docker push $OCIR_ENDPOINT/$OCIR_NAMESPACE/nexthello-whatsapp:${{ steps.tag.outputs.TAG }}
+          docker push $OCIR_ENDPOINT/$OCIR_NAMESPACE/nexthello-whatsapp:latest
+
+      # ── UI image (nginx + built static) ──
+      - name: Build UI image
+        run: |
+          docker build -t $OCIR_ENDPOINT/$OCIR_NAMESPACE/nexthello-ui:${{ steps.tag.outputs.TAG }} \
+                        -t $OCIR_ENDPOINT/$OCIR_NAMESPACE/nexthello-ui:latest \
+                        ./ui
+
+      - name: Push UI image
+        run: |
+          docker push $OCIR_ENDPOINT/$OCIR_NAMESPACE/nexthello-ui:${{ steps.tag.outputs.TAG }}
+          docker push $OCIR_ENDPOINT/$OCIR_NAMESPACE/nexthello-ui:latest

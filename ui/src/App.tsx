@@ -30,6 +30,7 @@ type Activity = {
   action: string;
   status: string;
   startedAt: string;
+  completedAt?: string | null;
 };
 
 type SwarmState = {
@@ -102,7 +103,7 @@ const AGENT_EMOJI: Record<string, string> = {
   messaging: "\u{1F4AC}",
 };
 
-const ACTIVE_WINDOW_MS = 30000;
+const ACTIVE_WINDOW_MS = 120000; // 2 minutes — keep nodes lit longer for visibility
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -177,6 +178,9 @@ export default function App() {
   const [newPassword, setNewPassword] = useState("");
   const [passwordSaving, setPasswordSaving] = useState(false);
   const [passwordMsg, setPasswordMsg] = useState("");
+  const [deleteConfirmPassword, setDeleteConfirmPassword] = useState("");
+  const [deleteConfirm, setDeleteConfirm] = useState(false);
+  const [deleteMsg, setDeleteMsg] = useState("");
 
   const api = useCallback(
     <T,>(path: string, init?: RequestInit) => apiJson<T>(path, init, ownerId),
@@ -388,6 +392,31 @@ export default function App() {
     }
   };
 
+  const deleteAccount = async () => {
+    if (!deleteConfirmPassword.trim()) {
+      setDeleteMsg("Enter your password to confirm.");
+      return;
+    }
+    setDeleteMsg("");
+    try {
+      const res = await api<{ success: boolean; error?: string }>(
+        "/admin/api/auth/delete-account",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password: deleteConfirmPassword }),
+        },
+      );
+      if (!res.success) {
+        setDeleteMsg(res.error || "Deletion failed.");
+        return;
+      }
+      signOut();
+    } catch {
+      setDeleteMsg("Deletion failed.");
+    }
+  };
+
   const updateSetting = (section: string, key: string, value: unknown) => {
     setSettingsDirty((prev) => ({
       ...prev,
@@ -515,11 +544,22 @@ export default function App() {
       if (!prev || Date.parse(a.startedAt) > Date.parse(prev.startedAt))
         recentByAgent.set(a.agentType, a);
     }
+
+    const isActive = (a: Activity): boolean => {
+      // Still in progress (no completedAt)
+      if (!a.completedAt) return true;
+      // Recently started or completed within the active window
+      const started = Date.parse(a.startedAt);
+      const completed = Date.parse(a.completedAt);
+      const relevantTs = Math.max(started, completed || 0);
+      return nowTs - relevantTs <= ACTIVE_WINDOW_MS;
+    };
+
     const active = new Set(
-      [...recentByAgent].filter(([, a]) => nowTs - Date.parse(a.startedAt) <= ACTIVE_WINDOW_MS).map(([n]) => n),
+      [...recentByAgent].filter(([, a]) => isActive(a)).map(([n]) => n),
     );
     const failed = new Set(
-      [...recentByAgent].filter(([, a]) => a.status === "failed" && nowTs - Date.parse(a.startedAt) <= ACTIVE_WINDOW_MS).map(([n]) => n),
+      [...recentByAgent].filter(([, a]) => a.status === "failed" && isActive(a)).map(([n]) => n),
     );
     const nodes: Node[] = [
       {
@@ -699,6 +739,30 @@ export default function App() {
             {settingsSaved && <span className="saved-note">Saved</span>}
           </div>
         </form>
+
+        <fieldset className="panel settings-section danger-zone">
+          <legend>Danger Zone</legend>
+          <p>Permanently delete your account and all associated data. This cannot be undone.</p>
+          {!deleteConfirm ? (
+            <button className="danger" onClick={() => setDeleteConfirm(true)}>Delete My Account</button>
+          ) : (
+            <div className="settings-subform">
+              <label>
+                Enter your password to confirm
+                <input
+                  type="password"
+                  value={deleteConfirmPassword}
+                  onChange={(e) => setDeleteConfirmPassword(e.target.value)}
+                />
+              </label>
+              <div className="actions">
+                <button className="danger" onClick={deleteAccount}>Confirm Delete Everything</button>
+                <button onClick={() => { setDeleteConfirm(false); setDeleteConfirmPassword(""); setDeleteMsg(""); }}>Cancel</button>
+              </div>
+              {deleteMsg && <p className="auth-error">{deleteMsg}</p>}
+            </div>
+          )}
+        </fieldset>
       </div>
     );
   }

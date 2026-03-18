@@ -483,7 +483,9 @@ class Blackboard:
                 json.dumps(event.payload),
                 event.causation_id,
                 event.correlation_id,
-                event.timestamp,
+                datetime.fromisoformat(event.timestamp)
+                if isinstance(event.timestamp, str)
+                else event.timestamp,
             )
 
     async def log_agent_activity_start(
@@ -717,6 +719,24 @@ class Blackboard:
                             owner,
                             contact_uuid,
                         )
+                    )
+
+                    # PDL enrichment data
+                    await conn.execute(
+                        "DELETE FROM pdl_person_enrichment WHERE owner_id = $1 AND contact_id = $2",
+                        owner,
+                        contact_uuid,
+                    )
+                    await conn.execute(
+                        "DELETE FROM pdl_company_enrichment WHERE owner_id = $1 AND contact_id = $2",
+                        owner,
+                        contact_uuid,
+                    )
+
+                    # Luma guest associations
+                    await conn.execute(
+                        "DELETE FROM contact_luma_associations WHERE contact_id = $1",
+                        contact_uuid,
                     )
 
                     deleted["contacts"] = _rows_affected(

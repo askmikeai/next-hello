@@ -1,0 +1,97 @@
+name: Deploy to OKE
+
+on:
+  workflow_run:
+    workflows: ["Build & Push Images to OCIR"]
+    types: [completed]
+    branches: [main, fix/admin-contract]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  OCI_REGION: ${{ secrets.OCI_REGION }}
+  OCIR_ENDPOINT: ${{ secrets.OCI_REGION }}.ocir.io
+  OCIR_NAMESPACE: ${{ secrets.OCIR_NAMESPACE }}
+
+jobs:
+  deploy:
+    name: Deploy to OKE cluster
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set image tag
+        id: tag
+        run: echo "TAG=${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
+
+      - name: Configure OCI CLI
+        uses: oracle-actions/configure-kubectl-oke@v1.5.1
+        with:
+          cluster: ${{ secrets.OKE_CLUSTER_OCID }}
+          tenancy: ${{ secrets.OCI_TENANCY_OCID }}
+          user: ${{ secrets.OCI_USER_OCID }}
+          fingerprint: ${{ secrets.OCI_FINGERPRINT }}
+          region: ${{ secrets.OCI_REGION }}
+          private_key: ${{ secrets.OCI_PRIVATE_KEY }}
+
+      - name: Create namespace if missing
+        run: kubectl apply -f k8s/base/namespace.yaml
+
+      - name: Ensure OCIR pull secret
+        run: |
+          kubectl -n nexthello create secret docker-registry ocir-pull-secret \
+            --docker-server=$OCIR_ENDPOINT \
+            --docker-username="${{ secrets.OCIR_USER }}" \
+            --docker-password="${{ secrets.OCIR_TOKEN }}" \
+            --docker-email="${{ secrets.OCIR_EMAIL }}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Apply base manifests
+        run: |
+          kubectl apply -f k8s/base/configmap.yaml
+          kubectl apply -f k8s/base/secrets.yaml
+          kubectl apply -f k8s/base/postgres.yaml
+          kubectl apply -f k8s/base/redis.yaml
+
+      - name: Wait for Postgres ready
+        run: kubectl -n nexthello rollout status statefulset/postgres --timeout=120s
+
+      - name: Run Liquibase migration
+        run: |
+          # Create configmap from migration files for the job
+          kubectl -n nexthello create configmap liquibase-changelog \
+            --from-file=migrations/liquibase/ \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          # Delete old job if exists, then apply
+          kubectl -n nexthello delete job liquibase-migrate --ignore-not-found
+          kubectl apply -f k8s/base/migration-job.yaml
+          kubectl -n nexthello wait --for=condition=complete job/liquibase-migrate --timeout=120s
+
+      - name: Deploy application services
+        env:
+          TAG: ${{ steps.tag.outputs.TAG }}
+        run: |
+          # Substitute image tags in manifests and apply
+          for manifest in api.yaml worker.yaml swarm.yaml whatsapp.yaml ui.yaml; do
+            sed "s|OCIR_REGION.ocir.io/OCIR_NAMESPACE|$OCIR_ENDPOINT/$OCIR_NAMESPACE|g" \
+              k8s/base/$manifest | \
+            sed "s|:latest|:$TAG|g" | \
+            kubectl apply -f -
+          done
+
+      - name: Wait for rollouts
+        run: |
+          kubectl -n nexthello rollout status deployment/api --timeout=120s
+          kubectl -n nexthello rollout status deployment/worker --timeout=120s
+          kubectl -n nexthello rollout status deployment/swarm --timeout=120s
+          kubectl -n nexthello rollout status deployment/ui --timeout=120s
+
+      - name: Show status
+        run: |
+          kubectl -n nexthello get pods
+          kubectl -n nexthello get svc

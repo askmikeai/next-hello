@@ -140,9 +140,14 @@ class PersonalizationAgent(AutonomousAgent):
             if message_type == "audio":
                 return True
 
-            # Skip greetings (coordinator handles immediate response)
+            # Skip greetings only for brand-new contacts (coordinator sends welcome)
             if intent == "greeting" and not contact.welcomed:
                 return False
+
+            # For already-welcomed contacts, respond to everything including greetings
+            if contact.welcomed:
+                return True
+
             # Generate response for questions and discussions
             if intent in ["question", "general", "introduction", "meeting_request"]:
                 return True

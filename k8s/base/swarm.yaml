@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: swarm
+  namespace: nexthello
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: swarm
+  template:
+    metadata:
+      labels:
+        app: swarm
+    spec:
+      containers:
+        - name: swarm
+          image: OCIR_REGION.ocir.io/OCIR_NAMESPACE/nexthello-api:latest
+          command: ["python", "-m", "src.swarm.runner"]
+          envFrom:
+            - configMapRef:
+                name: nexthello-config
+            - secretRef:
+                name: nexthello-secrets
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+      imagePullSecrets:
+        - name: ocir-pull-secret

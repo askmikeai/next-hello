@@ -1,0 +1,35 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: liquibase-migrate
+  namespace: nexthello
+  labels:
+    app: liquibase
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: liquibase
+          image: liquibase/liquibase:4.25
+          args:
+            - --url=jdbc:postgresql://postgres:5432/nexthello
+            - --username=nexthello
+            - --password=$(POSTGRES_PASSWORD)
+            - --changelog-file=changelog.xml
+            - update
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: nexthello-secrets
+                  key: POSTGRES_PASSWORD
+          volumeMounts:
+            - name: changelog
+              mountPath: /liquibase/changelog
+      volumes:
+        - name: changelog
+          configMap:
+            name: liquibase-changelog
