@@ -2029,6 +2029,20 @@ async def admin_get_whatsapp_connector():
     }
 
 
+@app.get("/admin/api/whatsapp/groups")
+async def admin_get_whatsapp_groups():
+    """List WhatsApp groups for the current owner session."""
+    health = _fetch_connector_json("/health")
+    session = _fetch_connector_json("/session/status")
+    session_id = health.get("sessionId") or session.get("sessionId")
+
+    if not await _owner_can_access_whatsapp_session(session_id):
+        return []
+
+    groups = _fetch_connector_json("/groups")
+    return groups.get("groups") or []
+
+
 @app.post("/admin/api/whatsapp/session/reset")
 async def admin_reset_whatsapp_session():
     """Reset connector auth state and force a fresh QR flow."""

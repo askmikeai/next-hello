@@ -56,6 +56,14 @@ type WhatsAppConnectorStatus = {
   qrAvailable: boolean;
 };
 
+type WhatsAppGroup = {
+  jid: string;
+  subject: string;
+  participantCount: number;
+  botIsAdmin: boolean;
+  botIsMember: boolean;
+};
+
 type SessionUser = {
   name: string;
   email: string;
@@ -162,6 +170,7 @@ export default function App() {
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState<ContactMessage[]>([]);
   const [connector, setConnector] = useState<WhatsAppConnectorStatus | null>(null);
+  const [groups, setGroups] = useState<WhatsAppGroup[]>([]);
   const [qrImageTick, setQrImageTick] = useState(() => Date.now());
   const [qrImageErrored, setQrImageErrored] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -263,6 +272,7 @@ export default function App() {
     setActivities([]);
     setStates([]);
     setMessages([]);
+    setGroups([]);
     setStats(null);
     setSettings({});
     setSettingsDirty({});
@@ -299,12 +309,17 @@ export default function App() {
   const refreshConnector = useCallback(async () => {
     if (!session || session.status !== "approved") return;
     try {
-      const n = await api<WhatsAppConnectorStatus>("/admin/api/whatsapp/connector");
+      const [n, g] = await Promise.all([
+        api<WhatsAppConnectorStatus>("/admin/api/whatsapp/connector"),
+        api<WhatsAppGroup[]>("/admin/api/whatsapp/groups"),
+      ]);
       setConnector(n);
+      setGroups(g);
       setQrImageErrored(false);
       if (!n.connected) setQrImageTick(Date.now());
     } catch {
       setConnector(null);
+      setGroups([]);
       setQrImageErrored(true);
     }
   }, [api, session]);
@@ -323,6 +338,11 @@ export default function App() {
   const qrImageSrc = connector?.connected
     ? `/admin/api/whatsapp/qr.png?owner=${encodeURIComponent(ownerId)}`
     : `/admin/api/whatsapp/qr.png?owner=${encodeURIComponent(ownerId)}&t=${qrImageTick}`;
+
+  const nonAdminGroups = useMemo(
+    () => groups.filter((group) => group.botIsMember && !group.botIsAdmin),
+    [groups],
+  );
 
   /* ---- Settings ---------------------------------------------------- */
 
@@ -806,6 +826,29 @@ export default function App() {
           <div className="actions" style={{ flexDirection: "column", gap: 6 }}>
             <button onClick={() => setPage("settings")}>Open Settings / API Keys</button>
             <button onClick={refreshCRM} disabled={loading}>Refresh Contacts</button>
+          </div>
+        </article>
+
+        <article className="panel onboarding-card">
+          <h2>Group Chats</h2>
+          {nonAdminGroups.length > 0 && (
+            <p className="group-warning">
+              Autonomous replies are disabled in {nonAdminGroups.length} group{nonAdminGroups.length === 1 ? "" : "s"} where the bot is not an admin.
+            </p>
+          )}
+          <div className="group-list">
+            {groups.length ? groups.map((group) => (
+              <div key={group.jid} className="group-item">
+                <div>
+                  <strong>{group.subject || group.jid}</strong>
+                  <div className="group-meta">{group.participantCount || 0} members</div>
+                  <div className="group-jid">{group.jid}</div>
+                </div>
+                <span className={`group-badge ${group.botIsAdmin ? "admin" : "member"}`}>
+                  {group.botIsAdmin ? "Admin" : "Member"}
+                </span>
+              </div>
+            )) : <p className="group-empty">No group chats detected for this session.</p>}
           </div>
         </article>
       </section>

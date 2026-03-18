@@ -34,6 +34,8 @@ const TYPING_MS_PER_CHAR = Number(process.env.TYPING_MS_PER_CHAR || 65);
 const RECORDING_MIN_DELAY_MS = Number(process.env.RECORDING_MIN_DELAY_MS || 2500);
 const RECORDING_MAX_DELAY_MS = Number(process.env.RECORDING_MAX_DELAY_MS || 8000);
 const RECORDING_MS_PER_KB = Number(process.env.RECORDING_MS_PER_KB || 260);
+const GROUP_METADATA_TTL_MS = Number(process.env.GROUP_METADATA_TTL_MS || 60000);
+const GROUP_LIST_TTL_MS = Number(process.env.GROUP_LIST_TTL_MS || 30000);
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 
@@ -98,6 +100,10 @@ function toJid(phone) {
   return `${normalizePhone(phone)}@s.whatsapp.net`;
 }
 
+function isGroupJid(jid) {
+  return typeof jid === 'string' && jid.endsWith('@g.us');
+}
+
 function fromJid(jid) {
   return String(jid || '').split('@')[0] || '';
 }
@@ -150,6 +156,147 @@ function buildQrText(qrPayload) {
   return rendered;
 }
 
+function comparableJidValues(jid) {
+  const value = String(jid || '').trim().toLowerCase();
+  if (!value) return [];
+
+  const [user = '', domain = ''] = value.split('@');
+  const bareUser = user.split(':')[0];
+  const values = new Set([value]);
+
+  if (user) values.add(user);
+  if (bareUser) values.add(bareUser);
+  if (domain && bareUser) values.add(`${bareUser}@${domain}`);
+
+  return Array.from(values).filter(Boolean);
+}
+
+function getSessionIdentitySet(session) {
+  const values = new Set();
+  const candidates = [
+    session?.socket?.user?.id,
+    session?.socket?.user?.lid,
+    session?.socket?.authState?.creds?.me?.id,
+    session?.socket?.authState?.creds?.me?.lid,
+  ];
+
+  for (const candidate of candidates) {
+    for (const comparable of comparableJidValues(candidate)) {
+      values.add(comparable);
+    }
+  }
+
+  return values;
+}
+
+function isGroupAdminParticipant(participant = {}) {
+  return participant?.admin === 'admin' || participant?.admin === 'superadmin' || participant?.isAdmin === true;
+}
+
+function buildGroupSummary(metadata, session) {
+  const identities = getSessionIdentitySet(session);
+  const participants = Array.isArray(metadata?.participants) ? metadata.participants : [];
+  const botParticipant = participants.find((participant) => {
+    const jid = participant?.id || participant?.jid || participant?.lid;
+    return comparableJidValues(jid).some((value) => identities.has(value));
+  });
+
+  return {
+    jid: String(metadata?.id || ''),
+    subject: String(metadata?.subject || metadata?.name || metadata?.id || ''),
+    participantCount: participants.length,
+    botIsMember: !!botParticipant,
+    botIsAdmin: !!botParticipant && isGroupAdminParticipant(botParticipant),
+  };
+}
+
+async function getGroupMetadata(session, groupJid, forceRefresh = false) {
+  if (!session?.socket || !groupJid) return null;
+
+  const cached = session.groupMetadataCache.get(groupJid);
+  if (!forceRefresh && cached && Date.now() - cached.updatedAt < GROUP_METADATA_TTL_MS) {
+    return cached.metadata;
+  }
+
+  try {
+    const metadata = await session.socket.groupMetadata(groupJid);
+    session.groupMetadataCache.set(groupJid, { metadata, updatedAt: Date.now() });
+    return metadata;
+  } catch (error) {
+    logger.warn({ ownerId: session.ownerId, groupJid, error: error.message }, 'Failed to load WhatsApp group metadata');
+    return cached?.metadata || null;
+  }
+}
+
+async function listSessionGroups(session, forceRefresh = false) {
+  if (!session?.socket || !session.isConnected) return [];
+
+  if (!forceRefresh && session.groupsCache.groups.length && Date.now() - session.groupsCache.updatedAt < GROUP_LIST_TTL_MS) {
+    return session.groupsCache.groups;
+  }
+
+  const fallbackGroups = await Promise.all(
+    Array.from(session.knownGroupJids).map(async (groupJid) => {
+      const metadata = await getGroupMetadata(session, groupJid);
+      if (!metadata) {
+        return {
+          jid: groupJid,
+          subject: groupJid,
+          participantCount: 0,
+          botIsMember: true,
+          botIsAdmin: false,
+        };
+      }
+
+      return buildGroupSummary(metadata, session);
+    })
+  );
+
+  const groups = fallbackGroups
+    .filter((group) => group?.jid)
+    .sort((a, b) => a.subject.localeCompare(b.subject));
+
+  session.groupsCache = { groups, updatedAt: Date.now() };
+  return groups;
+}
+
+async function getGroupContext(session, key = {}) {
+  const remoteJid = key.remoteJid || key.remoteJidAlt || '';
+  if (!isGroupJid(remoteJid)) {
+    return {
+      isGroup: false,
+      groupJid: null,
+      groupSubject: null,
+      participantJid: key.participant || key.participantAlt || null,
+      botIsAdmin: false,
+    };
+  }
+
+  const metadata = await getGroupMetadata(session, remoteJid);
+  const summary = metadata ? buildGroupSummary(metadata, session) : null;
+  session.groupsCache.updatedAt = 0;
+
+  return {
+    isGroup: true,
+    groupJid: remoteJid,
+    groupSubject: summary?.subject || remoteJid,
+    participantJid: key.participant || key.participantAlt || null,
+    botIsAdmin: !!summary?.botIsAdmin,
+  };
+}
+
+function rememberGroupJids(session, chats = []) {
+  for (const chat of chats) {
+    const groupJid = typeof chat === 'string' ? chat : chat?.id;
+    if (!isGroupJid(groupJid)) continue;
+    session.knownGroupJids.add(groupJid);
+  }
+
+  if (chats.length) {
+    session.groupsCache.updatedAt = 0;
+  }
+}
+
 function getOrCreateSession(ownerId) {
   const owner = normalizeOwnerId(ownerId);
   const existing = sessions.get(owner);
@@ -173,6 +320,9 @@ function getOrCreateSession(ownerId) {
     isResettingSession: false,
     backupTimer: null,
     latestQrPayload: null,
+    groupMetadataCache: new Map(),
+    groupsCache: { groups: [], updatedAt: 0 },
+    knownGroupJids: new Set(),
   };
 
   sessions.set(owner, session);
@@ -378,6 +528,34 @@ async function ensureSocketConnected(ownerId) {
       scheduleBackup(session);
     });
 
+    session.socket.ev.on('chats.set', ({ chats }) => {
+      rememberGroupJids(session, chats || []);
+    });
+
+    session.socket.ev.on('chats.upsert', (chats) => {
+      rememberGroupJids(session, chats || []);
+    });
+
+    session.socket.ev.on('chats.update', (chats) => {
+      rememberGroupJids(session, chats || []);
+    });
+
+    session.socket.ev.on('messages.update', (updates) => {
+      rememberGroupJids(session, (updates || []).map((update) => ({ id: update?.key?.remoteJid })));
+    });
+
+    session.socket.ev.on('message-receipt.update', (updates) => {
+      rememberGroupJids(session, (updates || []).map((update) => ({ id: update?.key?.remoteJid })));
+    });
+
+    session.socket.ev.on('groups.update', (groups) => {
+      rememberGroupJids(session, groups || []);
+    });
+
+    session.socket.ev.on('group-participants.update', (update) => {
+      rememberGroupJids(session, update?.id ? [{ id: update.id }] : []);
+    });
+
     session.socket.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update;
 
@@ -394,6 +572,8 @@ async function ensureSocketConnected(ownerId) {
 
       if (connection === 'close') {
         session.isConnected = false;
+        session.knownGroupJids.clear();
+        session.groupsCache = { groups: [], updatedAt: 0 };
         const statusCode = lastDisconnect?.error?.output?.statusCode;
         const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
@@ -419,9 +599,25 @@ async function ensureSocketConnected(ownerId) {
       for (const msg of messages) {
         if (!msg?.key || msg.key.fromMe) continue;
 
+        const groupContext = await getGroupContext(session, msg.key);
+
         const phoneNumber = extractPhoneFromMessageKey(msg.key);
         if (!phoneNumber) {
           logger.warn({ ownerId: session.ownerId, key: serializeForLog(msg.key) }, 'Skipping inbound message with no phone number');
+          continue;
+        }
+
+        if (groupContext.isGroup && !groupContext.botIsAdmin) {
+          logger.info(
+            {
+              ownerId: session.ownerId,
+              phoneNumber,
+              groupJid: groupContext.groupJid,
+              groupSubject: groupContext.groupSubject,
+              participantJid: groupContext.participantJid,
+            },
+            'Skipping inbound group message because bot is not a group admin'
+          );
           continue;
         }
 
@@ -484,6 +680,11 @@ async function ensureSocketConnected(ownerId) {
             audio_mime_type: audioMimeType,
             push_name: msg.pushName || null,
             media_id: null,
+            is_group: groupContext.isGroup,
+            group_jid: groupContext.groupJid,
+            group_subject: groupContext.groupSubject,
+            participant_jid: groupContext.participantJid,
+            bot_is_group_admin: groupContext.botIsAdmin,
           },
           session.ownerId
         );
@@ -524,6 +725,9 @@ async function resetSession(ownerId) {
 
     session.socket = null;
     session.isConnected = false;
+    session.knownGroupJids.clear();
+    session.groupMetadataCache.clear();
+    session.groupsCache = { groups: [], updatedAt: 0 };
     cleanupQrFile(session);
 
     if (session.sessionStore) {
@@ -721,6 +925,20 @@ const server = http.createServer(async (req, res) => {
       success,
       ownerId,
       message: success ? 'Session restored. Restart not required.' : 'No session to restore',
+    });
+    return;
+  }
+
+  if (req.method === 'GET' && req.url.startsWith('/groups')) {
+    const session = getOrCreateSession(ownerFromUrl);
+    const groups = session.socket && session.isConnected
+      ? await listSessionGroups(session)
+      : session.groupsCache.groups;
+
+    sendJson(res, 200, {
+      ownerId: session.ownerId,
+      count: groups.length,
+      groups,
     });
     return;
   }
