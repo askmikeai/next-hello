@@ -23,18 +23,18 @@ scrape_configs:
     static_configs:
       - targets: ['localhost:9090']
 
-  # NextHello application metrics
-  - job_name: 'nexthello'
+  # NextHello API metrics
+  - job_name: 'nexthello-api'
     static_configs:
-      - targets: ['nexthello:3000']
+      - targets: ['api:8001']
     metrics_path: /metrics
     scrape_interval: 10s
     scrape_timeout: 5s
 
-  # WhatsApp service metrics
-  - job_name: 'whatsapp'
+  # Swarm agent metrics
+  - job_name: 'nexthello-swarm'
     static_configs:
-      - targets: ['host.docker.internal:3002']
+      - targets: ['swarm:9108']
     metrics_path: /metrics
     scrape_interval: 10s
     scrape_timeout: 5s

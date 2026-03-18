@@ -10,12 +10,18 @@ Orchestrates multiple agents to handle networking follow-up tasks:
 """
 
 from pathlib import Path
+import time
 from typing import Any, Optional, cast
 
 import yaml
 from crewai import Crew, Process, Task
 
 from ..agents import NetworkingAgents
+from ..metrics import (
+    estimate_cost_with_litellm,
+    extract_llm_usage,
+    observe_llm_call,
+)
 
 
 class NetworkingCrew:
@@ -63,6 +69,56 @@ class NetworkingCrew:
                 config[key] = config[key].format(**variables)
         return config
 
+    def _kickoff_with_metrics(self, *, operation: str, crew: Crew) -> Any:
+        model = "unknown"
+        try:
+            first_agent = crew.agents[0] if crew.agents else None
+            llm = getattr(first_agent, "llm", None)
+            llm_model = getattr(llm, "model", None)
+            if isinstance(llm_model, str) and llm_model.strip():
+                model = llm_model
+        except Exception:
+            model = "unknown"
+
+        started = time.perf_counter()
+        try:
+            result = crew.kickoff()
+            usage = extract_llm_usage(result)
+            total_cost = usage.get("total_cost")
+            cost_source = "reported"
+            if total_cost is None:
+                estimated = estimate_cost_with_litellm(
+                    model=model,
+                    prompt_tokens=usage.get("prompt_tokens"),
+                    completion_tokens=usage.get("completion_tokens"),
+                )
+                if estimated is not None:
+                    total_cost = estimated
+                    cost_source = "estimated"
+
+            observe_llm_call(
+                agent="networking-crew",
+                operation=operation,
+                model=model,
+                status="success",
+                duration_seconds=time.perf_counter() - started,
+                prompt_tokens=usage.get("prompt_tokens"),
+                completion_tokens=usage.get("completion_tokens"),
+                total_tokens=usage.get("total_tokens"),
+                total_cost_usd=total_cost,
+                cost_source=cost_source,
+            )
+            return result
+        except Exception:
+            observe_llm_call(
+                agent="networking-crew",
+                operation=operation,
+                model=model,
+                status="error",
+                duration_seconds=time.perf_counter() - started,
+            )
+            raise
+
     def research_contact(
         self,
         phone_number: str,
@@ -102,7 +158,7 @@ class NetworkingCrew:
             verbose=True,
         )
 
-        return crew.kickoff()
+        return self._kickoff_with_metrics(operation="research_contact", crew=crew)
 
     def qualify_lead(
         self,
@@ -142,7 +198,7 @@ class NetworkingCrew:
             verbose=True,
         )
 
-        return crew.kickoff()
+        return self._kickoff_with_metrics(operation="qualify_lead", crew=crew)
 
     def generate_welcome_message(
         self,
@@ -183,7 +239,7 @@ class NetworkingCrew:
             verbose=True,
         )
 
-        return crew.kickoff()
+        return self._kickoff_with_metrics(operation="generate_welcome_message", crew=crew)
 
     def generate_video_script(
         self,
@@ -228,7 +284,7 @@ class NetworkingCrew:
             verbose=True,
         )
 
-        return crew.kickoff()
+        return self._kickoff_with_metrics(operation="generate_video_script", crew=crew)
 
     def generate_video(
         self,
@@ -261,7 +317,7 @@ class NetworkingCrew:
             verbose=True,
         )
 
-        return crew.kickoff()
+        return self._kickoff_with_metrics(operation="generate_video", crew=crew)
 
     def generate_voice_message(
         self,
@@ -294,7 +350,7 @@ class NetworkingCrew:
             verbose=True,
         )
 
-        return crew.kickoff()
+        return self._kickoff_with_metrics(operation="generate_voice_message", crew=crew)
 
     def sync_to_crm(
         self,
@@ -342,7 +398,7 @@ class NetworkingCrew:
             verbose=True,
         )
 
-        return crew.kickoff()
+        return self._kickoff_with_metrics(operation="sync_to_crm", crew=crew)
 
     def research_and_qualify(
         self,
@@ -402,7 +458,7 @@ class NetworkingCrew:
             verbose=True,
         )
 
-        return crew.kickoff()
+        return self._kickoff_with_metrics(operation="research_and_qualify", crew=crew)
 
     def full_pipeline(
         self,
@@ -535,7 +591,7 @@ class NetworkingCrew:
             verbose=True,
         )
 
-        return crew.kickoff()
+        return self._kickoff_with_metrics(operation="full_pipeline", crew=crew)
 
     def recommend_follow_up(
         self,
@@ -616,4 +672,4 @@ class NetworkingCrew:
             verbose=True,
         )
 
-        return crew.kickoff()
+        return self._kickoff_with_metrics(operation="recommend_follow_up", crew=crew)

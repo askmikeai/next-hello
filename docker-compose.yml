@@ -172,6 +172,8 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-nexthello}:${POSTGRES_PASSWORD:-nexthello_dev}@postgres:5432/${POSTGRES_DB:-nexthello}
     volumes:
       - nexthello-media:/app/data/media
+    ports:
+      - "9108:9108"
     command: ["python", "-m", "src.swarm.runner"]
     restart: unless-stopped
     logging:
@@ -278,6 +280,57 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # ──────────────────────────────────────────────────────────────────────────
+  # PROMETHEUS - Metrics storage and scraping
+  # UI query endpoint: http://localhost:9090
+  # ──────────────────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: nexthello-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - nexthello-prometheus:/prometheus
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # GRAFANA - UI for Loki logs and dashboards
+  # UI: http://localhost:3002
+  # Login: admin / admin (change via env in production)
+  # ──────────────────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:11.1.4
+    container_name: nexthello-grafana-ui
+    depends_on:
+      - loki
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./monitoring/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./monitoring/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - nexthello-grafana:/var/lib/grafana
+    ports:
+      - "3002:3000"
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # VOLUMES
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -294,6 +347,10 @@ volumes:
     name: nexthello-agent-errors
   nexthello-loki:
     name: nexthello-loki
+  nexthello-grafana:
+    name: nexthello-grafana
+  nexthello-prometheus:
+    name: nexthello-prometheus
 
 networks:
   default:
