@@ -34,6 +34,8 @@ class EventType(str, Enum):
     MESSAGE_RECEIVED = "message.received"
     MESSAGE_SEND = "message.send"
     MESSAGE_SENT = "message.sent"
+    GROUP_MESSAGE_RECEIVED = "group.message.received"
+    GROUP_MODERATION_ACTIONED = "group.moderation.actioned"
 
     # Research Events
     RESEARCH_NEEDED = "research.needed"
@@ -180,6 +182,7 @@ class SwarmEvent:
 STREAM_NAMES = {
     "contact": "swarm:events:contact",
     "message": "swarm:events:message",
+    "group": "swarm:events:group",
     "research": "swarm:events:research",
     "qualification": "swarm:events:qualification",
     "video": "swarm:events:video",

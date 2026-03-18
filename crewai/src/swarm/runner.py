@@ -23,6 +23,7 @@ from .agents import (
     PersonalizationAgent,
     MessagingAgent,
     WhatsAppCleanupAgent,
+    WhatsAppModerationAgent,
     VideoAgent,
     VoiceAgent,
     CRMAgent,
@@ -125,6 +126,7 @@ class SwarmRunner:
         self.agent_pool.add_agent(PersonalizationAgent(self.eventbus, self.blackboard))
         self.agent_pool.add_agent(MessagingAgent(self.eventbus, self.blackboard))
         self.agent_pool.add_agent(WhatsAppCleanupAgent(self.eventbus, self.blackboard))
+        self.agent_pool.add_agent(WhatsAppModerationAgent(self.eventbus, self.blackboard))
         self.agent_pool.add_agent(VideoAgent(self.eventbus, self.blackboard))
         self.agent_pool.add_agent(VoiceAgent(self.eventbus, self.blackboard))
         self.agent_pool.add_agent(CRMAgent(self.eventbus, self.blackboard))

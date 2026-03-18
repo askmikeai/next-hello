@@ -50,6 +50,30 @@ type ContactMessage = {
   content: string;
 };
 
+type GroupMessage = {
+  id: string;
+  correlationId?: string | null;
+  direction: "incoming" | "outgoing" | "inbound" | "outbound";
+  content: string;
+  createdAt: string;
+  participantJid?: string | null;
+  participantName?: string | null;
+  participantPhoneNumber?: string | null;
+  messageType?: string;
+};
+
+type ModerationAction = {
+  id: string;
+  messageId?: string | null;
+  actionType: "warn" | "delete" | "kick" | "skip";
+  status: "completed" | "failed" | "skipped";
+  details?: Record<string, unknown>;
+  createdAt: string;
+  participantJid?: string | null;
+  participantName?: string | null;
+  participantPhoneNumber?: string | null;
+};
+
 type WhatsAppConnectorStatus = {
   available: boolean;
   connected: boolean;
@@ -62,6 +86,22 @@ type WhatsAppGroup = {
   participantCount: number;
   botIsAdmin: boolean;
   botIsMember: boolean;
+  members?: WhatsAppGroupMember[];
+};
+
+type WhatsAppGroupMember = {
+  jid: string;
+  phoneNumber?: string | null;
+  displayName?: string | null;
+  isAdmin?: boolean;
+  isSuperAdmin?: boolean;
+};
+
+type GroupModerationOverride = {
+  moderation_mode?: boolean;
+  moderation_guidelines?: string;
+  moderation_warning_template?: string;
+  moderation_window_hours?: number;
 };
 
 type SessionUser = {
@@ -145,6 +185,16 @@ const apiJson = async <T,>(
 const maskSecret = (v: string) =>
   v.length > 8 ? v.slice(0, 4) + "***" + v.slice(-4) : v ? "***" : "";
 
+const groupMemberLabel = (member: WhatsAppGroupMember): string =>
+  member.displayName || member.phoneNumber || "Unknown WhatsApp member";
+
+const moderationActionLabel = (actionType: ModerationAction["actionType"]): string => {
+  if (actionType === "warn") return "Warned";
+  if (actionType === "delete") return "Deleted";
+  if (actionType === "kick") return "Kicked";
+  return "Skipped";
+};
+
 /* ------------------------------------------------------------------ */
 /*  App                                                                */
 /* ------------------------------------------------------------------ */
@@ -157,7 +207,7 @@ export default function App() {
   const [authPassword, setAuthPassword] = useState("");
   const [authError, setAuthError] = useState("");
 
-  const [page, setPage] = useState<"dashboard" | "settings">("dashboard");
+  const [page, setPage] = useState<"dashboard" | "settings" | "groups">("dashboard");
 
   const ownerId = session?.email.toLowerCase().trim() || "";
 
@@ -171,6 +221,11 @@ export default function App() {
   const [messages, setMessages] = useState<ContactMessage[]>([]);
   const [connector, setConnector] = useState<WhatsAppConnectorStatus | null>(null);
   const [groups, setGroups] = useState<WhatsAppGroup[]>([]);
+  const [groupMessages, setGroupMessages] = useState<GroupMessage[]>([]);
+  const [groupModerationActions, setGroupModerationActions] = useState<ModerationAction[]>([]);
+  const [selectedGroupJid, setSelectedGroupJid] = useState<string | null>(null);
+  const [contactSearch, setContactSearch] = useState("");
+  const [groupSearch, setGroupSearch] = useState("");
   const [qrImageTick, setQrImageTick] = useState(() => Date.now());
   const [qrImageErrored, setQrImageErrored] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -200,6 +255,56 @@ export default function App() {
     () => contacts.find((c) => c.phone_number === selectedId || c.id === selectedId) ?? null,
     [contacts, selectedId],
   );
+
+  const selectedGroup = useMemo(
+    () => groups.find((group) => group.jid === selectedGroupJid) ?? null,
+    [groups, selectedGroupJid],
+  );
+
+  const filteredContacts = useMemo(() => {
+    const query = contactSearch.trim().toLowerCase();
+    if (!query) return contacts;
+    return contacts.filter((contact) => {
+      const haystack = [
+        contact.phone_number,
+        contact.first_name,
+        contact.last_name,
+        contact.company_name,
+        contact.job_title,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(query);
+    });
+  }, [contactSearch, contacts]);
+
+  const filteredGroups = useMemo(() => {
+    const query = groupSearch.trim().toLowerCase();
+    if (!query) return groups;
+    return groups.filter((group) => {
+      const haystack = [
+        group.subject,
+        group.jid,
+        ...(group.members || []).map((member) => groupMemberLabel(member)),
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(query);
+    });
+  }, [groupSearch, groups]);
+
+  const moderationActionsByMessageId = useMemo(() => {
+    const map = new Map<string, ModerationAction[]>();
+    for (const action of groupModerationActions) {
+      if (!action.messageId) continue;
+      const existing = map.get(action.messageId) || [];
+      existing.push(action);
+      map.set(action.messageId, existing);
+    }
+    return map;
+  }, [groupModerationActions]);
 
   const turnsByPhone = useMemo(() => {
     const map = new Map<string, number>();
@@ -273,6 +378,8 @@ export default function App() {
     setStates([]);
     setMessages([]);
     setGroups([]);
+    setGroupMessages([]);
+    setGroupModerationActions([]);
     setStats(null);
     setSettings({});
     setSettingsDirty({});
@@ -315,6 +422,7 @@ export default function App() {
       ]);
       setConnector(n);
       setGroups(g);
+      setSelectedGroupJid((current) => current ?? g[0]?.jid ?? null);
       setQrImageErrored(false);
       if (!n.connected) setQrImageTick(Date.now());
     } catch {
@@ -450,6 +558,59 @@ export default function App() {
     return settings[section]?.[key] ?? "";
   };
 
+  const moderationOverrides = useMemo(
+    () =>
+      (getSettingValue("behavior", "moderation_group_overrides") as Record<
+        string,
+        GroupModerationOverride
+      > | undefined) || {},
+    [settings, settingsDirty],
+  );
+
+  const selectedGroupModeration = useMemo(() => {
+    const behavior = (settings.behavior || {}) as Record<string, unknown>;
+    const behaviorDirty = (settingsDirty.behavior || {}) as Record<string, unknown>;
+    const base = {
+      moderation_mode: Boolean(
+        behaviorDirty.moderation_mode ?? behavior.moderation_mode ?? false,
+      ),
+      moderation_guidelines: String(
+        behaviorDirty.moderation_guidelines ?? behavior.moderation_guidelines ?? "",
+      ),
+      moderation_warning_template: String(
+        behaviorDirty.moderation_warning_template ?? behavior.moderation_warning_template ?? "",
+      ),
+      moderation_window_hours: Number(
+        behaviorDirty.moderation_window_hours ?? behavior.moderation_window_hours ?? 48,
+      ),
+    };
+    if (!selectedGroupJid) return base;
+    return {
+      ...base,
+      ...(moderationOverrides[selectedGroupJid] || {}),
+    };
+  }, [moderationOverrides, selectedGroupJid, settings, settingsDirty]);
+
+  const updateGroupModerationSetting = (
+    groupJid: string,
+    key: keyof GroupModerationOverride,
+    value: boolean | number | string,
+  ) => {
+    const nextOverrides: Record<string, GroupModerationOverride> = {
+      ...moderationOverrides,
+      [groupJid]: {
+        ...(moderationOverrides[groupJid] || {}),
+        [key]: value,
+      },
+    };
+    updateSetting("behavior", "moderation_group_overrides", nextOverrides);
+  };
+
+  const openGroupPage = (groupJid?: string) => {
+    if (groupJid) setSelectedGroupJid(groupJid);
+    setPage("groups");
+  };
+
   const toggleReveal = (path: string) => {
     setRevealSecrets((prev) => {
       const next = new Set(prev);
@@ -524,8 +685,47 @@ export default function App() {
   }, [selected?.phone_number, activities, session]);
 
   useEffect(() => {
-    if (page === "settings") void loadSettings();
+    if (page === "settings" || page === "groups") void loadSettings();
   }, [page, loadSettings]);
+
+  useEffect(() => {
+    if (!groups.length) {
+      setSelectedGroupJid(null);
+      setGroupMessages([]);
+      return;
+    }
+    if (!selectedGroupJid || !groups.some((group) => group.jid === selectedGroupJid)) {
+      setSelectedGroupJid(groups[0].jid);
+    }
+  }, [groups, selectedGroupJid]);
+
+  useEffect(() => {
+    if (!session || session.status !== "approved" || !selectedGroupJid) {
+      setGroupMessages([]);
+      setGroupModerationActions([]);
+      return;
+    }
+
+    const loadGroupData = async () => {
+      try {
+        const [items, actions] = await Promise.all([
+          api<GroupMessage[]>(
+            `/admin/api/whatsapp/groups/${encodeURIComponent(selectedGroupJid)}/messages?limit=100`,
+          ),
+          api<ModerationAction[]>(
+            `/admin/api/whatsapp/groups/${encodeURIComponent(selectedGroupJid)}/moderation-actions?limit=100`,
+          ),
+        ]);
+        setGroupMessages(items);
+        setGroupModerationActions(actions);
+      } catch {
+        setGroupMessages([]);
+        setGroupModerationActions([]);
+      }
+    };
+
+    void loadGroupData();
+  }, [api, selectedGroupJid, session]);
 
   /* ---- Dashboard actions ------------------------------------------- */
 
@@ -787,6 +987,233 @@ export default function App() {
     );
   }
 
+  if (page === "groups") {
+    return (
+      <div className="app">
+        <header className="topbar">
+          <div className="title-row">
+            <h1>Group Chats</h1>
+            <span className="tenant-badge">{session.email}</span>
+          </div>
+          <div className="actions">
+            <button onClick={() => setPage("dashboard")}>Dashboard</button>
+            <button onClick={() => setPage("settings")}>All Settings</button>
+            <button onClick={signOut}>Sign Out</button>
+          </div>
+        </header>
+
+        <main className="group-page-grid">
+          <aside className="panel group-sidebar">
+            <div className="panel-toolbar">
+              <div>
+                <h2>Search Groups</h2>
+                <p className="group-empty">Browse every group chat and open its moderation settings.</p>
+              </div>
+              <input
+                value={groupSearch}
+                onChange={(e) => setGroupSearch(e.target.value)}
+                placeholder="Search groups or members"
+              />
+            </div>
+            <div className="list group-scroll-list">
+              {filteredGroups.length ? filteredGroups.map((group) => (
+                <button
+                  key={group.jid}
+                  className={`group-nav-card ${selectedGroup?.jid === group.jid ? "active" : ""}`}
+                  onClick={() => setSelectedGroupJid(group.jid)}
+                >
+                  <span>{group.subject || group.jid}</span>
+                  <small>{group.participantCount || 0} members - {group.botIsAdmin ? "Admin" : "Member"}</small>
+                </button>
+              )) : <p className="group-empty">No group chats match that search.</p>}
+            </div>
+          </aside>
+
+          <section className="group-detail-stack">
+            {selectedGroup ? (
+              <>
+                <article className="panel">
+                  <div className="group-header-row">
+                    <div>
+                      <h2>{selectedGroup.subject || selectedGroup.jid}</h2>
+                      <p className="group-jid">{selectedGroup.jid}</p>
+                    </div>
+                    <span className={`group-badge ${selectedGroup.botIsAdmin ? "admin" : "member"}`}>
+                      {selectedGroup.botIsAdmin ? "Admin" : "Member"}
+                    </span>
+                  </div>
+                  <div className="group-summary-grid">
+                    <div className="card">
+                      <strong>{selectedGroup.participantCount || 0}</strong>
+                      <div className="group-meta">Members</div>
+                    </div>
+                    <div className="card">
+                      <strong>{selectedGroup.botIsAdmin ? "Enabled" : "Unavailable"}</strong>
+                      <div className="group-meta">Moderation eligibility</div>
+                    </div>
+                  </div>
+                </article>
+
+                <form className="panel group-settings-form" onSubmit={saveSettings}>
+                  <div className="panel-toolbar">
+                    <div>
+                      <h2>Group Settings</h2>
+                      <p className="group-empty">These settings override your global moderation defaults for this group.</p>
+                    </div>
+                    <div className="actions">
+                      <button type="submit" disabled={settingsSaving || !selectedGroup.botIsAdmin}>
+                        {settingsSaving ? "Saving..." : "Save Group Settings"}
+                      </button>
+                      {settingsSaved && <span className="saved-note">Saved</span>}
+                    </div>
+                  </div>
+
+                  {!selectedGroup.botIsAdmin && (
+                    <p className="group-warning">
+                      You are not an admin in this group, so moderation actions stay disabled here.
+                    </p>
+                  )}
+
+                  <label className="checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={!!selectedGroupModeration.moderation_mode}
+                      disabled={!selectedGroup.botIsAdmin}
+                      onChange={(e) => updateGroupModerationSetting(selectedGroup.jid, "moderation_mode", e.target.checked)}
+                    />
+                    Enable moderation mode for this group
+                  </label>
+
+                  <label>
+                    Moderation guidelines
+                    <textarea
+                      rows={6}
+                      disabled={!selectedGroup.botIsAdmin}
+                      value={String(selectedGroupModeration.moderation_guidelines ?? "")}
+                      onChange={(e) => updateGroupModerationSetting(selectedGroup.jid, "moderation_guidelines", e.target.value)}
+                    />
+                  </label>
+
+                  <label>
+                    Warning template
+                    <textarea
+                      rows={4}
+                      disabled={!selectedGroup.botIsAdmin}
+                      value={String(selectedGroupModeration.moderation_warning_template ?? "")}
+                      onChange={(e) => updateGroupModerationSetting(selectedGroup.jid, "moderation_warning_template", e.target.value)}
+                    />
+                  </label>
+
+                  <label>
+                    Strike window (hours)
+                    <input
+                      type="number"
+                      min={1}
+                      disabled={!selectedGroup.botIsAdmin}
+                      value={String(selectedGroupModeration.moderation_window_hours ?? 48)}
+                      onChange={(e) => updateGroupModerationSetting(selectedGroup.jid, "moderation_window_hours", Number(e.target.value))}
+                    />
+                  </label>
+                </form>
+
+                <article className="panel">
+                  <div className="panel-toolbar">
+                    <div>
+                      <h2>Members</h2>
+                      <p className="group-empty">Admins and members detected from the latest WhatsApp sync.</p>
+                    </div>
+                  </div>
+                  <div className="group-member-list">
+                    {(selectedGroup.members || []).length ? (selectedGroup.members || []).map((member) => (
+                      <div key={member.jid} className="group-member-item">
+                        <div>
+                          <strong>{groupMemberLabel(member)}</strong>
+                          <div className="group-jid">
+                            {member.phoneNumber ? member.jid : `WhatsApp identity: ${member.jid}`}
+                          </div>
+                        </div>
+                        <span className={`group-badge ${member.isAdmin ? "admin" : "member"}`}>
+                          {member.isSuperAdmin ? "Owner" : member.isAdmin ? "Admin" : "Member"}
+                        </span>
+                      </div>
+                    )) : <p className="group-empty">Members will appear here after the next sync.</p>}
+                  </div>
+                </article>
+
+                <article className="panel">
+                  <div className="panel-toolbar">
+                    <div>
+                      <h2>Messages</h2>
+                      <p className="group-empty">Recent group messages stored in PostgreSQL for this chat.</p>
+                    </div>
+                  </div>
+                  <div className="group-message-list">
+                    {groupMessages.length ? groupMessages.map((messageItem) => (
+                      <div key={messageItem.id} className={`message ${messageItem.direction === "incoming" || messageItem.direction === "inbound" ? "inbound" : "outbound"}`}>
+                        <span className="meta">
+                          {messageItem.direction === "incoming" || messageItem.direction === "inbound"
+                            ? `${messageItem.participantName || messageItem.participantPhoneNumber || "Member"} · ${messageItem.createdAt}`
+                            : `Assistant · ${messageItem.createdAt}`}
+                        </span>
+                        <p>{messageItem.content || "-"}</p>
+                        {(moderationActionsByMessageId.get(messageItem.correlationId || messageItem.id) || []).length > 0 && (
+                          <div className="moderation-chip-row">
+                            {(moderationActionsByMessageId.get(messageItem.correlationId || messageItem.id) || []).map((action) => (
+                              <span
+                                key={action.id}
+                                className={`moderation-chip ${action.actionType} ${action.status}`}
+                                title={String(action.details?.reason || action.details?.warning_text || "")}
+                              >
+                                {moderationActionLabel(action.actionType)}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )) : <p className="group-empty">No persisted group messages yet.</p>}
+                  </div>
+                </article>
+
+                <article className="panel">
+                  <div className="panel-toolbar">
+                    <div>
+                      <h2>Moderation Log</h2>
+                      <p className="group-empty">Every warn, delete, and kick action recorded by the moderation agent.</p>
+                    </div>
+                  </div>
+                  <div className="group-message-list">
+                    {groupModerationActions.length ? groupModerationActions.map((action) => (
+                      <div key={action.id} className="moderation-log-item">
+                        <div className="moderation-log-header">
+                          <strong>{moderationActionLabel(action.actionType)}</strong>
+                          <span className={`moderation-chip ${action.actionType} ${action.status}`}>
+                            {action.status}
+                          </span>
+                        </div>
+                        <div className="group-meta">
+                          {(action.participantName || action.participantPhoneNumber || action.participantJid || "Member")}
+                          {" · "}
+                          {action.createdAt}
+                        </div>
+                        {action.messageId && <div className="group-jid">Message: {action.messageId}</div>}
+                        {!!action.details?.reason && <p>{String(action.details.reason)}</p>}
+                        {!!action.details?.warning_text && <p>{String(action.details.warning_text)}</p>}
+                      </div>
+                    )) : <p className="group-empty">No moderation actions recorded yet.</p>}
+                  </div>
+                </article>
+              </>
+            ) : (
+              <article className="panel">
+                <p className="group-empty">Select a group to view its members and moderation settings.</p>
+              </article>
+            )}
+          </section>
+        </main>
+      </div>
+    );
+  }
+
   /* ---- Dashboard --------------------------------------------------- */
   return (
     <div className="app">
@@ -798,6 +1225,7 @@ export default function App() {
         <div className="actions">
           <button onClick={refreshCRM} disabled={loading}>Refresh CRM</button>
           <button onClick={refreshSwarm}>Refresh Swarm</button>
+          <button onClick={() => setPage("groups")}>Group Chats</button>
           <button onClick={() => setPage("settings")}>Settings</button>
           <button onClick={signOut}>Sign Out</button>
         </div>
@@ -825,6 +1253,7 @@ export default function App() {
           <h2>Quick Links</h2>
           <div className="actions" style={{ flexDirection: "column", gap: 6 }}>
             <button onClick={() => setPage("settings")}>Open Settings / API Keys</button>
+            <button onClick={() => setPage("groups")}>Open Group Chats</button>
             <button onClick={refreshCRM} disabled={loading}>Refresh Contacts</button>
           </div>
         </article>
@@ -836,9 +1265,14 @@ export default function App() {
               Autonomous replies are disabled in {nonAdminGroups.length} group{nonAdminGroups.length === 1 ? "" : "s"} where the bot is not an admin.
             </p>
           )}
+          <input
+            value={groupSearch}
+            onChange={(e) => setGroupSearch(e.target.value)}
+            placeholder="Search group chats"
+          />
           <div className="group-list">
-            {groups.length ? groups.map((group) => (
-              <div key={group.jid} className="group-item">
+            {filteredGroups.length ? filteredGroups.map((group) => (
+              <button key={group.jid} className="group-item group-item-button" onClick={() => openGroupPage(group.jid)}>
                 <div>
                   <strong>{group.subject || group.jid}</strong>
                   <div className="group-meta">{group.participantCount || 0} members</div>
@@ -847,7 +1281,7 @@ export default function App() {
                 <span className={`group-badge ${group.botIsAdmin ? "admin" : "member"}`}>
                   {group.botIsAdmin ? "Admin" : "Member"}
                 </span>
-              </div>
+              </button>
             )) : <p className="group-empty">No group chats detected for this session.</p>}
           </div>
         </article>
@@ -881,9 +1315,19 @@ export default function App() {
         </section>
 
         <aside className="panel">
-          <h2>CRM Contacts</h2>
+          <div className="panel-toolbar">
+            <div>
+              <h2>CRM Contacts</h2>
+              <p className="group-empty">Search and scroll through your contact list.</p>
+            </div>
+            <input
+              value={contactSearch}
+              onChange={(e) => setContactSearch(e.target.value)}
+              placeholder="Search contacts"
+            />
+          </div>
           <div className="list">
-            {contacts.map((c) => (
+            {filteredContacts.map((c) => (
               <button key={c.phone_number}
                 className={`contact ${selected?.phone_number === c.phone_number ? "active" : ""}`}
                 onClick={() => setSelectedId(c.phone_number)}>
@@ -891,6 +1335,7 @@ export default function App() {
                 <small>{c.company_name || "Unknown company"} - turns {turnsByPhone.get(c.phone_number) ?? c.total_turns ?? 0}</small>
               </button>
             ))}
+            {!filteredContacts.length && <p className="group-empty">No contacts match that search.</p>}
           </div>
         </aside>
 

@@ -10,6 +10,7 @@ from .voice_agent import VoiceAgent
 from .crm_agent import CRMAgent
 from .messaging_agent import MessagingAgent
 from .whatsapp_cleanup_agent import WhatsAppCleanupAgent
+from .whatsapp_moderation_agent import WhatsAppModerationAgent
 
 __all__ = [
     "ResearchAgent",
@@ -20,4 +21,5 @@ __all__ = [
     "CRMAgent",
     "MessagingAgent",
     "WhatsAppCleanupAgent",
+    "WhatsAppModerationAgent",
 ]

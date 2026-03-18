@@ -108,6 +108,11 @@ function fromJid(jid) {
   return String(jid || '').split('@')[0] || '';
 }
 
+function mentionLabelForParticipant(jid) {
+  const phone = normalizePhone(fromJid(jid));
+  return phone || fromJid(jid) || 'member';
+}
+
 function isPhoneJid(jid) {
   return typeof jid === 'string' && jid.includes('@s.whatsapp.net');
 }
@@ -142,6 +147,24 @@ function extractMessageDetails(message = {}) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForSessionConnected(session, timeoutMs = 12000) {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    if (session?.isConnected && session?.socket) {
+      return true;
+    }
+
+    if (!session?.socket && !session?.isStarting) {
+      await ensureSocketConnected(session.ownerId);
+    }
+
+    await sleep(250);
+  }
+
+  return !!(session?.isConnected && session?.socket);
 }
 
 function clamp(value, min, max) {
@@ -199,11 +222,53 @@ function isGroupSuperAdminParticipant(participant = {}) {
 
 function summarizeGroupParticipant(participant = {}) {
   const memberJid = String(participant?.id || participant?.jid || participant?.lid || '');
+  const rawPhone = String(participant?.phoneNumber || participant?.pn || '');
+  const memberDigits = normalizePhone(fromJid(memberJid));
+  const normalizedPhone = normalizePhone(fromJid(rawPhone)) || null;
+  const safePhone = memberJid.endsWith('@lid') && normalizedPhone === memberDigits ? null : normalizedPhone;
   return {
     jid: memberJid,
-    phoneNumber: normalizePhone(fromJid(memberJid)) || null,
+    phoneNumber: safePhone,
     isAdmin: isGroupAdminParticipant(participant),
     isSuperAdmin: isGroupSuperAdminParticipant(participant),
+  };
+}
+
+async function resolveParticipantPhone(session, participant = {}) {
+  const directPhone = normalizePhone(fromJid(participant?.phoneNumber || participant?.pn || ''));
+  const memberJid = String(participant?.id || participant?.jid || participant?.lid || '');
+  const memberDigits = normalizePhone(fromJid(memberJid));
+  if (directPhone && !(memberJid.endsWith('@lid') && directPhone === memberDigits)) {
+    return directPhone;
+  }
+
+  if (!memberJid || !memberJid.endsWith('@lid')) {
+    return null;
+  }
+
+  try {
+    const mapped = await session?.socket?.signalRepository?.lidMapping?.getPNForLID?.(memberJid);
+    return normalizePhone(fromJid(mapped || '')) || null;
+  } catch (error) {
+    logger.warn({ ownerId: session?.ownerId, memberJid, error: error.message }, 'Failed to resolve LID participant phone');
+    return null;
+  }
+}
+
+async function hydrateGroupSummary(session, metadata, summary) {
+  const participants = Array.isArray(metadata?.participants) ? metadata.participants : [];
+  const members = await Promise.all(participants.map(async (participant) => {
+    const base = summarizeGroupParticipant(participant);
+    const resolvedPhone = await resolveParticipantPhone(session, participant);
+    return {
+      ...base,
+      phoneNumber: resolvedPhone || base.phoneNumber,
+    };
+  }));
+
+  return {
+    ...summary,
+    members,
   };
 }
 
@@ -252,12 +317,15 @@ async function listSessionGroups(session, forceRefresh = false) {
 
   try {
     const rawGroups = await session.socket.groupFetchAllParticipating();
-    const groups = Object.values(rawGroups || {})
-      .map((metadata) => buildGroupSummary(metadata, session))
+    const groups = await Promise.all(Object.values(rawGroups || {}).map(async (metadata) => {
+      const summary = buildGroupSummary(metadata, session);
+      return hydrateGroupSummary(session, metadata, summary);
+    }));
+    const sortedGroups = groups
       .filter((group) => group?.jid)
       .sort((a, b) => a.subject.localeCompare(b.subject));
 
-    session.groupsCache = { groups, updatedAt: Date.now() };
+    session.groupsCache = { groups: sortedGroups, updatedAt: Date.now() };
     for (const metadata of Object.values(rawGroups || {})) {
       if (metadata?.id) {
         session.knownGroupJids.add(metadata.id);
@@ -265,8 +333,8 @@ async function listSessionGroups(session, forceRefresh = false) {
       }
     }
 
-    if (groups.length) {
-      return groups;
+    if (sortedGroups.length) {
+      return sortedGroups;
     }
   } catch (error) {
     logger.warn({ ownerId: session.ownerId, error: error.message }, 'Failed to fetch full WhatsApp group list');
@@ -285,7 +353,8 @@ async function listSessionGroups(session, forceRefresh = false) {
         };
       }
 
-      return buildGroupSummary(metadata, session);
+      const summary = buildGroupSummary(metadata, session);
+      return hydrateGroupSummary(session, metadata, summary);
     })
   );
 
@@ -523,12 +592,21 @@ async function simulateRecordingPresence(session, jid, audioBytes = 0) {
 async function ensureSocketConnected(ownerId) {
   const session = getOrCreateSession(ownerId);
 
-  if (session.socket) {
+  if (session.socket && session.isConnected) {
     return session;
   }
 
   if (session.isStarting) {
     return session;
+  }
+
+  if (session.socket && !session.isConnected) {
+    try {
+      session.socket.ws?.close();
+    } catch (_error) {
+      // ignore close errors before reconnecting
+    }
+    session.socket = null;
   }
 
   session.isStarting = true;
@@ -653,9 +731,8 @@ async function ensureSocketConnected(ownerId) {
               groupSubject: groupContext.groupSubject,
               participantJid: groupContext.participantJid,
             },
-            'Skipping inbound group message because bot is not a group admin'
+            'Inbound group message observed by non-admin session; forwarding for shared moderation handling'
           );
-          continue;
         }
 
         const { type: messageType, content } = extractMessageDetails(msg.message || {});
@@ -994,7 +1071,8 @@ const server = http.createServer(async (req, res) => {
       }
 
       const session = await ensureSocketConnected(ownerId);
-      if (!session.socket || !session.isConnected) {
+      const connected = await waitForSessionConnected(session);
+      if (!session.socket || !connected) {
         sendJson(res, 503, { error: 'WhatsApp is not connected', ownerId });
         return;
       }
@@ -1033,7 +1111,8 @@ const server = http.createServer(async (req, res) => {
       }
 
       const session = await ensureSocketConnected(ownerId);
-      if (!session.socket || !session.isConnected) {
+      const connected = await waitForSessionConnected(session);
+      if (!session.socket || !connected) {
         sendJson(res, 503, { error: 'WhatsApp is not connected', ownerId });
         return;
       }
@@ -1078,7 +1157,8 @@ const server = http.createServer(async (req, res) => {
       }
 
       const session = await ensureSocketConnected(ownerId);
-      if (!session.socket || !session.isConnected) {
+      const connected = await waitForSessionConnected(session);
+      if (!session.socket || !connected) {
         sendJson(res, 503, { error: 'WhatsApp is not connected', ownerId });
         return;
       }
@@ -1101,6 +1181,129 @@ const server = http.createServer(async (req, res) => {
       });
     } catch (error) {
       logger.error({ error: error.message }, 'Failed to delete message');
+      sendJson(res, 500, { error: error.message });
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/group/delete') {
+    try {
+      const body = await parseJsonBody(req);
+      const ownerId = normalizeOwnerId(body?.ownerId || ownerFromUrl);
+      const groupJid = String(body?.groupJid || '').trim();
+      const participantJid = String(body?.participantJid || '').trim();
+      const messageId = String(body?.messageId || '').trim();
+
+      if (!groupJid || !participantJid || !messageId) {
+        sendJson(res, 400, { error: 'Missing "groupJid", "participantJid", or "messageId" field' });
+        return;
+      }
+
+      const session = await ensureSocketConnected(ownerId);
+      const connected = await waitForSessionConnected(session);
+      if (!session.socket || !connected) {
+        sendJson(res, 503, { error: 'WhatsApp is not connected', ownerId });
+        return;
+      }
+
+      await session.socket.sendMessage(groupJid, {
+        delete: {
+          remoteJid: groupJid,
+          fromMe: false,
+          id: messageId,
+          participant: participantJid,
+        },
+      });
+
+      sendJson(res, 200, {
+        success: true,
+        ownerId,
+        groupJid,
+        participantJid,
+        messageId,
+        via: 'baileys',
+      });
+    } catch (error) {
+      logger.error({ error: error.message }, 'Failed to delete group message');
+      sendJson(res, 500, { error: error.message });
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/group/warn') {
+    try {
+      const body = await parseJsonBody(req);
+      const ownerId = normalizeOwnerId(body?.ownerId || ownerFromUrl);
+      const groupJid = String(body?.groupJid || '').trim();
+      const participantJid = String(body?.participantJid || '').trim();
+      const warningText = String(body?.warningText || '').trim();
+
+      if (!groupJid || !participantJid || !warningText) {
+        sendJson(res, 400, { error: 'Missing "groupJid", "participantJid", or "warningText" field' });
+        return;
+      }
+
+      const session = await ensureSocketConnected(ownerId);
+      const connected = await waitForSessionConnected(session);
+      if (!session.socket || !connected) {
+        sendJson(res, 503, { error: 'WhatsApp is not connected', ownerId });
+        return;
+      }
+
+      const mentionLabel = mentionLabelForParticipant(participantJid);
+      const normalizedText = warningText.includes(`@${mentionLabel}`)
+        ? warningText
+        : `@${mentionLabel} ${warningText}`;
+
+      const sendResult = await session.socket.sendMessage(groupJid, {
+        text: normalizedText,
+        mentions: [participantJid],
+      });
+
+      sendJson(res, 200, {
+        success: true,
+        ownerId,
+        groupJid,
+        participantJid,
+        messageId: sendResult?.key?.id || null,
+        via: 'baileys',
+      });
+    } catch (error) {
+      logger.error({ error: error.message }, 'Failed to warn group participant');
+      sendJson(res, 500, { error: error.message });
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/group/remove') {
+    try {
+      const body = await parseJsonBody(req);
+      const ownerId = normalizeOwnerId(body?.ownerId || ownerFromUrl);
+      const groupJid = String(body?.groupJid || '').trim();
+      const participantJid = String(body?.participantJid || '').trim();
+
+      if (!groupJid || !participantJid) {
+        sendJson(res, 400, { error: 'Missing "groupJid" or "participantJid" field' });
+        return;
+      }
+
+      const session = await ensureSocketConnected(ownerId);
+      if (!session.socket || !session.isConnected) {
+        sendJson(res, 503, { error: 'WhatsApp is not connected', ownerId });
+        return;
+      }
+
+      await session.socket.groupParticipantsUpdate(groupJid, [participantJid], 'remove');
+
+      sendJson(res, 200, {
+        success: true,
+        ownerId,
+        groupJid,
+        participantJid,
+        via: 'baileys',
+      });
+    } catch (error) {
+      logger.error({ error: error.message }, 'Failed to remove group participant');
       sendJson(res, 500, { error: error.message });
     }
     return;

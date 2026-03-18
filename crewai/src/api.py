@@ -55,6 +55,7 @@ from .queue.jobs import (
     enqueue_send_message,
 )
 from .swarm import SwarmCoordinator, EventBus, Blackboard
+from .swarm.events import EventType, SwarmEvent
 
 # Load environment variables
 load_dotenv(override=False)
@@ -548,6 +549,11 @@ async def _upsert_whatsapp_groups(
                         if not member_jid:
                             continue
 
+                        member_phone = member.get("phoneNumber") or _normalize_group_member_phone(
+                            member_jid
+                        )
+                        member_name = member.get("displayName")
+
                         await conn.execute(
                             """
                             INSERT INTO whatsapp_group_members (
@@ -567,12 +573,28 @@ async def _upsert_whatsapp_groups(
                             owner,
                             group_jid,
                             member_jid,
-                            _normalize_group_member_phone(member_jid),
-                            member.get("displayName"),
+                            member_phone,
+                            member_name,
                             bool(member.get("isAdmin", False)),
                             bool(member.get("isSuperAdmin", False)),
                             json.dumps({"source": "connector"}),
                         )
+
+                        if member_phone or member_name:
+                            await conn.execute(
+                                """
+                                UPDATE whatsapp_group_members
+                                SET
+                                    phone_number = COALESCE($1, phone_number),
+                                    display_name = COALESCE($2, display_name),
+                                    updated_at = NOW()
+                                WHERE group_jid = $3 AND member_jid = $4
+                                """,
+                                member_phone,
+                                member_name,
+                                group_jid,
+                                member_jid,
+                            )
     except Exception:
         logger.exception(
             "Failed to upsert WhatsApp groups",
@@ -625,10 +647,104 @@ async def _get_persisted_whatsapp_groups(owner_id: Optional[str] = None) -> list
             "participantCount": row["participant_count"] or 0,
             "botIsMember": bool(row["bot_is_member"]),
             "botIsAdmin": bool(row["bot_is_admin"]),
-            "members": list(row["members"] or []),
+            "members": json.loads(row["members"])
+            if isinstance(row["members"], str)
+            else list(row["members"] or []),
         }
         for row in rows
     ]
+
+
+async def _resolve_group_processing_owner(current_owner_id: str, group_jid: Optional[str]) -> str:
+    owner = _sanitize_owner_id(current_owner_id)
+    group = str(group_jid or "").strip()
+    if not group or not _blackboard or not _blackboard._pool:
+        return owner
+
+    async with _blackboard._pool.acquire() as conn:
+        admin_owner = await conn.fetchval(
+            """
+            SELECT owner_id
+            FROM whatsapp_groups
+            WHERE group_jid = $1
+              AND bot_is_admin = TRUE
+            ORDER BY CASE WHEN owner_id = $2 THEN 0 ELSE 1 END, updated_at DESC
+            LIMIT 1
+            """,
+            group,
+            owner,
+        )
+
+    return _sanitize_owner_id(admin_owner or owner)
+
+
+def _normalize_participant_phone(jid: Optional[str]) -> Optional[str]:
+    digits = "".join(ch for ch in str(jid or "").split("@")[0] if ch.isdigit())
+    return digits or None
+
+
+async def _record_group_moderation_violation(
+    *,
+    owner_id: str,
+    group_jid: str,
+    participant_jid: str,
+    message_id: str,
+    message_content: str,
+    matched_guideline: str,
+    reason: str,
+) -> None:
+    if not _blackboard or not _blackboard._pool:
+        return
+
+    async with _blackboard._pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO whatsapp_group_moderation_violations (
+                owner_id, group_jid, participant_jid, participant_phone_number,
+                message_id, message_content, matched_guideline, reason
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            """,
+            owner_id,
+            group_jid,
+            participant_jid,
+            _normalize_participant_phone(participant_jid),
+            message_id,
+            message_content,
+            matched_guideline,
+            reason,
+        )
+
+
+async def _record_group_moderation_action(
+    *,
+    owner_id: str,
+    group_jid: str,
+    participant_jid: Optional[str],
+    message_id: Optional[str],
+    action_type: str,
+    status: str,
+    details: dict[str, Any],
+) -> None:
+    if not _blackboard or not _blackboard._pool:
+        return
+
+    async with _blackboard._pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO whatsapp_group_moderation_actions (
+                owner_id, group_jid, participant_jid, participant_phone_number,
+                message_id, action_type, status, details
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+            """,
+            owner_id,
+            group_jid,
+            participant_jid,
+            _normalize_participant_phone(participant_jid),
+            message_id,
+            action_type,
+            status,
+            json.dumps(details or {}),
+        )
 
 
 def _fallback_contains_bad_language(text: str) -> bool:
@@ -2221,6 +2337,133 @@ async def admin_get_whatsapp_groups():
     return connector_groups
 
 
+@app.get("/admin/api/whatsapp/groups/{group_jid}/messages")
+async def admin_get_whatsapp_group_messages(
+    group_jid: str,
+    limit: int = Query(50, ge=1, le=500),
+):
+    """Return persisted messages for a WhatsApp group chat."""
+    if not _blackboard or not _blackboard._pool:
+        return []
+
+    owner = _current_owner_id()
+
+    async with _blackboard._pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                mh.id,
+                mh.correlation_id,
+                mh.phone_number,
+                mh.direction,
+                mh.message_type,
+                mh.content,
+                mh.created_at,
+                mh.group_jid,
+                mh.group_subject,
+                mh.participant_jid,
+                mh.bot_is_group_admin,
+                wgm.display_name,
+                wgm.phone_number AS participant_phone_number
+            FROM message_history mh
+            LEFT JOIN whatsapp_group_members wgm
+              ON wgm.owner_id = mh.owner_id
+             AND wgm.group_jid = mh.group_jid
+             AND wgm.member_jid = mh.participant_jid
+            WHERE mh.owner_id = $1
+              AND mh.group_jid = $2
+            ORDER BY mh.created_at DESC
+            LIMIT $3
+            """,
+            owner,
+            group_jid,
+            limit,
+        )
+
+    payload: list[dict[str, Any]] = []
+    for row in rows:
+        payload.append(
+            {
+                "id": str(row["id"]),
+                "correlationId": row["correlation_id"],
+                "phoneNumber": row["phone_number"],
+                "direction": row["direction"],
+                "messageType": row["message_type"],
+                "content": row["content"] or "",
+                "createdAt": str(row["created_at"]),
+                "groupJid": row["group_jid"],
+                "groupSubject": row["group_subject"],
+                "participantJid": row["participant_jid"],
+                "participantName": row["display_name"]
+                or row["participant_phone_number"]
+                or row["participant_jid"],
+                "participantPhoneNumber": row["participant_phone_number"],
+                "botIsGroupAdmin": row["bot_is_group_admin"],
+            }
+        )
+
+    return payload
+
+
+@app.get("/admin/api/whatsapp/groups/{group_jid}/moderation-actions")
+async def admin_get_whatsapp_group_moderation_actions(
+    group_jid: str,
+    limit: int = Query(100, ge=1, le=500),
+):
+    """Return moderation actions taken for a WhatsApp group chat."""
+    if not _blackboard or not _blackboard._pool:
+        return []
+
+    owner = _current_owner_id()
+
+    async with _blackboard._pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                a.id,
+                a.message_id,
+                a.action_type,
+                a.status,
+                a.details,
+                a.created_at,
+                a.participant_jid,
+                a.participant_phone_number,
+                wgm.display_name
+            FROM whatsapp_group_moderation_actions a
+            LEFT JOIN whatsapp_group_members wgm
+              ON wgm.owner_id = a.owner_id
+             AND wgm.group_jid = a.group_jid
+             AND wgm.member_jid = a.participant_jid
+            WHERE a.owner_id = $1
+              AND a.group_jid = $2
+            ORDER BY a.created_at DESC
+            LIMIT $3
+            """,
+            owner,
+            group_jid,
+            limit,
+        )
+
+    return [
+        {
+            "id": str(row["id"]),
+            "messageId": row["message_id"],
+            "actionType": row["action_type"],
+            "status": row["status"],
+            "details": json.loads(row["details"])
+            if isinstance(row["details"], str)
+            else dict(row["details"] or {}),
+            "createdAt": str(row["created_at"]),
+            "participantJid": row["participant_jid"],
+            "participantPhoneNumber": row["participant_phone_number"],
+            "participantName": row["display_name"]
+            or row["participant_phone_number"]
+            or row["participant_jid"],
+        }
+        for row in rows
+    ]
+
+
 @app.post("/admin/api/whatsapp/session/reset")
 async def admin_reset_whatsapp_session():
     """Reset connector auth state and force a fresh QR flow."""
@@ -2284,6 +2527,23 @@ class AdminWhatsAppSendVoiceRequest(BaseModel):
 class AdminWhatsAppDeleteRequest(BaseModel):
     phone_number: str
     message_id: str
+
+
+class AdminWhatsAppGroupDeleteRequest(BaseModel):
+    group_jid: str
+    participant_jid: str
+    message_id: str
+
+
+class AdminWhatsAppGroupWarnRequest(BaseModel):
+    group_jid: str
+    participant_jid: str
+    warning_text: str
+
+
+class AdminWhatsAppGroupRemoveRequest(BaseModel):
+    group_jid: str
+    participant_jid: str
 
 
 class AdminDeleteContactRequest(BaseModel):
@@ -2424,6 +2684,96 @@ async def admin_delete_whatsapp_message(request: AdminWhatsAppDeleteRequest):
         "success": True,
         "phoneNumber": phone_number,
         "messageId": message_id,
+        "via": connector_result.get("via") or "baileys",
+    }
+
+
+@app.post("/admin/api/whatsapp/group/delete")
+async def admin_delete_whatsapp_group_message(request: AdminWhatsAppGroupDeleteRequest):
+    group_jid = (request.group_jid or "").strip()
+    participant_jid = (request.participant_jid or "").strip()
+    message_id = (request.message_id or "").strip()
+
+    if not group_jid or not participant_jid or not message_id:
+        raise HTTPException(
+            status_code=400,
+            detail="group_jid, participant_jid, and message_id are required",
+        )
+
+    connector_result = _post_connector_json(
+        "/group/delete",
+        {
+            "groupJid": group_jid,
+            "participantJid": participant_jid,
+            "messageId": message_id,
+        },
+    )
+    if not connector_result.get("success"):
+        raise HTTPException(status_code=502, detail="Connector failed to delete group message")
+
+    return {
+        "success": True,
+        "groupJid": group_jid,
+        "participantJid": participant_jid,
+        "messageId": message_id,
+        "via": connector_result.get("via") or "baileys",
+    }
+
+
+@app.post("/admin/api/whatsapp/group/warn")
+async def admin_warn_whatsapp_group_member(request: AdminWhatsAppGroupWarnRequest):
+    group_jid = (request.group_jid or "").strip()
+    participant_jid = (request.participant_jid or "").strip()
+    warning_text = (request.warning_text or "").strip()
+
+    if not group_jid or not participant_jid or not warning_text:
+        raise HTTPException(
+            status_code=400,
+            detail="group_jid, participant_jid, and warning_text are required",
+        )
+
+    connector_result = _post_connector_json(
+        "/group/warn",
+        {
+            "groupJid": group_jid,
+            "participantJid": participant_jid,
+            "warningText": warning_text,
+        },
+    )
+    if not connector_result.get("success"):
+        raise HTTPException(status_code=502, detail="Connector failed to warn group member")
+
+    return {
+        "success": True,
+        "groupJid": group_jid,
+        "participantJid": participant_jid,
+        "messageId": connector_result.get("messageId"),
+        "via": connector_result.get("via") or "baileys",
+    }
+
+
+@app.post("/admin/api/whatsapp/group/remove")
+async def admin_remove_whatsapp_group_member(request: AdminWhatsAppGroupRemoveRequest):
+    group_jid = (request.group_jid or "").strip()
+    participant_jid = (request.participant_jid or "").strip()
+
+    if not group_jid or not participant_jid:
+        raise HTTPException(status_code=400, detail="group_jid and participant_jid are required")
+
+    connector_result = _post_connector_json(
+        "/group/remove",
+        {
+            "groupJid": group_jid,
+            "participantJid": participant_jid,
+        },
+    )
+    if not connector_result.get("success"):
+        raise HTTPException(status_code=502, detail="Connector failed to remove group member")
+
+    return {
+        "success": True,
+        "groupJid": group_jid,
+        "participantJid": participant_jid,
         "via": connector_result.get("via") or "baileys",
     }
 
@@ -3105,6 +3455,12 @@ async def whatsapp_receive_message(request: WhatsAppConnectorMessageRequest):
         },
     )
 
+    processing_owner = _current_owner_id()
+    if request.is_group:
+        processing_owner = await _resolve_group_processing_owner(
+            processing_owner, request.group_jid
+        )
+
     if request.group_jid:
         await _upsert_whatsapp_groups(
             [
@@ -3117,7 +3473,7 @@ async def whatsapp_receive_message(request: WhatsAppConnectorMessageRequest):
                     "members": [],
                 }
             ],
-            owner_id=_current_owner_id(),
+            owner_id=processing_owner,
         )
 
     message_text = request.content or ""
@@ -3145,7 +3501,29 @@ async def whatsapp_receive_message(request: WhatsAppConnectorMessageRequest):
         if not _swarm_coordinator:
             raise ValueError("Swarm coordinator not initialized")
 
-        if MODERATION_MODE:
+        if request.is_group:
+            response = None
+            if _eventbus and not is_erasure_request:
+                await _eventbus.publish(
+                    SwarmEvent(
+                        event_type=EventType.GROUP_MESSAGE_RECEIVED,
+                        contact_id=request.phone_number,
+                        owner_id=processing_owner,
+                        payload={
+                            "text": message_text,
+                            "message_type": request.message_type,
+                            "message_id": request.message_id,
+                            "push_name": request.push_name,
+                            "chat_jid": request.chat_jid,
+                            "group_jid": request.group_jid,
+                            "group_subject": request.group_subject,
+                            "participant_jid": request.participant_jid,
+                            "bot_is_group_admin": request.bot_is_group_admin,
+                        },
+                        source_agent="api",
+                    )
+                )
+        elif MODERATION_MODE:
             response = None
             logger.info(
                 "Moderation mode enabled; skipping automatic inbound response",
@@ -3167,7 +3545,7 @@ async def whatsapp_receive_message(request: WhatsAppConnectorMessageRequest):
                 message_type=request.message_type,
                 push_name=request.push_name,
                 message_id=request.message_id,
-                owner_id=_current_owner_id(),
+                owner_id=processing_owner,
             )
 
         if not is_erasure_request:
@@ -3177,7 +3555,7 @@ async def whatsapp_receive_message(request: WhatsAppConnectorMessageRequest):
                 direction="incoming",
                 message_type=request.message_type,
                 content=message_text,
-                owner_id=_current_owner_id(),
+                owner_id=processing_owner,
                 chat_jid=request.chat_jid or request.group_jid,
                 is_group=request.is_group,
                 group_jid=request.group_jid,
@@ -3239,7 +3617,7 @@ async def whatsapp_receive_message(request: WhatsAppConnectorMessageRequest):
                 direction="outgoing",
                 message_type="text",
                 content=response,
-                owner_id=_current_owner_id(),
+                owner_id=processing_owner,
                 chat_jid=request.chat_jid or request.group_jid,
                 is_group=request.is_group,
                 group_jid=request.group_jid,

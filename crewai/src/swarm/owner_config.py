@@ -67,6 +67,13 @@ _ENV_DEFAULTS: dict[str, dict[str, Any]] = {
     "behavior": {
         "moderation_mode": os.getenv("MODERATION_MODE", "false").lower()
         in ("1", "true", "yes", "on"),
+        "moderation_guidelines": os.getenv("MODERATION_GUIDELINES", ""),
+        "moderation_warning_template": os.getenv(
+            "MODERATION_WARNING_TEMPLATE",
+            "@{member} your message violated the group guidelines and was removed. Another violation within {window_hours} hours will result in removal from the group.",
+        ),
+        "moderation_window_hours": 48,
+        "moderation_group_overrides": {},
         "demo_mode": os.getenv("DEMO_MODE", "false").lower() in ("1", "true", "yes", "on"),
         "webhook_base_url": os.getenv("WEBHOOK_BASE_URL", ""),
         "whatsapp_auto_delete_enabled": False,
@@ -169,6 +176,21 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
         "label": "Behavior",
         "fields": [
             {"key": "moderation_mode", "label": "Moderation mode", "type": "toggle"},
+            {
+                "key": "moderation_guidelines",
+                "label": "Moderation guidelines",
+                "type": "textarea",
+            },
+            {
+                "key": "moderation_warning_template",
+                "label": "Moderation warning template",
+                "type": "textarea",
+            },
+            {
+                "key": "moderation_window_hours",
+                "label": "Moderation strike window (hours)",
+                "type": "number",
+            },
             {"key": "demo_mode", "label": "Demo mode", "type": "toggle"},
             {"key": "webhook_base_url", "label": "Webhook base URL", "type": "url"},
             {

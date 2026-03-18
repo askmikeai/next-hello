@@ -56,4 +56,7 @@
     <!-- WhatsApp group persistence and group message context -->
     <include file="changesets/017-whatsapp-groups.xml" relativeToChangelogFile="true"/>
 
+    <!-- WhatsApp group moderation strikes and action logs -->
+    <include file="changesets/018-whatsapp-group-moderation.xml" relativeToChangelogFile="true"/>
+
 </databaseChangeLog>
