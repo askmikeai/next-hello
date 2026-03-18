@@ -7,7 +7,7 @@ data:
   REDIS_URL: "redis://redis:6379/0"
   DATABASE_URL: "postgresql://nexthello:nexthello_dev@postgres:5432/nexthello"
   SUPABASE_URL: "postgresql://nexthello:nexthello_dev@postgres:5432/nexthello"
-  WHATSAPP_CONNECTOR_URL: "http://whatsapp-askmikeai:3000"
-  WHATSAPP_CONNECTOR_MAP_JSON: '{"askmikeai-gmail.com":"http://whatsapp-askmikeai:3000","hollywoodfl23-gmail.com":"http://whatsapp-hollywood:3000"}'
+  WHATSAPP_CONNECTOR_URL: "http://whatsapp:3000"
+  WHATSAPP_CONNECTOR_MAP_JSON: "{}"
   MODERATION_MODE: "false"
   NEXTHELLO_SYSTEM_OWNER_ID: "askmikeai@gmail.com"

@@ -108,7 +108,7 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-nexthello}:${POSTGRES_PASSWORD:-nexthello_dev}@postgres:5432/${POSTGRES_DB:-nexthello}
       SUPABASE_URL: postgresql://${POSTGRES_USER:-nexthello}:${POSTGRES_PASSWORD:-nexthello_dev}@postgres:5432/${POSTGRES_DB:-nexthello}
       WHATSAPP_CONNECTOR_URL: http://whatsapp:3000
-      WHATSAPP_CONNECTOR_MAP_JSON: '{"askmikeai-gmail.com":"http://whatsapp:3000","hollywoodfl23-gmail.com":"http://whatsapp-hollywood:3000"}'
+      WHATSAPP_CONNECTOR_MAP_JSON: '{}'
     volumes:
       - nexthello-media:/app/data/media
     ports:
@@ -212,34 +212,6 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  whatsapp-hollywood:
-    build: ./crewai/whatsapp-bridge
-    image: nexthello-whatsapp:local
-    container_name: nexthello-whatsapp-hollywood
-    depends_on:
-      postgres:
-        condition: service_healthy
-      api:
-        condition: service_healthy
-    env_file:
-      - .env
-    environment:
-      PYTHON_API_URL: http://api:8001
-      HTTP_PORT: 3000
-      SESSION_ID: hollywoodfl23-gmail.com
-      NEXTHELLO_SYSTEM_OWNER_ID: hollywoodfl23@gmail.com
-      DATABASE_URL: postgresql://${POSTGRES_USER:-nexthello}:${POSTGRES_PASSWORD:-nexthello_dev}@postgres:5432/${POSTGRES_DB:-nexthello}
-    volumes:
-      - nexthello-whatsapp-auth-hollywood:/app/auth_state
-    ports:
-      - "3001:3000"
-    restart: unless-stopped
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-
   # ──────────────────────────────────────────────────────────────────────────
   # WHATSAPP-CONNECT - Interactive QR code scanner
   # Usage: docker compose run --rm whatsapp-connect
@@ -318,8 +290,6 @@ volumes:
     name: nexthello-media
   nexthello-whatsapp-auth:
     name: nexthello-whatsapp-auth
-  nexthello-whatsapp-auth-hollywood:
-    name: nexthello-whatsapp-auth-hollywood
   nexthello-agent-errors:
     name: nexthello-agent-errors
   nexthello-loki:

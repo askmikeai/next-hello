@@ -17,6 +17,7 @@ import os
 import re
 import shutil
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from contextlib import asynccontextmanager
@@ -248,7 +249,9 @@ async def _owner_has_any_whatsapp_session(owner_id: Optional[str] = None) -> boo
 
 
 def _fetch_connector_json(path: str, owner_id: Optional[str] = None) -> dict[str, Any]:
-    url = f"{_connector_url_for_owner(owner_id)}{path}"
+    owner = _sanitize_owner_id(owner_id or _current_owner_id())
+    query = urllib.parse.urlencode({"ownerId": owner})
+    url = f"{_connector_url_for_owner(owner)}{path}?{query}"
     try:
         with urllib.request.urlopen(url, timeout=3) as response:
             raw = response.read().decode("utf-8")
@@ -276,8 +279,11 @@ def _post_connector_json(
     timeout_seconds: int = 8,
     owner_id: Optional[str] = None,
 ) -> dict[str, Any]:
-    url = f"{_connector_url_for_owner(owner_id)}{path}"
-    body = json.dumps(payload).encode("utf-8")
+    owner = _sanitize_owner_id(owner_id or _current_owner_id())
+    url = f"{_connector_url_for_owner(owner)}{path}"
+    data = dict(payload)
+    data.setdefault("ownerId", owner)
+    body = json.dumps(data).encode("utf-8")
     req = urllib.request.Request(
         url,
         data=body,

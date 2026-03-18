@@ -1,23 +1,18 @@
-# Per-user WhatsApp connector deployments.
-# Each user gets an isolated Baileys session with its own PVC.
-
-# --- askmikeai connector ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: whatsapp-askmikeai
+  name: whatsapp
   namespace: nexthello
 spec:
   ports:
     - port: 3000
   selector:
     app: whatsapp
-    owner: askmikeai
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: whatsapp-askmikeai
+  name: whatsapp
   namespace: nexthello
 spec:
   replicas: 1
@@ -26,12 +21,10 @@ spec:
   selector:
     matchLabels:
       app: whatsapp
-      owner: askmikeai
   template:
     metadata:
       labels:
         app: whatsapp
-        owner: askmikeai
     spec:
       containers:
         - name: whatsapp
@@ -52,9 +45,6 @@ spec:
                 configMapKeyRef:
                   name: nexthello-config
                   key: DATABASE_URL
-          volumeMounts:
-            - name: auth-state
-              mountPath: /app/auth_state
           resources:
             requests:
               cpu: 100m
@@ -62,102 +52,5 @@ spec:
             limits:
               cpu: 500m
               memory: 512Mi
-      volumes:
-        - name: auth-state
-          persistentVolumeClaim:
-            claimName: whatsapp-auth-askmikeai
       imagePullSecrets:
         - name: ocir-pull-secret
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: whatsapp-auth-askmikeai
-  namespace: nexthello
-spec:
-  accessModes: ["ReadWriteOnce"]
-  storageClassName: oci-bv
-  resources:
-    requests:
-      storage: 1Gi
-
----
-# --- hollywood connector ---
-apiVersion: v1
-kind: Service
-metadata:
-  name: whatsapp-hollywood
-  namespace: nexthello
-spec:
-  ports:
-    - port: 3000
-  selector:
-    app: whatsapp
-    owner: hollywood
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: whatsapp-hollywood
-  namespace: nexthello
-spec:
-  replicas: 1
-  strategy:
-    type: Recreate
-  selector:
-    matchLabels:
-      app: whatsapp
-      owner: hollywood
-  template:
-    metadata:
-      labels:
-        app: whatsapp
-        owner: hollywood
-    spec:
-      containers:
-        - name: whatsapp
-          image: OCIR_REGION.ocir.io/OCIR_NAMESPACE/nexthello-whatsapp:latest
-          ports:
-            - containerPort: 3000
-          env:
-            - name: PYTHON_API_URL
-              value: "http://api:8001"
-            - name: HTTP_PORT
-              value: "3000"
-            - name: SESSION_ID
-              value: "hollywoodfl23-gmail.com"
-            - name: NEXTHELLO_SYSTEM_OWNER_ID
-              value: "hollywoodfl23@gmail.com"
-            - name: DATABASE_URL
-              valueFrom:
-                configMapKeyRef:
-                  name: nexthello-config
-                  key: DATABASE_URL
-          volumeMounts:
-            - name: auth-state
-              mountPath: /app/auth_state
-          resources:
-            requests:
-              cpu: 100m
-              memory: 128Mi
-            limits:
-              cpu: 500m
-              memory: 512Mi
-      volumes:
-        - name: auth-state
-          persistentVolumeClaim:
-            claimName: whatsapp-auth-hollywood
-      imagePullSecrets:
-        - name: ocir-pull-secret
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: whatsapp-auth-hollywood
-  namespace: nexthello
-spec:
-  accessModes: ["ReadWriteOnce"]
-  storageClassName: oci-bv
-  resources:
-    requests:
-      storage: 1Gi

@@ -84,10 +84,6 @@ jobs:
 
             SERVICES="api worker swarm whatsapp agent-log-monitor loki"
 
-            # Optional services based on branch/environment compose config.
-            if docker compose config --services | grep -q '^whatsapp-hollywood$'; then
-              SERVICES="$SERVICES whatsapp-hollywood"
-            fi
             if docker compose config --services | grep -q '^ui$'; then
               SERVICES="$SERVICES ui"
             fi
