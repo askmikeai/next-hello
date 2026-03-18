@@ -9,6 +9,7 @@ from .video_agent import VideoAgent
 from .voice_agent import VoiceAgent
 from .crm_agent import CRMAgent
 from .messaging_agent import MessagingAgent
+from .whatsapp_cleanup_agent import WhatsAppCleanupAgent
 
 __all__ = [
     "ResearchAgent",
@@ -18,4 +19,5 @@ __all__ = [
     "VoiceAgent",
     "CRMAgent",
     "MessagingAgent",
+    "WhatsAppCleanupAgent",
 ]

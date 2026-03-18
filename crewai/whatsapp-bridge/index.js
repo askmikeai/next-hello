@@ -42,7 +42,7 @@ const sessions = new Map();
 function normalizeOwnerId(value) {
   const candidate = String(value || '').trim().toLowerCase();
   if (!candidate) return String(DEFAULT_OWNER_ID).trim().toLowerCase();
-  return candidate.replace(/[^a-z0-9._@-]/g, '-').slice(0, 120) || String(DEFAULT_OWNER_ID).trim().toLowerCase();
+  return candidate.replace(/[^a-z0-9._-]/g, '-').slice(0, 120) || String(DEFAULT_OWNER_ID).trim().toLowerCase();
 }
 
 function sessionIdForOwner(ownerId) {
@@ -804,6 +804,47 @@ const server = http.createServer(async (req, res) => {
       });
     } catch (error) {
       logger.error({ error: error.message }, 'Failed to send voice message');
+      sendJson(res, 500, { error: error.message });
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/delete') {
+    try {
+      const body = await parseJsonBody(req);
+      const ownerId = normalizeOwnerId(body?.ownerId || ownerFromUrl);
+      const to = String(body?.to || '').trim();
+      const messageId = String(body?.messageId || '').trim();
+
+      if (!to || !messageId) {
+        sendJson(res, 400, { error: 'Missing "to" or "messageId" field' });
+        return;
+      }
+
+      const session = await ensureSocketConnected(ownerId);
+      if (!session.socket || !session.isConnected) {
+        sendJson(res, 503, { error: 'WhatsApp is not connected', ownerId });
+        return;
+      }
+
+      const jid = to.includes('@') ? to : toJid(to);
+      await session.socket.sendMessage(jid, {
+        delete: {
+          remoteJid: jid,
+          fromMe: true,
+          id: messageId,
+        },
+      });
+
+      sendJson(res, 200, {
+        success: true,
+        ownerId,
+        to: jid,
+        messageId,
+        via: 'baileys',
+      });
+    } catch (error) {
+      logger.error({ error: error.message }, 'Failed to delete message');
       sendJson(res, 500, { error: error.message });
     }
     return;

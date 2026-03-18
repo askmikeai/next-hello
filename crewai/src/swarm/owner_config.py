@@ -69,6 +69,8 @@ _ENV_DEFAULTS: dict[str, dict[str, Any]] = {
         in ("1", "true", "yes", "on"),
         "demo_mode": os.getenv("DEMO_MODE", "false").lower() in ("1", "true", "yes", "on"),
         "webhook_base_url": os.getenv("WEBHOOK_BASE_URL", ""),
+        "whatsapp_auto_delete_enabled": False,
+        "whatsapp_auto_delete_mode": "immediate",
     },
     "goals": {
         "primary_goal": "book-meetings",
@@ -169,6 +171,17 @@ SETTINGS_SCHEMA: list[dict[str, Any]] = [
             {"key": "moderation_mode", "label": "Moderation mode", "type": "toggle"},
             {"key": "demo_mode", "label": "Demo mode", "type": "toggle"},
             {"key": "webhook_base_url", "label": "Webhook base URL", "type": "url"},
+            {
+                "key": "whatsapp_auto_delete_enabled",
+                "label": "Auto-delete WhatsApp messages",
+                "type": "toggle",
+            },
+            {
+                "key": "whatsapp_auto_delete_mode",
+                "label": "Auto-delete mode",
+                "type": "select",
+                "options": ["immediate"],
+            },
         ],
     },
     {

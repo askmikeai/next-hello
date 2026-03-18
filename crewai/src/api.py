@@ -2089,6 +2089,11 @@ class AdminWhatsAppSendVoiceRequest(BaseModel):
     content: str = ""
 
 
+class AdminWhatsAppDeleteRequest(BaseModel):
+    phone_number: str
+    message_id: str
+
+
 class AdminDeleteContactRequest(BaseModel):
     phone_number: str
 
@@ -2199,6 +2204,35 @@ async def admin_send_whatsapp_voice(request: AdminWhatsAppSendVoiceRequest):
         "via": connector_via,
         "to": connector_to,
         "messageId": connector_message_id,
+    }
+
+
+@app.post("/admin/api/whatsapp/delete")
+async def admin_delete_whatsapp_message(request: AdminWhatsAppDeleteRequest):
+    """Delete a previously sent WhatsApp message through the Baileys connector."""
+    phone_number = "".join(ch for ch in (request.phone_number or "") if ch.isdigit())
+    message_id = (request.message_id or "").strip()
+
+    if not phone_number:
+        raise HTTPException(status_code=400, detail="phone_number is required")
+    if not message_id:
+        raise HTTPException(status_code=400, detail="message_id is required")
+
+    connector_result = _post_connector_json(
+        "/delete",
+        {
+            "to": phone_number,
+            "messageId": message_id,
+        },
+    )
+    if not connector_result.get("success"):
+        raise HTTPException(status_code=502, detail="Connector failed to delete message")
+
+    return {
+        "success": True,
+        "phoneNumber": phone_number,
+        "messageId": message_id,
+        "via": connector_result.get("via") or "baileys",
     }
 
 
