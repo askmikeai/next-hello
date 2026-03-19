@@ -136,8 +136,8 @@ class QualificationAgent(AutonomousAgent):
         result_events = []
 
         try:
-            # Calculate qualification score and tier
-            score, tier, reasoning = await self._qualify_contact(contact)
+            # Calculate qualification score, tier, and factors in a single pass
+            score, tier, reasoning, factors = await self._qualify_contact(contact)
 
             # Update contact
             await self.blackboard.update_contact(
@@ -149,7 +149,7 @@ class QualificationAgent(AutonomousAgent):
                     "score": score,
                     "tier": tier,
                     "reasoning": reasoning,
-                    "factors": self._get_scoring_factors(contact),
+                    "factors": factors,
                 },
                 qualification_updated_at=datetime.utcnow().isoformat(),
             )
@@ -197,39 +197,35 @@ class QualificationAgent(AutonomousAgent):
 
         return result_events
 
-    async def _qualify_contact(self, contact: ContactState) -> tuple[int, str, str]:
+    async def _qualify_contact(self, contact: ContactState) -> tuple[int, str, str, dict]:
         """
-        Calculate qualification score and tier.
+        Calculate qualification score, tier, and factors in a single pass.
 
-        Returns (score, tier, reasoning).
+        Returns (score, tier, reasoning, factors_dict).
+
+        Consolidates all scoring into one call to avoid redundant computation.
         """
-        # Calculate base score from factors
-        score = 0
-        factors = []
-
-        # Job title scoring (0-30 points)
+        # Calculate scores once and store for both reasoning and factors dict
         title_score = self._score_job_title(contact.job_title)
-        score += title_score
-        if title_score > 0:
-            factors.append(f"Job title: +{title_score}")
-
-        # Company scoring (0-25 points)
         company_score = self._score_company(contact)
-        score += company_score
-        if company_score > 0:
-            factors.append(f"Company: +{company_score}")
-
-        # Engagement scoring (0-25 points)
         engagement_score = self._score_engagement(contact)
-        score += engagement_score
-        if engagement_score > 0:
-            factors.append(f"Engagement: +{engagement_score}")
-
-        # Profile completeness (0-20 points)
         completeness_score = self._score_completeness(contact)
-        score += completeness_score
+
+        # Total score
+        score = title_score + company_score + engagement_score + completeness_score
+
+        # Build reasoning from factors
+        reasoning_parts = []
+        if title_score > 0:
+            reasoning_parts.append(f"Job title: +{title_score}")
+        if company_score > 0:
+            reasoning_parts.append(f"Company: +{company_score}")
+        if engagement_score > 0:
+            reasoning_parts.append(f"Engagement: +{engagement_score}")
         if completeness_score > 0:
-            factors.append(f"Profile: +{completeness_score}")
+            reasoning_parts.append(f"Profile: +{completeness_score}")
+
+        reasoning = "; ".join(reasoning_parts) if reasoning_parts else "No qualifying factors"
 
         # Determine tier
         if score >= 75:
@@ -241,9 +237,29 @@ class QualificationAgent(AutonomousAgent):
         else:
             tier = "unqualified"
 
-        reasoning = "; ".join(factors) if factors else "No qualifying factors"
+        # Build factors dict (reusing already-computed scores)
+        factors = {
+            "job_title": {
+                "value": contact.job_title,
+                "score": title_score,
+            },
+            "company": {
+                "name": contact.company_name,
+                "score": company_score,
+            },
+            "engagement": {
+                "turns": contact.conversation_turns,
+                "score": engagement_score,
+            },
+            "completeness": {
+                "has_email": bool(contact.email),
+                "has_linkedin": bool(contact.linkedin_url),
+                "has_name": bool(contact.first_name),
+                "score": completeness_score,
+            },
+        }
 
-        return score, tier, reasoning
+        return score, tier, reasoning, factors
 
     def _score_job_title(self, title: str | None) -> int:
         """Score based on job title seniority"""

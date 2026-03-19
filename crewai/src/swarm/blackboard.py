@@ -80,6 +80,9 @@ class ContactState:
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
+    # Optimistic locking
+    version: int = 0
+
     def to_dict(self) -> dict:
         """Convert to dictionary"""
         return {
@@ -113,6 +116,7 @@ class ContactState:
             "pending_actions": self.pending_actions,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "version": self.version,
         }
 
     @classmethod
@@ -149,6 +153,7 @@ class ContactState:
             pending_actions=data.get("pending_actions", {}),
             created_at=data.get("created_at"),
             updated_at=data.get("updated_at"),
+            version=data.get("version", 0),
         )
 
 
@@ -412,6 +417,74 @@ class Blackboard:
         # Save
         await self.save_contact(state, owner_id=owner_id)
         return state
+
+    async def update_contact_optimistic(
+        self,
+        contact_id: str,
+        expected_version: int,
+        owner_id: Optional[str] = None,
+        **updates: Any,
+    ) -> tuple[ContactState, bool]:
+        """
+        Update contact with optimistic locking.
+
+        Uses version-based optimistic concurrency control to prevent
+        lost updates when multiple agents modify the same contact.
+
+        Args:
+            contact_id: Phone number or unique identifier
+            expected_version: The version number the caller expects
+            owner_id: Tenant owner ID
+            **updates: Fields to update
+
+        Returns:
+            Tuple of (current_state, success). If success is False,
+            the contact was modified by another agent and caller
+            should retry with the new version.
+        """
+        await self.connect()
+        owner = self._normalize_owner_id(owner_id)
+
+        if not self._pool:
+            # Fall back to non-optimistic update if no DB
+            state = await self.update_contact(contact_id, owner_id=owner_id, **updates)
+            return state, True
+
+        # Build update query dynamically based on updates
+        set_clauses = ["version = version + 1", "updated_at = NOW()"]
+        params = [owner, contact_id, expected_version]
+        param_idx = 4
+
+        for key, value in updates.items():
+            set_clauses.append(f"{key} = ${param_idx}")
+            params.append(value)
+            param_idx += 1
+
+        query = f"""
+            UPDATE networking_contacts
+            SET {", ".join(set_clauses)}
+            WHERE owner_id = $1 AND phone_number = $2 AND version = $3
+            RETURNING *
+        """
+
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(query, *params)
+
+            if row:
+                state = self._row_to_state(dict(row))
+                # Update cache
+                await self._redis.setex(
+                    self._scoped_cache_key(owner, contact_id),
+                    self.CACHE_TTL,
+                    json.dumps(state.to_dict()),
+                )
+                return state, True
+
+            # Version mismatch - get current state
+            current = await self.get_contact(contact_id, owner_id=owner_id)
+            if not current:
+                current = ContactState(phone_number=contact_id)
+            return current, False
 
     async def acquire_lock(
         self,
@@ -790,4 +863,5 @@ class Blackboard:
             pending_actions=pending_actions,
             created_at=str(row.get("created_at")) if row.get("created_at") else None,
             updated_at=str(row.get("updated_at")) if row.get("updated_at") else None,
+            version=int(row.get("version", 0)) if row.get("version") is not None else 0,
         )

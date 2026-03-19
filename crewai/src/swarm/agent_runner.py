@@ -136,6 +136,32 @@ class AutonomousAgent(ABC):
         """
         pass
 
+    async def handle_event_batch(self, events: List[SwarmEvent]) -> List[bool]:
+        """
+        Process multiple events in parallel.
+
+        Use this for batch processing when events are independent
+        and don't require sequential ordering.
+
+        Args:
+            events: List of events to process
+
+        Returns:
+            List of booleans indicating success/failure for each event
+        """
+        if not events:
+            return []
+
+        results = await asyncio.gather(
+            *[self.handle_event(e) for e in events],
+            return_exceptions=True
+        )
+
+        return [
+            not isinstance(r, Exception) and r is True
+            for r in results
+        ]
+
     async def handle_event(self, event: SwarmEvent) -> bool:
         """
         Handle an incoming event.

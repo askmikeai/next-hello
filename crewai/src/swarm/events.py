@@ -22,6 +22,36 @@ SYSTEM_OWNER_ID = (
 )
 
 
+@dataclass
+class ActionFlags:
+    """
+    Flags indicating which actions should be triggered for a message.
+
+    Consolidates multiple separate events into a single MESSAGE_RECEIVED
+    with action flags, reducing event bus overhead significantly.
+    """
+    needs_research: bool = False
+    needs_qualification: bool = False
+    needs_video: bool = False
+    needs_voice: bool = False
+    needs_crm_sync: bool = False
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for event payload."""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ActionFlags":
+        """Create from dictionary."""
+        return cls(
+            needs_research=bool(data.get("needs_research", False)),
+            needs_qualification=bool(data.get("needs_qualification", False)),
+            needs_video=bool(data.get("needs_video", False)),
+            needs_voice=bool(data.get("needs_voice", False)),
+            needs_crm_sync=bool(data.get("needs_crm_sync", False)),
+        )
+
+
 class EventType(str, Enum):
     """All event types in the swarm system"""
 
