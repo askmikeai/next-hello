@@ -28,6 +28,8 @@ from .agents import (
     VoiceAgent,
     CRMAgent,
 )
+from .owner_config import warm_cache, get_active_owner_ids
+from .llm_pool import LLMPool
 
 logging.basicConfig(
     level=logging.INFO,
@@ -139,6 +141,17 @@ class SwarmRunner:
             await self.initialize()
 
         self._running = True
+
+        # Warm up owner config cache
+        if self.blackboard and self.blackboard._pool:
+            try:
+                owner_ids = await get_active_owner_ids(self.blackboard._pool)
+                if owner_ids:
+                    await warm_cache(self.blackboard._pool, owner_ids)
+                    logger.info(f"Warmed config cache for {len(owner_ids)} owners")
+            except Exception as e:
+                logger.warning(f"Config cache warm-up failed: {e}")
+
         await self.agent_pool.start_all()
         logger.info("Swarm started")
 

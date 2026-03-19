@@ -16,6 +16,7 @@ from ..agent_runner import AutonomousAgent
 from ..events import SwarmEvent, EventType
 from ..eventbus import EventBus
 from ..blackboard import Blackboard, ContactState
+from ..llm_pool import LLMPool
 
 logger = logging.getLogger(__name__)
 
@@ -41,16 +42,24 @@ class QualificationAgent(AutonomousAgent):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._llm = None
+        self._llm_model: str = ""
+
+    async def get_llm(self, model: str = "") -> LLM:
+        """Get pooled LLM instance for qualification reasoning."""
+        target_model = model or os.getenv("LLM_PROVIDER", "anthropic/claude-sonnet-4-20250514")
+        max_tokens = 1024 if target_model.startswith("anthropic/") else None
+        return await LLMPool.get(target_model, temperature=0.3, max_tokens=max_tokens)
 
     @property
     def llm(self) -> LLM:
-        """Get LLM instance for qualification reasoning"""
+        """Get LLM instance (sync fallback - prefer get_llm())."""
         if self._llm is None:
-            llm_provider = os.getenv("LLM_PROVIDER", "anthropic/claude-sonnet-4-20250514")
-            if llm_provider.startswith("anthropic/"):
-                self._llm = LLM(model=llm_provider, max_tokens=1024, temperature=0.3)
-            else:
-                self._llm = LLM(model=llm_provider, temperature=0.3)
+            llm_provider = self._llm_model or os.getenv("LLM_PROVIDER", "anthropic/claude-sonnet-4-20250514")
+            self._llm = LLMPool.get_sync(
+                llm_provider,
+                temperature=0.3,
+                max_tokens=1024 if llm_provider.startswith("anthropic/") else None,
+            )
         return self._llm
 
     @property
@@ -117,14 +126,12 @@ class QualificationAgent(AutonomousAgent):
         """
         Execute contact qualification.
         """
-        # Load per-owner LLM config
+        # Load per-owner LLM config and get pooled instance
         cfg = await self.get_owner_config(event.owner_id)
         llm_cfg = cfg.llm
         primary = llm_cfg.get("primary_provider") or "anthropic/claude-sonnet-4-20250514"
-        if primary.startswith("anthropic/"):
-            self._llm = LLM(model=primary, max_tokens=1024, temperature=0.3)
-        else:
-            self._llm = LLM(model=primary, temperature=0.3)
+        self._llm_model = primary
+        self._llm = await self.get_llm(primary)
 
         result_events = []
 

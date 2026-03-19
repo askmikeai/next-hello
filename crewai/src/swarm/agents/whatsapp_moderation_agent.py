@@ -18,6 +18,7 @@ from crewai import Agent, Crew, LLM, Task
 from ..agent_runner import AutonomousAgent
 from ..blackboard import ContactState
 from ..events import EventType, SwarmEvent
+from ..llm_pool import LLMPool
 
 logger = logging.getLogger(__name__)
 
@@ -52,18 +53,20 @@ class WhatsAppModerationAgent(AutonomousAgent):
         openai_key = llm_cfg.get("openai_api_key") or os.getenv("OPENAI_API_KEY", "")
         primary = llm_cfg.get("primary_provider") or "anthropic/claude-sonnet-4-20250514"
 
+        # Use pooled LLM instances
         if primary.startswith("anthropic/") and anthropic_key:
-            self._llm = LLM(model=primary, max_tokens=512, temperature=0)
+            self._llm = await LLMPool.get(primary, temperature=0, max_tokens=512)
         elif openai_key:
-            self._llm = LLM(model=primary, temperature=0)
+            self._llm = await LLMPool.get(primary, temperature=0)
         else:
             self._llm = None
 
+        # Get pooled fallback LLM
         if openai_key and primary.startswith("anthropic/"):
-            self._fallback_llm = LLM(model="openai/gpt-4o-mini", temperature=0)
+            self._fallback_llm = await LLMPool.get("openai/gpt-4o-mini", temperature=0)
         elif anthropic_key and not primary.startswith("anthropic/"):
-            self._fallback_llm = LLM(
-                model="anthropic/claude-sonnet-4-20250514", max_tokens=512, temperature=0
+            self._fallback_llm = await LLMPool.get(
+                "anthropic/claude-sonnet-4-20250514", temperature=0, max_tokens=512
             )
         else:
             self._fallback_llm = None

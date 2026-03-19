@@ -18,7 +18,7 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 _CACHE: dict[str, tuple[float, "OwnerConfig"]] = {}
-_CACHE_TTL = 60  # seconds
+_CACHE_TTL = 300  # seconds (increased from 60s for better cache efficiency)
 
 
 # ---------------------------------------------------------------------------
@@ -421,3 +421,81 @@ def invalidate_cache(owner_id: Optional[str] = None) -> None:
         _CACHE.pop(owner_id, None)
     else:
         _CACHE.clear()
+
+
+async def warm_cache(
+    pool,  # asyncpg.Pool
+    owner_ids: list[str],
+) -> dict[str, bool]:
+    """
+    Pre-warm the config cache for multiple owners.
+
+    This should be called during startup to avoid cache misses
+    on the first request for each owner.
+
+    Args:
+        pool: asyncpg connection pool
+        owner_ids: List of owner IDs to pre-load
+
+    Returns:
+        Dict mapping owner_id to success status
+    """
+    import asyncio
+
+    results: dict[str, bool] = {}
+
+    async def load_one(owner_id: str) -> None:
+        try:
+            await load_owner_config(pool, owner_id)
+            results[owner_id] = True
+            logger.debug(f"Warmed cache for owner: {owner_id}")
+        except Exception as e:
+            logger.warning(f"Failed to warm cache for {owner_id}: {e}")
+            results[owner_id] = False
+
+    # Load all configs concurrently
+    await asyncio.gather(*[load_one(oid) for oid in owner_ids], return_exceptions=True)
+
+    logger.info(f"Cache warm-up complete: {sum(results.values())}/{len(owner_ids)} successful")
+    return results
+
+
+async def get_active_owner_ids(pool) -> list[str]:
+    """
+    Get list of active owner IDs from the database.
+
+    Used for cache warm-up on startup.
+
+    Args:
+        pool: asyncpg connection pool
+
+    Returns:
+        List of owner IDs that have settings configured
+    """
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT DISTINCT owner_id FROM owner_settings WHERE config IS NOT NULL"
+            )
+            return [row["owner_id"] for row in rows]
+    except Exception as e:
+        logger.warning(f"Failed to get active owner IDs: {e}")
+        return []
+
+
+def cache_stats() -> dict[str, Any]:
+    """
+    Get cache statistics.
+
+    Returns:
+        Dict with cache stats
+    """
+    now = time.monotonic()
+    total = len(_CACHE)
+    expired = sum(1 for ts, _ in _CACHE.values() if (now - ts) >= _CACHE_TTL)
+    return {
+        "total_entries": total,
+        "expired_entries": expired,
+        "active_entries": total - expired,
+        "ttl_seconds": _CACHE_TTL,
+    }

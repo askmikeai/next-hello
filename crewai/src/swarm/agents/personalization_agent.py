@@ -15,6 +15,8 @@ from ..agent_runner import AutonomousAgent
 from ..events import SwarmEvent, EventType
 from ..eventbus import EventBus
 from ..blackboard import Blackboard, ContactState
+from ..llm_pool import LLMPool
+from ..context_cache import ContextCache, build_contact_context
 
 logger = logging.getLogger(__name__)
 
@@ -56,52 +58,53 @@ class PersonalizationAgent(AutonomousAgent):
         self._event_name = ident.get("event_name") or self._event_name
         self._calendly_url = ident.get("calendly_url") or self._calendly_url
 
-        # LLM provider can also be per-owner
+        # LLM provider can also be per-owner - use pooled instances
         llm_cfg = cfg.llm
         anthropic_key = llm_cfg.get("anthropic_api_key") or os.getenv("ANTHROPIC_API_KEY", "")
         openai_key = llm_cfg.get("openai_api_key") or os.getenv("OPENAI_API_KEY", "")
         primary = llm_cfg.get("primary_provider") or "anthropic/claude-sonnet-4-20250514"
 
-        # Rebuild LLMs based on per-owner config
+        # Get pooled LLM instances based on per-owner config
         if primary.startswith("anthropic/") and anthropic_key:
-            self._llm = LLM(model=primary, max_tokens=1024, temperature=0.8)
+            self._llm = await LLMPool.get(primary, temperature=0.8, max_tokens=1024)
         elif openai_key:
-            self._llm = LLM(model=primary, temperature=0.8)
+            self._llm = await LLMPool.get(primary, temperature=0.8)
         else:
-            self._llm = LLM(
-                model="anthropic/claude-sonnet-4-20250514", max_tokens=1024, temperature=0.8
+            self._llm = await LLMPool.get(
+                "anthropic/claude-sonnet-4-20250514", temperature=0.8, max_tokens=1024
             )
 
+        # Get pooled fallback LLM
         if not hasattr(self, "_fallback_llm"):
             self._fallback_llm = None
         if openai_key and primary.startswith("anthropic/"):
-            self._fallback_llm = LLM(model="openai/gpt-4o", temperature=0.8)
+            self._fallback_llm = await LLMPool.get("openai/gpt-4o", temperature=0.8)
         elif anthropic_key and not primary.startswith("anthropic/"):
-            self._fallback_llm = LLM(
-                model="anthropic/claude-sonnet-4-20250514", max_tokens=1024, temperature=0.8
+            self._fallback_llm = await LLMPool.get(
+                "anthropic/claude-sonnet-4-20250514", temperature=0.8, max_tokens=1024
             )
         else:
             self._fallback_llm = None
 
     @property
     def llm(self) -> LLM:
-        """Get primary LLM — Anthropic first."""
+        """Get primary LLM — Anthropic first (uses pooled instance)."""
         if self._llm is None:
-            self._llm = LLM(
-                model="anthropic/claude-sonnet-4-20250514",
-                max_tokens=1024,
+            self._llm = LLMPool.get_sync(
+                "anthropic/claude-sonnet-4-20250514",
                 temperature=0.8,
+                max_tokens=1024,
             )
         return self._llm
 
     @property
     def fallback_llm(self) -> LLM | None:
-        """Get OpenAI fallback LLM when Anthropic fails."""
+        """Get OpenAI fallback LLM when Anthropic fails (uses pooled instance)."""
         if not hasattr(self, "_fallback_llm"):
             openai_key = os.getenv("OPENAI_API_KEY", "")
             if openai_key:
                 llm_provider = os.getenv("LLM_PROVIDER", "openai/gpt-4o")
-                self._fallback_llm = LLM(model=llm_provider, temperature=0.8)
+                self._fallback_llm = LLMPool.get_sync(llm_provider, temperature=0.8)
             else:
                 self._fallback_llm = None
         return self._fallback_llm
@@ -258,8 +261,8 @@ class PersonalizationAgent(AutonomousAgent):
                 "What should we focus on first?"
             )
 
-        # Build context about the contact
-        contact_context = self._build_contact_context(contact)
+        # Build context about the contact (uses cache)
+        contact_context = self._build_contact_context(contact, owner_id=event.owner_id)
 
         # Handle meeting requests specially
         if intent == "meeting_request":
@@ -492,26 +495,10 @@ class PersonalizationAgent(AutonomousAgent):
 
             return None
 
-    def _build_contact_context(self, contact: ContactState) -> str:
-        """Build context string about a contact"""
-        lines = []
-
-        if contact.first_name:
-            lines.append(f"Name: {contact.first_name} {contact.last_name or ''}")
-        if contact.company_name:
-            lines.append(f"Company: {contact.company_name}")
-        if contact.job_title:
-            lines.append(f"Title: {contact.job_title}")
-
-        research = contact.research_data or {}
-        if research.get("skills"):
-            lines.append(f"Skills: {', '.join(research['skills'][:5])}")
-        if research.get("company_industry"):
-            lines.append(f"Industry: {research['company_industry']}")
-
-        if contact.qualification_tier:
-            lines.append(f"Qualification: {contact.qualification_tier} lead")
-
-        lines.append(f"Conversation turns: {contact.conversation_turns}")
-
-        return "\n".join(lines) if lines else "No additional context available."
+    def _build_contact_context(self, contact: ContactState, owner_id: str = "") -> str:
+        """Build context string about a contact (uses cached version when available)."""
+        return ContextCache.get_or_build(
+            contact,
+            build_contact_context,
+            owner_id=owner_id,
+        )
