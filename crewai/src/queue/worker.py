@@ -366,46 +366,104 @@ async def process_incoming_message(
     phone_number: str,
     data: dict,
 ) -> dict[str, Any]:
-    """Process an incoming message through the conversation orchestrator"""
+    """
+    Process an incoming message.
+
+    Uses SwarmCoordinator (event-driven, agents respond via EventBus)
+    or falls back to legacy ConversationOrchestrator if feature flag is off.
+    """
     logger.info(f"Processing incoming message from: {phone_number}")
 
-    from ..orchestrator import ConversationOrchestrator
+    # Feature flag: use swarm-only mode (coordinator + events)
+    use_swarm_only = os.getenv("ENABLE_SWARM_ONLY_MODE", "true").lower() in ("1", "true", "yes", "on")
 
-    crew: NetworkingCrew = ctx["crew"]
     state_manager: RedisStateManager = ctx["state_manager"]
     whatsapp: WhatsAppClient | None = ctx.get("whatsapp")
+    owner_id = data.get("owner_id") or os.getenv(
+        "NEXTHELLO_SYSTEM_OWNER_ID",
+        os.getenv("NEXTHELLO_DEFAULT_OWNER_ID", "askmikeai@gmail.com"),
+    )
 
     try:
-        # Create orchestrator
-        orchestrator = ConversationOrchestrator(
-            state_manager=state_manager,
-            crew=crew,
-        )
+        if use_swarm_only:
+            # Use SwarmCoordinator - response comes via PersonalizationAgent -> MessagingAgent
+            from ..swarm.coordinator import SwarmCoordinator
+            from ..swarm.eventbus import EventBus
+            from ..swarm.blackboard import Blackboard
 
-        # Process the message through the orchestrator
-        response = await orchestrator.process_message(
-            phone_number=phone_number,
-            message_text=data.get("content", ""),
-            message_type=data.get("message_type", "text"),
-            push_name=data.get("push_name"),
-            message_id=data.get("message_id"),
-        )
+            redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+            database_url = os.getenv("DATABASE_URL")
 
-        # Send response if WhatsApp is configured
-        if whatsapp and response:
-            result = await whatsapp.send_text(phone_number, response)
-            message_id = result.get("messages", [{}])[0].get("id", "unknown")
+            eventbus = EventBus(redis_url=redis_url)
+            blackboard = Blackboard(redis_url=redis_url, database_url=database_url)
 
-            await state_manager.add_message(
-                phone_number,
-                message_id,
-                "outgoing",
-                "text",
-                response,
+            await eventbus.connect()
+            await blackboard.connect()
+
+            coordinator = SwarmCoordinator(eventbus=eventbus, blackboard=blackboard)
+
+            # Process the message - response handled asynchronously by agents
+            immediate_response = await coordinator.handle_incoming_message(
+                phone_number=phone_number,
+                message_text=data.get("content", ""),
+                message_type=data.get("message_type", "text"),
+                push_name=data.get("push_name"),
+                message_id=data.get("message_id"),
+                owner_id=owner_id,
             )
 
-        logger.info(f"Processed message from {phone_number}")
-        return {"success": True, "response": response}
+            # Send immediate response if any (typically only for new contacts)
+            if whatsapp and immediate_response:
+                result = await whatsapp.send_text(phone_number, immediate_response)
+                message_id = result.get("messages", [{}])[0].get("id", "unknown")
+
+                await state_manager.add_message(
+                    phone_number,
+                    message_id,
+                    "outgoing",
+                    "text",
+                    immediate_response,
+                )
+
+            await eventbus.close()
+            await blackboard.close()
+
+            logger.info(f"Processed message from {phone_number} via SwarmCoordinator")
+            return {"success": True, "response": immediate_response, "mode": "swarm"}
+
+        else:
+            # Legacy mode: use ConversationOrchestrator
+            from ..orchestrator import ConversationOrchestrator
+
+            crew: NetworkingCrew = ctx["crew"]
+
+            orchestrator = ConversationOrchestrator(
+                state_manager=state_manager,
+                crew=crew,
+            )
+
+            response = await orchestrator.process_message(
+                phone_number=phone_number,
+                message_text=data.get("content", ""),
+                message_type=data.get("message_type", "text"),
+                push_name=data.get("push_name"),
+                message_id=data.get("message_id"),
+            )
+
+            if whatsapp and response:
+                result = await whatsapp.send_text(phone_number, response)
+                message_id = result.get("messages", [{}])[0].get("id", "unknown")
+
+                await state_manager.add_message(
+                    phone_number,
+                    message_id,
+                    "outgoing",
+                    "text",
+                    response,
+                )
+
+            logger.info(f"Processed message from {phone_number} via ConversationOrchestrator")
+            return {"success": True, "response": response, "mode": "orchestrator"}
 
     except Exception as e:
         logger.error(f"Failed to process message from {phone_number}: {e}")
