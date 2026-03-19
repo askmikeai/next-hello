@@ -448,3 +448,74 @@ class FakeBlackboard:
         owner = self._normalize_owner_id(owner_id)
         key = self._contact_key(owner, contact.phone_number)
         self._contacts[key] = contact.to_dict()
+
+    @property
+    def contacts(self) -> "_ContactsDict":
+        """
+        Direct access to contacts dict for tests.
+
+        Allows both dict-style access and ContactState storage:
+            blackboard.contacts["owner:phone"] = ContactState(...)
+            contact = blackboard.contacts.get("owner:phone")
+        """
+        return _ContactsDict(self)
+
+    async def delete_contact_data(
+        self, contact_id: str, owner_id: Optional[str] = None
+    ) -> Dict[str, int]:
+        """Delete all stored data for a contact."""
+        owner = self._normalize_owner_id(owner_id)
+        key = self._contact_key(owner, contact_id)
+        deleted = {
+            "contacts": 1 if key in self._contacts else 0,
+            "messages": 0,
+            "events": 0,
+            "agent_states": 0,
+            "activities": 0,
+        }
+        if key in self._contacts:
+            del self._contacts[key]
+        return deleted
+
+
+class _ContactsDict:
+    """
+    Helper class that wraps FakeBlackboard._contacts for dict-like access.
+
+    Allows tests to do:
+        blackboard.contacts["owner:phone"] = ContactState(...)
+        contact = blackboard.contacts.get("owner:phone")
+    """
+
+    def __init__(self, blackboard: FakeBlackboard):
+        self._blackboard = blackboard
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        """Set a contact state by key."""
+        # Value can be ContactState or dict
+        if hasattr(value, "to_dict"):
+            self._blackboard._contacts[key] = value.to_dict()
+        else:
+            self._blackboard._contacts[key] = value
+
+    def __getitem__(self, key: str) -> Optional[Any]:
+        """Get a contact state by key."""
+        from src.swarm.blackboard import ContactState
+
+        data = self._blackboard._contacts.get(key)
+        if data:
+            return ContactState.from_dict(data)
+        return None
+
+    def get(self, key: str, default: Any = None) -> Optional[Any]:
+        """Get a contact state by key with default."""
+        from src.swarm.blackboard import ContactState
+
+        data = self._blackboard._contacts.get(key)
+        if data:
+            return ContactState.from_dict(data)
+        return default
+
+    def __contains__(self, key: str) -> bool:
+        """Check if a key exists."""
+        return key in self._blackboard._contacts
